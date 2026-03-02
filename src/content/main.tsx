@@ -22,6 +22,7 @@ import {
 } from "antd";
 import "antd/dist/reset.css";
 import {
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   Fragment,
@@ -160,6 +161,130 @@ const ShortcutKeys = ({ combo }: { combo: string }) => {
   );
 };
 
+const BASIC_PALETTE_SHAPES: ShapeType[] = [
+  "rectangle",
+  "circle",
+  "ellipse",
+  "triangle",
+  "diamond",
+  "hexagon",
+  "star",
+  "pill",
+  "arrow",
+  "trapezoid",
+];
+
+const PaletteShapeIcon = ({ shape }: { shape: ShapeType }) => (
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    aria-hidden="true"
+    focusable="false"
+  >
+    {shape === "rectangle" && (
+      <rect
+        x="4"
+        y="6"
+        width="16"
+        height="12"
+        rx="2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    )}
+    {shape === "circle" && (
+      <circle
+        cx="12"
+        cy="12"
+        r="7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    )}
+    {shape === "ellipse" && (
+      <ellipse
+        cx="12"
+        cy="12"
+        rx="8"
+        ry="6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    )}
+    {shape === "triangle" && (
+      <polygon
+        points="12,5 19,18 5,18"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    )}
+    {shape === "diamond" && (
+      <polygon
+        points="12,4 19,12 12,20 5,12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    )}
+    {shape === "hexagon" && (
+      <polygon
+        points="7,5 17,5 21,12 17,19 7,19 3,12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    )}
+    {shape === "star" && (
+      <polygon
+        points="12,4 14.3,9.1 20,9.3 15.4,12.9 17,18.4 12,15.2 7,18.4 8.6,12.9 4,9.3 9.7,9.1"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    )}
+    {shape === "pill" && (
+      <rect
+        x="3"
+        y="8"
+        width="18"
+        height="8"
+        rx="4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    )}
+    {shape === "arrow" && (
+      <path
+        d="M4 12h10M11 8l6 4-6 4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    )}
+    {shape === "trapezoid" && (
+      <polygon
+        points="7,6 17,6 20,18 4,18"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    )}
+  </svg>
+);
+
 function MapperApp() {
   const [settings, setSettings] = useState<MapperSettings>(() =>
     storage.loadSettings(),
@@ -186,6 +311,8 @@ function MapperApp() {
     y: number;
     keyBinding: string;
   } | null>(null);
+  const [selectedPaletteShape, setSelectedPaletteShape] =
+    useState<ShapeType>("rectangle");
   const [dialogRect, setDialogRect] = useState({
     x: 40,
     y: 80,
@@ -195,6 +322,7 @@ function MapperApp() {
 
   const rotateIdRef = useRef<string | null>(null);
   const previousBodyCursorRef = useRef<string | null>(null);
+  const paletteDragTypeRef = useRef<ShapeType | null>(null);
 
   const selectedShape = useMemo(
     () => shapes.find((shape) => shape.id === selectedId) ?? null,
@@ -634,18 +762,110 @@ function MapperApp() {
     );
   };
 
-  const makeDraftedShape = (): ShapeMapping =>
-    normalizeShape({
-      ...createShape("rectangle"),
+  const makeDraftedShape = (
+    shapeType: ShapeType = "rectangle",
+    point?: { x: number; y: number },
+  ): ShapeMapping => {
+    const base = createShape(shapeType);
+
+    if (!point) {
+      return normalizeShape({
+        ...base,
+        opacity: draftShape.opacity,
+      });
+    }
+
+    return normalizeShape({
+      ...base,
+      x: point.x - base.width / 2,
+      y: point.y - base.height / 2,
       opacity: draftShape.opacity,
     });
+  };
 
-  const addKeyMap = () => {
-    const newShape = makeDraftedShape();
+  const addKeyMapOfType = (
+    shapeType: ShapeType,
+    point?: { x: number; y: number },
+  ) => {
+    const newShape = makeDraftedShape(shapeType, point);
     setSettings((prev) => ({ ...prev, editMode: true }));
     setShapes((prev) => [...prev, newShape]);
     setSelectedId(newShape.id);
   };
+
+  const addKeyMap = () => {
+    addKeyMapOfType("rectangle");
+  };
+
+  const onPaletteDragStart = (
+    event: ReactDragEvent<HTMLElement>,
+    shapeType: ShapeType,
+  ) => {
+    if (!settings.editMode) {
+      event.preventDefault();
+      return;
+    }
+
+    setSelectedPaletteShape(shapeType);
+    paletteDragTypeRef.current = shapeType;
+    setIsTransformingShape(true);
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("text/plain", shapeType);
+  };
+
+  const onPaletteDragEnd = () => {
+    paletteDragTypeRef.current = null;
+    setIsTransformingShape(false);
+  };
+
+  useEffect(() => {
+    const onDragOver = (event: DragEvent) => {
+      if (!paletteDragTypeRef.current) return;
+      event.preventDefault();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "copy";
+      }
+    };
+
+    const onDrop = (event: DragEvent) => {
+      const shapeType = paletteDragTypeRef.current;
+      if (!shapeType) return;
+
+      event.preventDefault();
+
+      const elementAtPoint = document.elementFromPoint(
+        event.clientX,
+        event.clientY,
+      ) as HTMLElement | null;
+      const droppedOnCanvas = Boolean(elementAtPoint?.closest("canvas"));
+
+      if (droppedOnCanvas) {
+        addKeyMapOfType(shapeType, {
+          x: event.clientX,
+          y: event.clientY,
+        });
+      }
+
+      paletteDragTypeRef.current = null;
+      setIsTransformingShape(false);
+    };
+
+    const onGlobalDragEnd = () => {
+      if (!paletteDragTypeRef.current) return;
+      paletteDragTypeRef.current = null;
+      setIsTransformingShape(false);
+    };
+
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
+    window.addEventListener("dragend", onGlobalDragEnd);
+
+    return () => {
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
+      window.removeEventListener("dragend", onGlobalDragEnd);
+    };
+  }, [addKeyMapOfType]);
 
   const attemptCloseDialog = () => {
     setDialogVisible(false);
@@ -980,6 +1200,51 @@ function MapperApp() {
 
                   <Divider className="!fm-my-2" />
                   <Typography.Text strong>Mapper Controls</Typography.Text>
+
+                  <Form.Item label="Shape Palette">
+                    <Space direction="vertical" size={6} className="fm-w-full">
+                      <Space wrap>
+                        {BASIC_PALETTE_SHAPES.map((shapeType) => {
+                          const isSelected = selectedPaletteShape === shapeType;
+                          return (
+                            <Tooltip key={shapeType} title={shapeType}>
+                              <Button
+                                type={isSelected ? "primary" : "default"}
+                                size="small"
+                                draggable={settings.editMode}
+                                onClick={() =>
+                                  setSelectedPaletteShape(shapeType)
+                                }
+                                onDoubleClick={() => {
+                                  if (!settings.editMode) return;
+                                  if (selectedPaletteShape !== shapeType)
+                                    return;
+                                  addKeyMapOfType(shapeType);
+                                }}
+                                onDragStart={(event) =>
+                                  onPaletteDragStart(event, shapeType)
+                                }
+                                onDragEnd={onPaletteDragEnd}
+                                disabled={!settings.editMode}
+                              >
+                                <Space size={4}>
+                                  <PaletteShapeIcon shape={shapeType} />
+                                  <span className="fm-capitalize">
+                                    {shapeType}
+                                  </span>
+                                </Space>
+                              </Button>
+                            </Tooltip>
+                          );
+                        })}
+                      </Space>
+                      <Typography.Text type="secondary">
+                        Drag a selected shape to the game canvas. Double-click
+                        the selected shape to add it at the default position.
+                      </Typography.Text>
+                    </Space>
+                  </Form.Item>
+
                   <Form.Item label="Theme">
                     <Segmented
                       options={[

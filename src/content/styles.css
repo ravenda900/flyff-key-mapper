@@ -1,0 +1,254 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+#flyff-mapper-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483640;
+  pointer-events: none;
+}
+
+#flyff-mapper-root * {
+  box-sizing: border-box;
+}
+
+.fm-panel,
+.fm-dialog,
+.fm-shape,
+.fm-toolbar {
+  pointer-events: auto;
+}
+
+.fm-shape-shell {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.fm-shape-fill {
+  width: 100%;
+  height: 100%;
+  border: 2px solid #3b82f6;
+  background: rgba(59, 130, 246, 0.2);
+  pointer-events: none;
+}
+
+.fm-shape-selected .fm-shape-fill {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.25);
+}
+
+.fm-shape-rectangle {
+  border-radius: 6px;
+}
+
+.fm-shape-circle {
+  border-radius: 9999px;
+}
+
+.fm-shape-ellipse {
+  border-radius: 50%;
+}
+
+.fm-shape-triangle {
+  clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+}
+
+.fm-shape-diamond {
+  clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+}
+
+.fm-shape-hexagon {
+  clip-path: polygon(25% 0%, 75% 0%, 100% 50%, 75% 100%, 25% 100%, 0% 50%);
+}
+
+.fm-shape-star {
+  clip-path: polygon(
+    50% 0%,
+    61% 35%,
+    98% 35%,
+    68% 57%,
+    79% 91%,
+    50% 70%,
+    21% 91%,
+    32% 57%,
+    2% 35%,
+    39% 35%
+  );
+}
+
+.fm-shape-pill {
+  border-radius: 9999px;
+}
+
+.fm-shape-arrow {
+  clip-path: polygon(0% 35%, 58% 35%, 58% 15%, 100% 50%, 58% 85%, 58% 65%, 0% 65%);
+}
+
+.fm-shape-trapezoid {
+  clip-path: polygon(15% 0%, 85% 0%, 100% 100%, 0% 100%);
+}
+
+.fm-rotate-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: linear-gradient(180deg, #34d399 0%, #16a34a 100%);
+  border: 2px solid white;
+  top: -30px;
+  left: calc(50% - 10px);
+  cursor: grab;
+  z-index: 9;
+  pointer-events: auto;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.35);
+}
+
+.fm-rotate-handle::before {
+  content: "";
+  position: absolute;
+  width: 2px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  left: 50%;
+  transform: translateX(-50%);
+  top: 18px;
+}
+
+.fm-rotate-handle::after {
+  content: "↻";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.fm-rotate-handle:active {
+  cursor: grabbing;
+}
+
+.fm-close-btn {
+  position: absolute;
+  top: -10px;
+  left: auto;
+  right: -10px;
+  inset-inline-end: -10px;
+  inset-inline-start: auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  border: none;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+  z-index: 5;
+}
+
+.fm-shape-shortcut {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  min-width: 0;
+  max-width: calc(100% - 8px);
+  border-radius: 9999px;
+  background: rgba(30, 41, 59, 0.48);
+  color: #fff;
+  font-size: 10px;
+  pointer-events: auto;
+}
+
+.fm-shape-shortcut-input {
+  pointer-events: auto;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 9999px;
+  width: 100%;
+  min-width: 0;
+  padding: 1px 5px;
+  font-size: 9px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.fm-shape-shortcut-input::placeholder {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.fm-shape-shortcut-input:focus {
+  outline: 1px solid rgba(255, 255, 255, 0.8);
+}
+
+.fm-shape .react-resizable-handle {
+  background-image: none !important;
+  background: transparent !important;
+  position: absolute;
+  z-index: 8;
+  pointer-events: none;
+  touch-action: none;
+}
+
+.fm-shape .react-resizable-handle-se {
+  pointer-events: auto;
+  width: 18px;
+  height: 18px;
+  bottom: -9px;
+  right: -9px;
+  cursor: nwse-resize;
+}
+
+.fm-dialog .ant-card-head {
+  cursor: move;
+  user-select: none;
+}
+
+.fm-running-tooltip {
+  position: fixed;
+  z-index: 2147483646;
+  pointer-events: none;
+  background: rgba(15, 23, 42, 0.92);
+  color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.fm-shortcut-kbd-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.fm-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(148, 163, 184, 0.7);
+  background: rgba(15, 23, 42, 0.65);
+  color: #e2e8f0;
+  font-size: 10px;
+  font-family: inherit;
+  line-height: 1;
+}
+
+.fm-shortcut-plus {
+  color: rgba(226, 232, 240, 0.9);
+  font-size: 11px;
+}
+

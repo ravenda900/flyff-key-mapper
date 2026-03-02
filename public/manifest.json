@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Flyff Mapper",
+  "description": "Overlay key mapper for Universe Flyff canvas.",
+  "version": "1.0.0",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": ["https://universe.flyff.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://universe.flyff.com/play*"],
+      "js": ["assets/content.js"],
+      "css": ["assets/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "toggle-mapper": {
+      "suggested_key": {
+        "default": "Alt+Shift+M"
+      },
+      "description": "Toggle Flyff Mapper overlay"
+    }
+  },
+  "icons": {
+    "16": "flyff-u.png",
+    "32": "flyff-u.png",
+    "48": "flyff-u.png",
+    "128": "flyff-u.png"
+  },
+  "action": {
+    "default_title": "Flyff Mapper"
+  }
+}

@@ -185,6 +185,6 @@ Declared in manifest:
 
 ## Versioning
 
-Manifest version is currently `1.0.0`.
+Manifest version is currently `1.0.1`.
 
 See `RELEASE_NOTES.md` for publish-ready release notes.

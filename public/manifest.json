@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Flyff Mapper",
   "description": "Overlay key mapper for Universe Flyff canvas.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "permissions": ["activeTab", "storage", "scripting"],
   "host_permissions": ["https://universe.flyff.com/*"],
   "background": {

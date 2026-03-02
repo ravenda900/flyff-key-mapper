@@ -1,5 +1,33 @@
 # Flyff Mapper Release Notes
 
+## v1.0.1 (2026-03-02)
+
+Minor feature and stability update focused on gameplay smoothness and shape authoring workflow.
+
+### Added
+
+- Added a draggable SVG **Shape Palette** with basic shapes.
+- Added palette selection state with default selected shape set to **rectangle**.
+- Added drag-from-palette to canvas creation flow.
+- Added double-click on the selected palette shape to add it to canvas.
+- Added read-only mapper toggle label in the panel header.
+
+### Changed
+
+- Mapper toggle shortcut remains fixed to `Alt+Shift+M`.
+- Added configurable **Add Key Map** shortcut while keeping the **Add Key Map** button default behavior (rectangle).
+
+### Fixed
+
+- Improved continuous gameplay input passthrough behavior.
+- Improved right-click camera-pan + movement key compatibility.
+- Fixed cursor state restoration so game cursor remains stable.
+- Ensured mapper dialog hides during palette dragging and restores after drag ends.
+
+### Packaging
+
+- Manifest version updated to `1.0.1`.
+
 ## v1.0.0 (2026-03-02)
 
 Initial public release of Flyff Mapper for Universe Flyff.

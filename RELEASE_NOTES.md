@@ -1,5 +1,34 @@
 # Flyff Mapper Release Notes
 
+## v2.0.0 (2026-03-05)
+
+Major feature and UX release focused on key-sequence control, shape interaction upgrades, theme consistency, and shortcut visualization.
+
+### Added
+
+- Added full-side shape resize handles (top/right/bottom/left) in addition to corner handles.
+- Added timed completion windows for key and click sequences so unfinished multi-step shortcuts can pass through to gameplay input.
+- Added richer shortcut rendering across mapper surfaces using consistent key/mouse visual tokens.
+
+### Changed
+
+- Updated shortcut capture/trigger behavior for multi-step bindings with modifiers (for example `Shift+K+W`).
+- Updated running-mode shape shortcut display to use styled shortcut tokens (same visual language as edit mode).
+- Expanded dark-theme coverage and alignment across dialog controls, tooltips, segmented/select surfaces, and modal variants.
+- Improved segmented styling in dark mode to keep selected state visually distinct while avoiding layout shift.
+
+### Fixed
+
+- Fixed movement and non-movement sequence passthrough conflicts (`Space+Space`, `H+H`, and similar patterns).
+- Fixed reserved global shortcut suppression for shape triggers (including mapper toggle binding).
+- Fixed passive wheel listener warning by ensuring safe event handling in wheel-trigger paths.
+- Fixed overlapping shortcut text in configuration inputs by strengthening hidden-underlay input styling.
+
+### Packaging
+
+- Manifest version updated to `2.0.0`.
+- Package version updated to `2.0.0`.
+
 ## v1.0.1 (2026-03-02)
 
 Minor feature and stability update focused on gameplay smoothness and shape authoring workflow.

@@ -30,8 +30,11 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
 - Theme options: Light, Dark, System.
 - Global opacity control for all shapes.
 - Mapping portability:
-  - Copy mapping JSON to clipboard.
-  - Import mapping JSON.
+  - Copy active profile mapping JSON to clipboard.
+  - Import mapping JSON as a new named profile.
+- Profile-based mapping management:
+  - Switch active profile.
+  - Rename, create, and delete profiles.
 - Persistent local storage for settings and shapes.
 
 ## Tech stack
@@ -127,12 +130,13 @@ All configurable shortcuts can be edited from the control panel.
 
 ## Import/Export format
 
-Export copies a JSON payload containing both `shapes` and `settings`.
+Export copies the active profile as JSON with a `profileName`, `shapes`, and `settings`.
 
 Top-level format:
 
 ```json
 {
+  "profileName": "My Farm Profile",
   "shapes": [
     {
       "id": "...",
@@ -158,6 +162,12 @@ Top-level format:
   }
 }
 ```
+
+Import behavior:
+
+- Import never replaces your current mappings.
+- Every import is added as a new profile.
+- If the payload has no `profileName`, a generated imported profile name is used.
 
 ## Troubleshooting
 
@@ -185,6 +195,6 @@ Declared in manifest:
 
 ## Versioning
 
-Manifest version is currently `1.0.1`.
+Manifest version is currently `2.0.0`.
 
 See `RELEASE_NOTES.md` for publish-ready release notes.

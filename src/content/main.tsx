@@ -1,299 +1,107 @@
-import {
-  CloseOutlined,
-  PlayCircleOutlined,
-  StopOutlined,
-} from "@ant-design/icons";
-import {
-  App,
-  Button,
-  Card,
-  ConfigProvider,
-  Divider,
-  Form,
-  Input,
-  Modal,
-  Segmented,
-  Slider,
-  Space,
-  Switch,
-  Tooltip,
-  theme,
-  Typography,
-} from "antd";
+import { App, ConfigProvider, Modal, theme } from "antd";
 import "antd/dist/reset.css";
 import {
-  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
-  type MouseEvent as ReactMouseEvent,
-  Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
-import { Rnd } from "react-rnd";
-import { matchesBinding, triggerShapeArea } from "./keybinding";
-import { getShapeClass } from "./shapeStyles";
-import { storage } from "./storage";
+import {
+  getKeyboardBindingToken,
+  matchesBinding,
+  matchesBindingAction,
+  recordBindingAction,
+  stopAllToggleShapeAreas,
+  stopToggleShapeArea,
+  triggerShapeArea,
+} from "./keybinding";
+import {
+  OVERLAY_SHORTCUT,
+  ROOT_ID,
+  buildShortcutFromEvent,
+  createProfileId,
+  createShape,
+  getSystemDark,
+  isGameplayMovementKey,
+  isPointInsideShape,
+  makeUniqueProfileName,
+  normalizeShape,
+} from "./key-mapping/constants";
+import { MapperDialog } from "./key-mapping/features/MapperDialog";
+import { ShapeOverlay } from "./key-mapping/features/ShapeOverlay";
+import {
+  duplicateClipboardShapes,
+  getClipboardShapes,
+  isClipboardShortcut,
+} from "./key-mapping/shapeClipboard";
+import { getReservedShapeShortcutUsage } from "./key-mapping/shortcutBinding";
+import { ImportMappingsModal } from "./key-mapping/modals/ImportMappingsModal";
+import { ProfileNameModal } from "./key-mapping/modals/ProfileNameModal";
+import { DEFAULT_SETTINGS, storage } from "./storage";
 import "./styles.css";
 import type {
+  DialogRect,
+  MappingProfile,
   MapperSettings,
   ShapeMapping,
   ShapeType,
   ThemeMode,
 } from "./types";
 
-const ROOT_ID = "flyff-mapper-root";
-const OVERLAY_SHORTCUT = "Alt+Shift+M";
-
-const getSystemDark = (): boolean =>
-  window.matchMedia("(prefers-color-scheme: dark)").matches;
-
-const createShape = (shapeType: ShapeType): ShapeMapping => ({
-  id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  type: shapeType,
-  x: Math.max(100, window.innerWidth / 2 - 70),
-  y: Math.max(100, window.innerHeight / 2 - 50),
-  width: 140,
-  height: 100,
-  rotation: 0,
-  opacity: 1,
-  keyBinding: "",
-});
-
-const normalizeShape = (shape: ShapeMapping): ShapeMapping => ({
-  ...shape,
-  x: Math.max(0, Math.round(shape.x)),
-  y: Math.max(0, Math.round(shape.y)),
-  width: Math.max(5, Math.round(shape.width)),
-  height: Math.max(5, Math.round(shape.height)),
-  opacity: Math.min(1, Math.max(0.05, Number(shape.opacity))),
-  rotation: Math.round(shape.rotation),
-});
-
-const isModifierOnly = (key: string): boolean => {
-  const normalized = key.toLowerCase();
-  return ["shift", "control", "ctrl", "alt", "meta"].includes(normalized);
+const DEFAULT_DIALOG_RECT: DialogRect = {
+  x: 40,
+  y: 80,
+  width: 420,
+  height: 540,
 };
 
-const SHIFTED_SYMBOL_TO_BASE_KEY: Record<string, string> = {
-  "!": "1",
-  "@": "2",
-  "#": "3",
-  $: "4",
-  "%": "5",
-  "^": "6",
-  "&": "7",
-  "*": "8",
-  "(": "9",
-  ")": "0",
-  _: "-",
-  "+": "=",
-  "{": "[",
-  "}": "]",
-  "|": "\\",
-  ":": ";",
-  '"': "'",
-  "<": ",",
-  ">": ".",
-  "?": "/",
-  "~": "`",
+type DeletedShapeEntry = {
+  shape: ShapeMapping;
+  index: number;
 };
 
-const isGameplayMovementKey = (key: string): boolean => {
-  const normalized = key.toLowerCase();
-  return [
-    "w",
-    "a",
-    "s",
-    "d",
-    "arrowup",
-    "arrowdown",
-    "arrowleft",
-    "arrowright",
-    " ",
-    "space",
-    "spacebar",
-  ].includes(normalized);
+type DeletedShapesAction = {
+  entries: DeletedShapeEntry[];
 };
-
-const buildShortcutFromEvent = (event: {
-  ctrlKey: boolean;
-  altKey: boolean;
-  shiftKey: boolean;
-  metaKey: boolean;
-  key: string;
-}): string => {
-  const parts: string[] = [];
-  if (event.ctrlKey) parts.push("Ctrl");
-  if (event.altKey) parts.push("Alt");
-  if (event.shiftKey) parts.push("Shift");
-  if (event.metaKey) parts.push("Meta");
-
-  let key = event.key;
-  if (key === " ") key = "Space";
-  else if (SHIFTED_SYMBOL_TO_BASE_KEY[key]) {
-    key = SHIFTED_SYMBOL_TO_BASE_KEY[key];
-  } else if (key.length === 1) key = key.toUpperCase();
-
-  if (key && !isModifierOnly(key)) parts.push(key);
-  return parts.join("+");
-};
-
-const ShortcutKeys = ({ combo }: { combo: string }) => {
-  const parts = combo
-    .split("+")
-    .map((part) => part.trim())
-    .filter(Boolean);
-
-  return (
-    <span className="fm-shortcut-kbd-group" aria-label={`Shortcut ${combo}`}>
-      {parts.map((part, index) => (
-        <Fragment key={`${part}-${index}`}>
-          <kbd className="fm-kbd">{part}</kbd>
-          {index < parts.length - 1 && (
-            <span className="fm-shortcut-plus">+</span>
-          )}
-        </Fragment>
-      ))}
-    </span>
-  );
-};
-
-const BASIC_PALETTE_SHAPES: ShapeType[] = [
-  "rectangle",
-  "circle",
-  "ellipse",
-  "triangle",
-  "diamond",
-  "hexagon",
-  "star",
-  "pill",
-  "arrow",
-  "trapezoid",
-];
-
-const PaletteShapeIcon = ({ shape }: { shape: ShapeType }) => (
-  <svg
-    viewBox="0 0 24 24"
-    width="16"
-    height="16"
-    aria-hidden="true"
-    focusable="false"
-  >
-    {shape === "rectangle" && (
-      <rect
-        x="4"
-        y="6"
-        width="16"
-        height="12"
-        rx="2"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-    )}
-    {shape === "circle" && (
-      <circle
-        cx="12"
-        cy="12"
-        r="7"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-    )}
-    {shape === "ellipse" && (
-      <ellipse
-        cx="12"
-        cy="12"
-        rx="8"
-        ry="6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-    )}
-    {shape === "triangle" && (
-      <polygon
-        points="12,5 19,18 5,18"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-    )}
-    {shape === "diamond" && (
-      <polygon
-        points="12,4 19,12 12,20 5,12"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-    )}
-    {shape === "hexagon" && (
-      <polygon
-        points="7,5 17,5 21,12 17,19 7,19 3,12"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-    )}
-    {shape === "star" && (
-      <polygon
-        points="12,4 14.3,9.1 20,9.3 15.4,12.9 17,18.4 12,15.2 7,18.4 8.6,12.9 4,9.3 9.7,9.1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-      />
-    )}
-    {shape === "pill" && (
-      <rect
-        x="3"
-        y="8"
-        width="18"
-        height="8"
-        rx="4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
-    )}
-    {shape === "arrow" && (
-      <path
-        d="M4 12h10M11 8l6 4-6 4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    )}
-    {shape === "trapezoid" && (
-      <polygon
-        points="7,6 17,6 20,18 4,18"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-    )}
-  </svg>
-);
 
 function MapperApp() {
-  const [settings, setSettings] = useState<MapperSettings>(() =>
-    storage.loadSettings(),
+  const [modal, modalContextHolder] = Modal.useModal();
+  const initialProfilesState = useMemo(() => storage.loadProfiles(), []);
+  const initialUiState = useMemo(() => storage.loadUiState(), []);
+  const [settings, setSettings] = useState<MapperSettings>(() => {
+    const activeProfile = initialProfilesState.profiles.find(
+      (profile) => profile.id === initialProfilesState.activeProfileId,
+    );
+
+    return (
+      activeProfile?.settings ??
+      initialProfilesState.profiles[0]?.settings ??
+      storage.loadSettings()
+    );
+  });
+  const [profiles, setProfiles] = useState<MappingProfile[]>(
+    initialProfilesState.profiles,
   );
-  const [shapes, setShapes] = useState<ShapeMapping[]>(() =>
-    storage.loadShapes(),
+  const [activeProfileId, setActiveProfileId] = useState<string>(
+    initialProfilesState.activeProfileId,
   );
+  const [selectedProfileId, setSelectedProfileId] = useState<string>(
+    initialProfilesState.activeProfileId,
+  );
+  const [shapes, setShapes] = useState<ShapeMapping[]>(() => {
+    const activeProfile = initialProfilesState.profiles.find(
+      (profile) => profile.id === initialProfilesState.activeProfileId,
+    );
+    return (
+      activeProfile?.shapes ?? initialProfilesState.profiles[0]?.shapes ?? []
+    );
+  });
   const [overlayVisible, setOverlayVisible] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [dialogVisible, setDialogVisible] = useState(false);
   const [draftShape, setDraftShape] = useState<ShapeMapping>(() =>
     normalizeShape({
@@ -303,7 +111,20 @@ function MapperApp() {
   );
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
-  const [copiedShape, setCopiedShape] = useState<ShapeMapping | null>(null);
+  const [pendingImportText, setPendingImportText] = useState("");
+  const [profileNameDialogOpen, setProfileNameDialogOpen] = useState(false);
+  const [profileNameDialogMode, setProfileNameDialogMode] = useState<
+    "create" | "rename" | "import"
+  >("rename");
+  const [profileNameInput, setProfileNameInput] = useState("");
+  const [profileNameError, setProfileNameError] = useState("");
+  const [activeProfileName, setActiveProfileName] = useState(() => {
+    const activeProfile = initialProfilesState.profiles.find(
+      (profile) => profile.id === initialProfilesState.activeProfileId,
+    );
+    return activeProfile?.name ?? "";
+  });
+  const [copiedShapes, setCopiedShapes] = useState<ShapeMapping[]>([]);
   const [isTransformingShape, setIsTransformingShape] = useState(false);
   const [shapesVisible, setShapesVisible] = useState(true);
   const [runningTooltip, setRunningTooltip] = useState<{
@@ -311,22 +132,57 @@ function MapperApp() {
     y: number;
     keyBinding: string;
   } | null>(null);
-  const [selectedPaletteShape, setSelectedPaletteShape] =
-    useState<ShapeType>("rectangle");
-  const [dialogRect, setDialogRect] = useState({
-    x: 40,
-    y: 80,
-    width: 420,
-    height: 540,
-  });
+  const [selectedPaletteShape, setSelectedPaletteShape] = useState<ShapeType>(
+    initialUiState.selectedPaletteShape,
+  );
+  const [dialogRect, setDialogRect] = useState<DialogRect>(
+    initialUiState.dialogRect,
+  );
 
   const rotateIdRef = useRef<string | null>(null);
   const previousBodyCursorRef = useRef<string | null>(null);
-  const paletteDragTypeRef = useRef<ShapeType | null>(null);
+  const previousCanvasPointerEventsRef = useRef<string | null>(null);
+  const latestShapesRef = useRef<ShapeMapping[]>(shapes);
+  const latestSettingsRef = useRef<MapperSettings>(settings);
+  const latestProfilesRef = useRef<MappingProfile[]>(profiles);
+  const previousActiveProfileIdRef = useRef(activeProfileId);
+  const isSwitchingProfileRef = useRef(false);
+  const previousShapeIdsRef = useRef<Set<string>>(new Set());
+  const shapeBindingHistoryRef = useRef<
+    Array<{ token: string; timestamp: number }>
+  >([]);
+  const rightClickTrackerRef = useRef(0);
+  const selectedPaletteShapeRef = useRef<ShapeType>(selectedPaletteShape);
+  const deletedUndoStackRef = useRef<DeletedShapesAction[]>([]);
+  const deletedRedoStackRef = useRef<DeletedShapesAction[]>([]);
+
+  const activeProfile = useMemo(
+    () => profiles.find((profile) => profile.id === activeProfileId) ?? null,
+    [activeProfileId, profiles],
+  );
 
   const selectedShape = useMemo(
     () => shapes.find((shape) => shape.id === selectedId) ?? null,
     [selectedId, shapes],
+  );
+
+  const selectSingleShape = useCallback((id: string | null) => {
+    setSelectedId(id);
+    setSelectedIds(id ? [id] : []);
+  }, []);
+
+  const toggleShapeSelection = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const exists = prev.includes(id);
+      const next = exists ? prev.filter((item) => item !== id) : [...prev, id];
+      setSelectedId(next.length > 0 ? next[next.length - 1] : null);
+      return next;
+    });
+  }, []);
+
+  const selectedProfile = useMemo(
+    () => profiles.find((profile) => profile.id === selectedProfileId) ?? null,
+    [profiles, selectedProfileId],
   );
 
   const appliedTheme = useMemo(() => {
@@ -334,13 +190,221 @@ function MapperApp() {
     return settings.theme;
   }, [settings.theme]);
 
+  const importAnalysis = useMemo(() => {
+    const raw = importText.trim();
+    if (!raw) {
+      return {
+        isValidJson: false,
+        hasImportData: false,
+        profileCount: 0,
+        missingNameCount: 0,
+        parseError: "Paste mapping JSON to import.",
+      };
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as {
+        profileName?: string;
+        shapes?: ShapeMapping[];
+        profiles?: Array<{ name?: string; shapes?: ShapeMapping[] }>;
+      };
+
+      let profileCount = 0;
+      let missingNameCount = 0;
+
+      if (Array.isArray(parsed.profiles)) {
+        parsed.profiles.forEach((profile) => {
+          if (!Array.isArray(profile.shapes)) {
+            return;
+          }
+          profileCount += 1;
+          if (
+            !(
+              typeof profile.name === "string" && profile.name.trim().length > 0
+            )
+          ) {
+            missingNameCount += 1;
+          }
+        });
+      }
+
+      if (Array.isArray(parsed.shapes)) {
+        profileCount += 1;
+        if (
+          !(
+            typeof parsed.profileName === "string" &&
+            parsed.profileName.trim().length > 0
+          )
+        ) {
+          missingNameCount += 1;
+        }
+      }
+
+      return {
+        isValidJson: true,
+        hasImportData: profileCount > 0,
+        profileCount,
+        missingNameCount,
+        parseError: "",
+      };
+    } catch {
+      return {
+        isValidJson: false,
+        hasImportData: false,
+        profileCount: 0,
+        missingNameCount: 0,
+        parseError: "Invalid JSON format.",
+      };
+    }
+  }, [importText]);
+
+  const canImportNow =
+    importAnalysis.isValidJson && importAnalysis.hasImportData;
+
   useEffect(() => {
-    storage.saveShapes(shapes);
+    latestShapesRef.current = shapes;
   }, [shapes]);
 
   useEffect(() => {
-    storage.saveSettings(settings);
+    const currentShapeIds = new Set(shapes.map((shape) => shape.id));
+    previousShapeIdsRef.current.forEach((shapeId) => {
+      if (!currentShapeIds.has(shapeId)) {
+        stopToggleShapeArea(shapeId);
+      }
+    });
+    previousShapeIdsRef.current = currentShapeIds;
+  }, [shapes]);
+
+  useEffect(() => {
+    return () => {
+      stopAllToggleShapeAreas();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeProfileId || isSwitchingProfileRef.current) {
+      return;
+    }
+
+    setProfiles((prev) =>
+      prev.map((profile) => {
+        if (profile.id !== activeProfileId) {
+          return profile;
+        }
+
+        const nextName = activeProfileName.trim() || profile.name;
+        const sameName = profile.name === nextName;
+        const sameShapes =
+          JSON.stringify(profile.shapes) === JSON.stringify(shapes);
+        const sameSettings =
+          JSON.stringify(profile.settings) === JSON.stringify(settings);
+
+        if (sameName && sameShapes && sameSettings) {
+          return profile;
+        }
+
+        return {
+          ...profile,
+          name: nextName,
+          shapes,
+          settings,
+        };
+      }),
+    );
+  }, [activeProfileId, activeProfileName, settings, shapes]);
+
+  useEffect(() => {
+    latestProfilesRef.current = profiles;
+    storage.saveProfiles({
+      activeProfileId,
+      profiles,
+    });
+  }, [activeProfileId, profiles]);
+
+  useEffect(() => {
+    if (profiles.length === 0) {
+      if (activeProfileId !== "") {
+        setActiveProfileId("");
+      }
+      if (selectedProfileId !== "") {
+        setSelectedProfileId("");
+      }
+      return;
+    }
+
+    if (!profiles.some((profile) => profile.id === activeProfileId)) {
+      setActiveProfileId(profiles[0].id);
+    }
+
+    if (!profiles.some((profile) => profile.id === selectedProfileId)) {
+      setSelectedProfileId(profiles[0].id);
+    }
+  }, [activeProfileId, profiles, selectedProfileId, settings]);
+
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      if (selectedId === null) {
+        return prev.length === 0 ? prev : [];
+      }
+
+      if (prev.includes(selectedId)) {
+        return prev;
+      }
+
+      return [selectedId];
+    });
+  }, [selectedId]);
+
+  useEffect(() => {
+    const shapeIdSet = new Set(shapes.map((shape) => shape.id));
+    setSelectedIds((prev) => prev.filter((id) => shapeIdSet.has(id)));
+  }, [shapes]);
+
+  useEffect(() => {
+    if (selectedId && !selectedIds.includes(selectedId)) {
+      setSelectedId(
+        selectedIds.length > 0 ? selectedIds[selectedIds.length - 1] : null,
+      );
+    }
+  }, [selectedId, selectedIds]);
+
+  useEffect(() => {
+    if (previousActiveProfileIdRef.current === activeProfileId) {
+      return;
+    }
+
+    previousActiveProfileIdRef.current = activeProfileId;
+    const nextActiveProfile =
+      profiles.find((profile) => profile.id === activeProfileId) ?? null;
+    if (!nextActiveProfile) {
+      isSwitchingProfileRef.current = false;
+      return;
+    }
+
+    setShapes(nextActiveProfile.shapes);
+    setSettings(nextActiveProfile.settings);
+    setActiveProfileName(nextActiveProfile.name);
+    selectSingleShape(null);
+    setCopiedShapes([]);
+    setIsTransformingShape(false);
+    setSelectedProfileId(activeProfileId);
+    isSwitchingProfileRef.current = false;
+  }, [activeProfileId, profiles, selectSingleShape]);
+
+  useEffect(() => {
+    latestSettingsRef.current = settings;
   }, [settings]);
+
+  useEffect(() => {
+    selectedPaletteShapeRef.current = selectedPaletteShape;
+  }, [selectedPaletteShape]);
+
+  useEffect(() => {
+    storage.saveUiState({
+      selectedPaletteShape,
+      dialogRect,
+    });
+  }, [dialogRect, selectedPaletteShape]);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
@@ -351,10 +415,36 @@ function MapperApp() {
 
   useEffect(() => {
     if (settings.editMode) return;
-    setSelectedId(null);
+    selectSingleShape(null);
+  }, [settings.editMode, selectSingleShape]);
+
+  useEffect(() => {
+    if (settings.editMode) {
+      stopAllToggleShapeAreas();
+    }
   }, [settings.editMode]);
 
-  const focusGameCanvas = () => {
+  useEffect(() => {
+    const blockMetaKey = (event: KeyboardEvent) => {
+      if (
+        event.key === "Meta" ||
+        event.code === "MetaLeft" ||
+        event.code === "MetaRight"
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+
+    window.addEventListener("keydown", blockMetaKey, { capture: true });
+    window.addEventListener("keyup", blockMetaKey, { capture: true });
+    return () => {
+      window.removeEventListener("keydown", blockMetaKey, { capture: true });
+      window.removeEventListener("keyup", blockMetaKey, { capture: true });
+    };
+  }, []);
+
+  const focusGameCanvas = useCallback(() => {
     const canvas = document.querySelector("canvas") as HTMLElement | null;
     if (!canvas) return;
 
@@ -370,7 +460,7 @@ function MapperApp() {
     }
 
     canvas.focus({ preventScroll: true });
-  };
+  }, []);
 
   const toggleOverlay = () => {
     setIsTransformingShape(false);
@@ -411,23 +501,260 @@ function MapperApp() {
 
     chrome.runtime.onMessage.addListener(onRuntimeMessage);
     return () => chrome.runtime.onMessage.removeListener(onRuntimeMessage);
-  }, []);
+  }, [
+    focusGameCanvas,
+    selectSingleShape,
+    selectedIds.length,
+    settings.editMode,
+  ]);
 
   useEffect(() => {
+    const SEQUENCE_COMPLETION_WINDOW_MS = 350;
+    let isReplayingPendingKey = false;
+
+    let pendingSequencePassThrough: {
+      timerId: number;
+      token: string;
+      key: string;
+      code: string;
+      ctrlKey: boolean;
+      altKey: boolean;
+      shiftKey: boolean;
+      metaKey: boolean;
+      timestamp: number;
+    } | null = null;
+
+    const dispatchPendingKeyToCanvas = () => {
+      if (!pendingSequencePassThrough) {
+        return;
+      }
+
+      const pending = pendingSequencePassThrough;
+      pendingSequencePassThrough = null;
+
+      for (
+        let index = shapeBindingHistoryRef.current.length - 1;
+        index >= 0;
+        index -= 1
+      ) {
+        const item = shapeBindingHistoryRef.current[index];
+        if (
+          item.token === pending.token &&
+          Math.abs(item.timestamp - pending.timestamp) <= 1000
+        ) {
+          shapeBindingHistoryRef.current.splice(index, 1);
+          break;
+        }
+      }
+
+      const target =
+        (document.querySelector("canvas") as HTMLElement | null) ??
+        (document.activeElement as HTMLElement | null) ??
+        window;
+
+      const eventInit: KeyboardEventInit = {
+        key: pending.key,
+        code: pending.code,
+        ctrlKey: pending.ctrlKey,
+        altKey: pending.altKey,
+        shiftKey: pending.shiftKey,
+        metaKey: pending.metaKey,
+        bubbles: true,
+        cancelable: true,
+      };
+
+      isReplayingPendingKey = true;
+      try {
+        target.dispatchEvent(new KeyboardEvent("keydown", eventInit));
+        target.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+      } finally {
+        isReplayingPendingKey = false;
+      }
+    };
+
+    const clearPendingSequencePassThrough = () => {
+      if (!pendingSequencePassThrough) {
+        return;
+      }
+
+      window.clearTimeout(pendingSequencePassThrough.timerId);
+      pendingSequencePassThrough = null;
+    };
+
     const onKeyDown = (event: KeyboardEvent) => {
+      if (isReplayingPendingKey && !event.isTrusted) {
+        return;
+      }
+
       const isInputTarget =
         (event.target as HTMLElement | null)?.tagName === "INPUT";
+
+      const keyToken = getKeyboardBindingToken(event);
+      const hasPotentialMovementBinding = shapes.some((shape) => {
+        if (!shape.keyBinding) {
+          return false;
+        }
+
+        const bindingParts = shape.keyBinding
+          .split("+")
+          .map((part) => part.trim().toLowerCase())
+          .filter(Boolean);
+        const hasModifier = bindingParts.some((part) =>
+          [
+            "ctrl",
+            "control",
+            "alt",
+            "shift",
+            "meta",
+            "cmd",
+            "command",
+          ].includes(part),
+        );
+
+        if (hasModifier) {
+          return false;
+        }
+
+        return bindingParts.includes(keyToken);
+      });
+
+      const hasPotentialSingleStepBinding = shapes.some((shape) => {
+        if (
+          !shape.keyBinding ||
+          getReservedShapeShortcutUsage(shape.keyBinding, settings)
+        ) {
+          return false;
+        }
+
+        const bindingParts = shape.keyBinding
+          .split("+")
+          .map((part) => part.trim().toLowerCase())
+          .filter(Boolean);
+
+        const modifiers = {
+          ctrl:
+            bindingParts.includes("ctrl") || bindingParts.includes("control"),
+          alt: bindingParts.includes("alt"),
+          shift: bindingParts.includes("shift"),
+          meta:
+            bindingParts.includes("meta") ||
+            bindingParts.includes("cmd") ||
+            bindingParts.includes("command"),
+        };
+
+        const steps = bindingParts.filter(
+          (part) =>
+            ![
+              "ctrl",
+              "control",
+              "alt",
+              "shift",
+              "meta",
+              "cmd",
+              "command",
+            ].includes(part),
+        );
+
+        return (
+          steps.length === 1 &&
+          steps[0] === keyToken &&
+          event.ctrlKey === modifiers.ctrl &&
+          event.altKey === modifiers.alt &&
+          event.shiftKey === modifiers.shift &&
+          event.metaKey === modifiers.meta
+        );
+      });
+
+      const hasPotentialSequenceStartBinding = shapes.some((shape) => {
+        if (
+          !shape.keyBinding ||
+          getReservedShapeShortcutUsage(shape.keyBinding, settings)
+        ) {
+          return false;
+        }
+
+        const bindingParts = shape.keyBinding
+          .split("+")
+          .map((part) => part.trim().toLowerCase())
+          .filter(Boolean);
+
+        const modifiers = {
+          ctrl:
+            bindingParts.includes("ctrl") || bindingParts.includes("control"),
+          alt: bindingParts.includes("alt"),
+          shift: bindingParts.includes("shift"),
+          meta:
+            bindingParts.includes("meta") ||
+            bindingParts.includes("cmd") ||
+            bindingParts.includes("command"),
+        };
+
+        const steps = bindingParts.filter(
+          (part) =>
+            ![
+              "ctrl",
+              "control",
+              "alt",
+              "shift",
+              "meta",
+              "cmd",
+              "command",
+            ].includes(part),
+        );
+
+        return (
+          steps.length > 1 &&
+          steps[0] === keyToken &&
+          event.ctrlKey === modifiers.ctrl &&
+          event.altKey === modifiers.alt &&
+          event.shiftKey === modifiers.shift &&
+          event.metaKey === modifiers.meta
+        );
+      });
 
       const shouldPassThroughGameplayMovement =
         !settings.editMode &&
         !isInputTarget &&
         !event.ctrlKey &&
         !event.altKey &&
+        !event.shiftKey &&
         !event.metaKey &&
         isGameplayMovementKey(event.key);
 
-      if (shouldPassThroughGameplayMovement) {
+      if (shouldPassThroughGameplayMovement && !hasPotentialMovementBinding) {
         return;
+      }
+
+      if (shouldPassThroughGameplayMovement && hasPotentialMovementBinding) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+
+      const shouldDelaySequenceStartKey =
+        !settings.editMode &&
+        !isInputTarget &&
+        !event.repeat &&
+        hasPotentialSequenceStartBinding &&
+        !hasPotentialSingleStepBinding;
+
+      if (shouldDelaySequenceStartKey && !pendingSequencePassThrough) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const timestamp = Date.now();
+        pendingSequencePassThrough = {
+          timerId: window.setTimeout(() => {
+            dispatchPendingKeyToCanvas();
+          }, SEQUENCE_COMPLETION_WINDOW_MS),
+          token: keyToken,
+          key: event.key,
+          code: event.code,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+          shiftKey: event.shiftKey,
+          metaKey: event.metaKey,
+          timestamp,
+        };
       }
 
       const isToggleOverlay = matchesBinding(event, OVERLAY_SHORTCUT);
@@ -436,6 +763,10 @@ function MapperApp() {
       const isToggleShapes = matchesBinding(
         event,
         settings.toggleShapesShortcut,
+      );
+      const isSetZeroOpacity = matchesBinding(
+        event,
+        settings.setZeroOpacityShortcut,
       );
       const isAddKeyMapShortcut = matchesBinding(
         event,
@@ -476,15 +807,42 @@ function MapperApp() {
         return;
       }
 
-      if (
-        !isInputTarget &&
-        isAddKeyMapShortcut &&
-        !event.repeat &&
-        settings.editMode
-      ) {
+      if (!isInputTarget && isSetZeroOpacity && !event.repeat) {
         event.preventDefault();
         event.stopPropagation();
-        addKeyMap();
+
+        const allAtZero = shapes.every((shape) => shape.opacity <= 0.05);
+        const nextOpacity = allAtZero ? 1 : 0;
+
+        setDraftShape((prev) => ({
+          ...prev,
+          opacity: nextOpacity,
+        }));
+        setShapes((prev) =>
+          prev.map((shape) =>
+            normalizeShape({
+              ...shape,
+              opacity: nextOpacity,
+            }),
+          ),
+        );
+        return;
+      }
+
+      if (!isInputTarget && isAddKeyMapShortcut && !event.repeat) {
+        event.preventDefault();
+        event.stopPropagation();
+        const base = createShape(selectedPaletteShapeRef.current);
+        const newShape = normalizeShape({
+          ...base,
+          opacity: draftShape.opacity,
+        });
+        setShapes((prev) => [...prev, newShape]);
+        setSelectedId(newShape.id);
+        return;
+      }
+
+      if (!settings.editMode && !shapesVisible) {
         return;
       }
 
@@ -493,14 +851,35 @@ function MapperApp() {
           return;
         }
 
+        recordBindingAction(shapeBindingHistoryRef.current, keyToken);
+
         const hitAreas = shapes.filter(
           (shape) =>
-            shape.keyBinding && matchesBinding(event, shape.keyBinding),
+            shape.keyBinding &&
+            !getReservedShapeShortcutUsage(shape.keyBinding, settings) &&
+            matchesBindingAction(
+              shape.keyBinding,
+              {
+                ctrlKey: event.ctrlKey,
+                altKey: event.altKey,
+                shiftKey: event.shiftKey,
+                metaKey: event.metaKey,
+              },
+              shapeBindingHistoryRef.current,
+            ),
         );
 
-        if (hitAreas.length > 0 && !event.repeat) {
+        if (hitAreas.length > 0) {
+          clearPendingSequencePassThrough();
+          event.preventDefault();
+          event.stopPropagation();
+
+          if (event.repeat) {
+            return;
+          }
+
           hitAreas.forEach((shape) => {
-            triggerShapeArea(shape);
+            triggerShapeArea(shape, undefined, { delayMs: shape.delayMs });
           });
         }
 
@@ -512,20 +891,28 @@ function MapperApp() {
       if (event.key === "Escape") {
         if (selectedShape) {
           event.preventDefault();
+          event.stopPropagation();
           setSelectedId(null);
           (document.activeElement as HTMLElement | null)?.blur();
           return;
         }
 
         if (dialogVisible) {
+          event.preventDefault();
+          event.stopPropagation();
           attemptCloseDialog();
           return;
         }
       }
 
-      if (settings.editMode && selectedShape && event.key === "Delete") {
+      if (
+        settings.editMode &&
+        selectedIds.length > 0 &&
+        event.key === "Delete"
+      ) {
         event.preventDefault();
-        removeShape(selectedShape.id);
+        event.stopPropagation();
+        deleteShapeIds(selectedIds);
         return;
       }
 
@@ -533,90 +920,466 @@ function MapperApp() {
         return;
       }
 
-      if (settings.editMode && selectedShape) {
-        const isCopy =
+      if (settings.editMode) {
+        const isSelectAllShortcut =
           (event.ctrlKey || event.metaKey) &&
           !event.shiftKey &&
-          event.key.toLowerCase() === "c";
+          !event.altKey &&
+          event.key.toLowerCase() === "a";
+
+        if (isSelectAllShortcut) {
+          event.preventDefault();
+          event.stopPropagation();
+          if (shapes.length === 0) {
+            selectSingleShape(null);
+            return;
+          }
+
+          const allIds = shapes.map((shape) => shape.id);
+          setSelectedIds(allIds);
+          setSelectedId(allIds[allIds.length - 1]);
+          return;
+        }
+
+        const isUndoShortcut =
+          (event.ctrlKey || event.metaKey) &&
+          !event.shiftKey &&
+          !event.altKey &&
+          event.key.toLowerCase() === "z";
+
+        if (isUndoShortcut) {
+          event.preventDefault();
+          event.stopPropagation();
+          undoDeletedShapes();
+          return;
+        }
+
+        const isRedoShortcut =
+          (event.ctrlKey || event.metaKey) &&
+          !event.altKey &&
+          ((event.shiftKey && event.key.toLowerCase() === "z") ||
+            (!event.shiftKey && event.key.toLowerCase() === "y"));
+
+        if (isRedoShortcut) {
+          event.preventDefault();
+          event.stopPropagation();
+          redoDeletedShapes();
+          return;
+        }
+      }
+
+      if (settings.editMode) {
+        const selectedShapesForClipboard = getClipboardShapes(
+          shapes,
+          selectedIds,
+          selectedShape,
+        );
+
+        const isCopy = isClipboardShortcut(event, "copy");
         if (isCopy) {
           event.preventDefault();
-          setCopiedShape(selectedShape);
+          event.stopPropagation();
+          copyShapeIds(selectedShapesForClipboard.map((shape) => shape.id));
           return;
         }
 
-        const isPaste =
-          (event.ctrlKey || event.metaKey) &&
-          !event.shiftKey &&
-          event.key.toLowerCase() === "v";
-        if (isPaste && copiedShape) {
+        const isCut = isClipboardShortcut(event, "cut");
+        if (isCut && selectedShapesForClipboard.length > 0) {
           event.preventDefault();
-          const duplicated = normalizeShape({
-            ...copiedShape,
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            x: copiedShape.x + 20,
-            y: copiedShape.y + 20,
-          });
-          setShapes((prev) => [...prev, duplicated]);
-          setSelectedId(duplicated.id);
+          event.stopPropagation();
+          cutShapeIds(selectedShapesForClipboard.map((shape) => shape.id));
           return;
         }
 
-        const step = event.shiftKey ? 10 : 1;
-        if (event.key === "ArrowUp") {
+        const isPaste = isClipboardShortcut(event, "paste");
+        if (isPaste && copiedShapes.length > 0) {
           event.preventDefault();
-          moveShape(selectedShape.id, 0, -step);
+          event.stopPropagation();
+          pasteCopiedShapesAt();
           return;
         }
-        if (event.key === "ArrowDown") {
-          event.preventDefault();
-          moveShape(selectedShape.id, 0, step);
-          return;
-        }
-        if (event.key === "ArrowLeft") {
-          event.preventDefault();
-          moveShape(selectedShape.id, -step, 0);
-          return;
-        }
-        if (event.key === "ArrowRight") {
-          event.preventDefault();
-          moveShape(selectedShape.id, step, 0);
+
+        if (!selectedShape) {
           return;
         }
       }
 
       if (!settings.editMode) {
+        recordBindingAction(shapeBindingHistoryRef.current, keyToken);
+
         const hitAreas = shapes.filter(
           (shape) =>
-            shape.keyBinding && matchesBinding(event, shape.keyBinding),
+            shape.keyBinding &&
+            !getReservedShapeShortcutUsage(shape.keyBinding, settings) &&
+            matchesBindingAction(
+              shape.keyBinding,
+              {
+                ctrlKey: event.ctrlKey,
+                altKey: event.altKey,
+                shiftKey: event.shiftKey,
+                metaKey: event.metaKey,
+              },
+              shapeBindingHistoryRef.current,
+            ),
         );
         if (hitAreas.length > 0) {
+          clearPendingSequencePassThrough();
+          event.preventDefault();
+          event.stopPropagation();
+
           if (event.repeat) {
             return;
           }
 
           hitAreas.forEach((shape) => {
-            triggerShapeArea(shape);
+            triggerShapeArea(shape, undefined, { delayMs: shape.delayMs });
           });
         }
       }
     };
 
     window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () =>
+    return () => {
+      clearPendingSequencePassThrough();
       window.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
   }, [
-    copiedShape,
+    copiedShapes,
+    copyShapeIds,
+    cutShapeIds,
+    deleteShapeIds,
+    draftShape.opacity,
     dialogVisible,
     overlayVisible,
     selectedShape,
+    selectedIds,
     settings.addKeyMapShortcut,
     settings.editMode,
     settings.focusCanvasShortcut,
     settings.strictPassthrough,
+    settings.setZeroOpacityShortcut,
     settings.toggleModeShortcut,
     settings.toggleShapesShortcut,
     shapes,
+    shapesVisible,
+    selectSingleShape,
+    undoDeletedShapes,
+    redoDeletedShapes,
+    pasteCopiedShapesAt,
   ]);
+
+  useEffect(() => {
+    if (settings.editMode || !shapesVisible) {
+      return;
+    }
+
+    const CLICK_COMPLETION_WINDOW_MS = 350;
+
+    let pendingPointerPassThrough: {
+      timerId: number;
+      token: "left click" | "right click";
+      clientX: number;
+      clientY: number;
+      ctrlKey: boolean;
+      altKey: boolean;
+      shiftKey: boolean;
+      metaKey: boolean;
+      timestamp: number;
+    } | null = null;
+
+    const clearPendingPointerPassThrough = () => {
+      if (!pendingPointerPassThrough) {
+        return;
+      }
+
+      window.clearTimeout(pendingPointerPassThrough.timerId);
+      pendingPointerPassThrough = null;
+    };
+
+    const dispatchPendingPointerToCanvas = () => {
+      if (!pendingPointerPassThrough) {
+        return;
+      }
+
+      const pending = pendingPointerPassThrough;
+      pendingPointerPassThrough = null;
+
+      for (
+        let index = shapeBindingHistoryRef.current.length - 1;
+        index >= 0;
+        index -= 1
+      ) {
+        const item = shapeBindingHistoryRef.current[index];
+        if (
+          item.token === pending.token &&
+          Math.abs(item.timestamp - pending.timestamp) <= 1000
+        ) {
+          shapeBindingHistoryRef.current.splice(index, 1);
+          break;
+        }
+      }
+
+      const overlayRoot = document.getElementById(ROOT_ID);
+      const previousOverlayPointerEvents = overlayRoot?.style.pointerEvents;
+
+      if (overlayRoot) {
+        overlayRoot.style.pointerEvents = "none";
+      }
+
+      const hit = document.elementFromPoint(
+        pending.clientX,
+        pending.clientY,
+      ) as HTMLElement | null;
+
+      if (overlayRoot) {
+        overlayRoot.style.pointerEvents = previousOverlayPointerEvents ?? "";
+      }
+
+      const target =
+        (hit && !hit.closest(`#${ROOT_ID}`) ? hit : null) ??
+        (document.querySelector("canvas") as HTMLElement | null);
+
+      if (!target) {
+        return;
+      }
+
+      const isRightClick = pending.token === "right click";
+      const button = isRightClick ? 2 : 0;
+      const commonEventInit: MouseEventInit = {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: pending.clientX,
+        clientY: pending.clientY,
+        button,
+        ctrlKey: pending.ctrlKey,
+        altKey: pending.altKey,
+        shiftKey: pending.shiftKey,
+        metaKey: pending.metaKey,
+      };
+
+      ["pointerdown", "mousedown", "mouseup"].forEach((eventName) => {
+        target.dispatchEvent(new MouseEvent(eventName, commonEventInit));
+      });
+
+      target.dispatchEvent(
+        new MouseEvent(isRightClick ? "contextmenu" : "click", commonEventInit),
+      );
+    };
+
+    const hasPointerBinding = (
+      token:
+        | "left click"
+        | "right click"
+        | "double left click"
+        | "double right click",
+      action: {
+        ctrlKey: boolean;
+        altKey: boolean;
+        shiftKey: boolean;
+        metaKey: boolean;
+      },
+    ) => {
+      return shapes.some((shape) => {
+        if (
+          !shape.keyBinding ||
+          getReservedShapeShortcutUsage(shape.keyBinding, settings)
+        ) {
+          return false;
+        }
+
+        const bindingParts = shape.keyBinding
+          .split("+")
+          .map((part) => part.trim().toLowerCase())
+          .filter(Boolean);
+
+        const modifiers = {
+          ctrl:
+            bindingParts.includes("ctrl") || bindingParts.includes("control"),
+          alt: bindingParts.includes("alt"),
+          shift: bindingParts.includes("shift"),
+          meta:
+            bindingParts.includes("meta") ||
+            bindingParts.includes("cmd") ||
+            bindingParts.includes("command"),
+        };
+
+        const steps = bindingParts.filter(
+          (part) =>
+            ![
+              "ctrl",
+              "control",
+              "alt",
+              "shift",
+              "meta",
+              "cmd",
+              "command",
+            ].includes(part),
+        );
+
+        return (
+          steps.length === 1 &&
+          steps[0] === token &&
+          action.ctrlKey === modifiers.ctrl &&
+          action.altKey === modifiers.alt &&
+          action.shiftKey === modifiers.shift &&
+          action.metaKey === modifiers.meta
+        );
+      });
+    };
+
+    const triggerShapesFromAction = (
+      token: string,
+      event: {
+        clientX?: number;
+        clientY?: number;
+        ctrlKey: boolean;
+        altKey: boolean;
+        shiftKey: boolean;
+        metaKey: boolean;
+        deltaY?: number;
+        cancelable?: boolean;
+        preventDefault: () => void;
+        stopPropagation: () => void;
+      },
+    ) => {
+      const pointerToken = token.toLowerCase();
+      const shouldDelaySingleClickPassThrough =
+        (pointerToken === "left click" || pointerToken === "right click") &&
+        hasPointerBinding(
+          pointerToken === "left click"
+            ? "double left click"
+            : "double right click",
+          {
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+          },
+        ) &&
+        !hasPointerBinding(
+          pointerToken === "left click" ? "left click" : "right click",
+          {
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+          },
+        );
+
+      recordBindingAction(shapeBindingHistoryRef.current, token);
+
+      if (shouldDelaySingleClickPassThrough) {
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+        event.stopPropagation();
+
+        if (
+          !pendingPointerPassThrough &&
+          typeof event.clientX === "number" &&
+          typeof event.clientY === "number"
+        ) {
+          const timestamp = Date.now();
+          pendingPointerPassThrough = {
+            timerId: window.setTimeout(() => {
+              dispatchPendingPointerToCanvas();
+            }, CLICK_COMPLETION_WINDOW_MS),
+            token: pointerToken === "left click" ? "left click" : "right click",
+            clientX: event.clientX,
+            clientY: event.clientY,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+            timestamp,
+          };
+        }
+
+        return;
+      }
+
+      const hitAreas = shapes.filter(
+        (shape) =>
+          shape.keyBinding &&
+          !getReservedShapeShortcutUsage(shape.keyBinding, settings) &&
+          matchesBindingAction(
+            shape.keyBinding,
+            {
+              ctrlKey: event.ctrlKey,
+              altKey: event.altKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            },
+            shapeBindingHistoryRef.current,
+          ),
+      );
+
+      if (hitAreas.length === 0) {
+        return;
+      }
+
+      clearPendingPointerPassThrough();
+
+      const isWheelEvent = typeof event.deltaY === "number";
+      if (!isWheelEvent && event.cancelable) {
+        event.preventDefault();
+      }
+      event.stopPropagation();
+      hitAreas.forEach((shape) => {
+        triggerShapeArea(shape, undefined, { delayMs: shape.delayMs });
+      });
+    };
+
+    const onMouseDown = (event: MouseEvent) => {
+      const targetTag = (event.target as HTMLElement | null)?.tagName;
+      if (targetTag === "INPUT" || targetTag === "TEXTAREA") {
+        return;
+      }
+
+      if (event.button === 0) {
+        triggerShapesFromAction("left click", event);
+      }
+    };
+
+    const onDblClick = (event: MouseEvent) => {
+      triggerShapesFromAction("double left click", event);
+    };
+
+    const onContextMenu = (event: MouseEvent) => {
+      const now = Date.now();
+      const isDoubleRightClick = now - rightClickTrackerRef.current < 360;
+      rightClickTrackerRef.current = now;
+
+      triggerShapesFromAction(
+        isDoubleRightClick ? "double right click" : "right click",
+        event,
+      );
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      const token = event.deltaY < 0 ? "wheel up" : "wheel down";
+      triggerShapesFromAction(token, event);
+    };
+
+    window.addEventListener("mousedown", onMouseDown, { capture: true });
+    window.addEventListener("dblclick", onDblClick, { capture: true });
+    window.addEventListener("contextmenu", onContextMenu, { capture: true });
+    window.addEventListener("wheel", onWheel, {
+      capture: true,
+      passive: false,
+    });
+
+    return () => {
+      clearPendingPointerPassThrough();
+      window.removeEventListener("mousedown", onMouseDown, { capture: true });
+      window.removeEventListener("dblclick", onDblClick, { capture: true });
+      window.removeEventListener("contextmenu", onContextMenu, {
+        capture: true,
+      });
+      window.removeEventListener("wheel", onWheel, { capture: true });
+    };
+  }, [settings.editMode, shapes, shapesVisible]);
 
   const captureGlobalShortcut = (
     event: ReactKeyboardEvent<HTMLInputElement>,
@@ -624,7 +1387,8 @@ function MapperApp() {
       | "addKeyMapShortcut"
       | "toggleModeShortcut"
       | "focusCanvasShortcut"
-      | "toggleShapesShortcut",
+      | "toggleShapesShortcut"
+      | "setZeroOpacityShortcut",
   ) => {
     event.preventDefault();
     event.stopPropagation();
@@ -654,7 +1418,10 @@ function MapperApp() {
           const cx = shape.x + shape.width / 2;
           const cy = shape.y + shape.height / 2;
           const rad = Math.atan2(event.clientY - cy, event.clientX - cx);
-          const rotation = (rad * 180) / Math.PI + 90;
+          const rawRotation = (rad * 180) / Math.PI + 90;
+          const rotation = event.shiftKey
+            ? Math.round(rawRotation / 15) * 15
+            : rawRotation;
           return { ...shape, rotation };
         }),
       );
@@ -680,6 +1447,33 @@ function MapperApp() {
   }, []);
 
   useEffect(() => {
+    const canvas = document.querySelector("canvas") as HTMLElement | null;
+    if (!canvas) {
+      return;
+    }
+
+    if (settings.editMode && isTransformingShape) {
+      if (previousCanvasPointerEventsRef.current === null) {
+        previousCanvasPointerEventsRef.current = canvas.style.pointerEvents;
+      }
+      canvas.style.pointerEvents = "none";
+      return;
+    }
+
+    if (previousCanvasPointerEventsRef.current !== null) {
+      canvas.style.pointerEvents = previousCanvasPointerEventsRef.current;
+      previousCanvasPointerEventsRef.current = null;
+    }
+
+    return () => {
+      if (previousCanvasPointerEventsRef.current !== null) {
+        canvas.style.pointerEvents = previousCanvasPointerEventsRef.current;
+        previousCanvasPointerEventsRef.current = null;
+      }
+    };
+  }, [isTransformingShape, settings.editMode]);
+
+  useEffect(() => {
     if (!overlayVisible || !shapesVisible) {
       setRunningTooltip(null);
       return;
@@ -691,10 +1485,7 @@ function MapperApp() {
         .find(
           (shape) =>
             shape.keyBinding &&
-            event.clientX >= shape.x &&
-            event.clientX <= shape.x + shape.width &&
-            event.clientY >= shape.y &&
-            event.clientY <= shape.y + shape.height,
+            isPointInsideShape(shape, event.clientX, event.clientY),
         );
 
       if (!hit) {
@@ -702,9 +1493,37 @@ function MapperApp() {
         return;
       }
 
+      const viewportPadding = 10;
+      const edgeOffset = 8;
+      const tooltipWidthEstimate = Math.min(
+        260,
+        Math.max(120, hit.keyBinding.length * 9 + 36),
+      );
+      const tooltipHeightEstimate = 32;
+
+      const preferRightX = hit.x + hit.width + edgeOffset;
+      const rawX = preferRightX;
+      const rawY =
+        hit.y + hit.height / 2 - tooltipHeightEstimate / 2 + edgeOffset;
+
+      const x = Math.max(
+        viewportPadding,
+        Math.min(
+          rawX,
+          window.innerWidth - tooltipWidthEstimate - viewportPadding,
+        ),
+      );
+      const y = Math.max(
+        viewportPadding,
+        Math.min(
+          rawY,
+          window.innerHeight - tooltipHeightEstimate - viewportPadding,
+        ),
+      );
+
       setRunningTooltip({
-        x: event.clientX + 12,
-        y: event.clientY + 12,
+        x,
+        y,
         keyBinding: hit.keyBinding,
       });
     };
@@ -736,6 +1555,16 @@ function MapperApp() {
         active?.blur();
       }
 
+      if (
+        settings.editMode &&
+        selectedIds.length > 0 &&
+        event.button === 0 &&
+        !target?.closest(".fm-shape") &&
+        !target?.closest(".fm-shape-context-menu")
+      ) {
+        selectSingleShape(null);
+      }
+
       if (target?.closest("canvas") && event.button === 0) {
         focusGameCanvas();
       }
@@ -746,179 +1575,612 @@ function MapperApp() {
       window.removeEventListener("pointerdown", onPointerDown, {
         capture: true,
       });
-  }, []);
+  }, [
+    focusGameCanvas,
+    selectSingleShape,
+    selectedIds.length,
+    settings.editMode,
+  ]);
 
-  const moveShape = (id: string, dx: number, dy: number) => {
-    setShapes((prev) =>
-      prev.map((shape) =>
-        shape.id === id
-          ? normalizeShape({
-              ...shape,
-              x: shape.x + dx,
-              y: shape.y + dy,
-            })
-          : shape,
-      ),
-    );
-  };
+  const makeDraftedShape = useCallback(
+    (
+      shapeType: ShapeType = "rectangle",
+      point?: { x: number; y: number },
+    ): ShapeMapping => {
+      const base = createShape(shapeType);
 
-  const makeDraftedShape = (
-    shapeType: ShapeType = "rectangle",
-    point?: { x: number; y: number },
-  ): ShapeMapping => {
-    const base = createShape(shapeType);
-
-    if (!point) {
-      return normalizeShape({
-        ...base,
-        opacity: draftShape.opacity,
-      });
-    }
-
-    return normalizeShape({
-      ...base,
-      x: point.x - base.width / 2,
-      y: point.y - base.height / 2,
-      opacity: draftShape.opacity,
-    });
-  };
-
-  const addKeyMapOfType = (
-    shapeType: ShapeType,
-    point?: { x: number; y: number },
-  ) => {
-    const newShape = makeDraftedShape(shapeType, point);
-    setSettings((prev) => ({ ...prev, editMode: true }));
-    setShapes((prev) => [...prev, newShape]);
-    setSelectedId(newShape.id);
-  };
-
-  const addKeyMap = () => {
-    addKeyMapOfType("rectangle");
-  };
-
-  const onPaletteDragStart = (
-    event: ReactDragEvent<HTMLElement>,
-    shapeType: ShapeType,
-  ) => {
-    if (!settings.editMode) {
-      event.preventDefault();
-      return;
-    }
-
-    setSelectedPaletteShape(shapeType);
-    paletteDragTypeRef.current = shapeType;
-    setIsTransformingShape(true);
-    event.dataTransfer.effectAllowed = "copy";
-    event.dataTransfer.setData("text/plain", shapeType);
-  };
-
-  const onPaletteDragEnd = () => {
-    paletteDragTypeRef.current = null;
-    setIsTransformingShape(false);
-  };
-
-  useEffect(() => {
-    const onDragOver = (event: DragEvent) => {
-      if (!paletteDragTypeRef.current) return;
-      event.preventDefault();
-      if (event.dataTransfer) {
-        event.dataTransfer.dropEffect = "copy";
-      }
-    };
-
-    const onDrop = (event: DragEvent) => {
-      const shapeType = paletteDragTypeRef.current;
-      if (!shapeType) return;
-
-      event.preventDefault();
-
-      const elementAtPoint = document.elementFromPoint(
-        event.clientX,
-        event.clientY,
-      ) as HTMLElement | null;
-      const droppedOnCanvas = Boolean(elementAtPoint?.closest("canvas"));
-
-      if (droppedOnCanvas) {
-        addKeyMapOfType(shapeType, {
-          x: event.clientX,
-          y: event.clientY,
+      if (!point) {
+        return normalizeShape({
+          ...base,
+          opacity: draftShape.opacity,
         });
       }
 
-      paletteDragTypeRef.current = null;
-      setIsTransformingShape(false);
-    };
+      return normalizeShape({
+        ...base,
+        x: point.x - base.width / 2,
+        y: point.y - base.height / 2,
+        opacity: draftShape.opacity,
+      });
+    },
+    [draftShape.opacity],
+  );
 
-    const onGlobalDragEnd = () => {
-      if (!paletteDragTypeRef.current) return;
-      paletteDragTypeRef.current = null;
-      setIsTransformingShape(false);
-    };
+  const addKeyMapOfType = useCallback(
+    (shapeType: ShapeType, point?: { x: number; y: number }) => {
+      const newShape = makeDraftedShape(shapeType, point);
+      setShapes((prev) => [...prev, newShape]);
+      selectSingleShape(newShape.id);
+    },
+    [makeDraftedShape, selectSingleShape],
+  );
 
-    window.addEventListener("dragover", onDragOver);
-    window.addEventListener("drop", onDrop);
-    window.addEventListener("dragend", onGlobalDragEnd);
+  const addKeyMap = useCallback(() => {
+    addKeyMapOfType(selectedPaletteShape);
+  }, [addKeyMapOfType, selectedPaletteShape]);
 
-    return () => {
-      window.removeEventListener("dragover", onDragOver);
-      window.removeEventListener("drop", onDrop);
-      window.removeEventListener("dragend", onGlobalDragEnd);
-    };
-  }, [addKeyMapOfType]);
+  const openProfileNameDialog = (
+    mode: "create" | "rename" | "import",
+    initialName: string,
+  ) => {
+    setProfileNameDialogMode(mode);
+    setProfileNameInput(initialName);
+    setProfileNameError("");
+    setProfileNameDialogOpen(true);
+  };
+
+  const closeProfileNameDialog = () => {
+    setProfileNameDialogOpen(false);
+    setProfileNameError("");
+  };
+
+  const validateProfileName = (
+    rawName: string,
+    excludeProfileId?: string,
+  ): string | null => {
+    const trimmed = rawName.trim();
+    if (!trimmed) {
+      return "Profile name is required.";
+    }
+
+    const hasConflict = profiles.some(
+      (profile) =>
+        profile.id !== excludeProfileId &&
+        profile.name.toLowerCase() === trimmed.toLowerCase(),
+    );
+
+    if (hasConflict) {
+      return "Profile name already exists. Please choose a unique name.";
+    }
+
+    return null;
+  };
+
+  const switchProfileImmediately = (nextProfileId: string) => {
+    stopAllToggleShapeAreas();
+    isSwitchingProfileRef.current = true;
+    setActiveProfileId(nextProfileId);
+    setSelectedProfileId(nextProfileId);
+  };
+
+  const requestProfileSwitch = (nextProfileId: string) => {
+    if (nextProfileId === activeProfileId) {
+      return;
+    }
+
+    switchProfileImmediately(nextProfileId);
+  };
 
   const attemptCloseDialog = () => {
     setDialogVisible(false);
   };
 
+  function deleteShapeIds(ids: string[]) {
+    const targetIds = Array.from(new Set(ids));
+    if (targetIds.length === 0) {
+      return;
+    }
+
+    targetIds.forEach((id) => stopToggleShapeArea(id));
+
+    setShapes((prev) => {
+      const indexById = new Map(prev.map((shape, index) => [shape.id, index]));
+      const deletedEntries = targetIds
+        .map((id) => {
+          const shape = prev.find((item) => item.id === id);
+          const index = indexById.get(id);
+          if (!shape || index === undefined) {
+            return null;
+          }
+
+          return {
+            shape,
+            index,
+          };
+        })
+        .filter((entry): entry is DeletedShapeEntry => entry !== null);
+
+      if (deletedEntries.length > 0) {
+        deletedUndoStackRef.current.push({ entries: deletedEntries });
+        deletedRedoStackRef.current = [];
+      }
+
+      return prev.filter((shape) => !targetIds.includes(shape.id));
+    });
+
+    setSelectedIds((prev) => prev.filter((id) => !targetIds.includes(id)));
+    setSelectedId((prev) => (prev && targetIds.includes(prev) ? null : prev));
+  }
+
   const removeShape = (id: string) => {
-    setShapes((prev) => prev.filter((shape) => shape.id !== id));
-    setSelectedId((prev) => (prev === id ? null : prev));
+    deleteShapeIds([id]);
+  };
+
+  function undoDeletedShapes() {
+    const action = deletedUndoStackRef.current.pop();
+    if (!action) {
+      return;
+    }
+
+    deletedRedoStackRef.current.push(action);
+
+    setShapes((prev) => {
+      const next = [...prev];
+      const sortedEntries = [...action.entries].sort(
+        (a, b) => a.index - b.index,
+      );
+
+      sortedEntries.forEach((entry) => {
+        if (next.some((shape) => shape.id === entry.shape.id)) {
+          return;
+        }
+
+        const insertionIndex = Math.min(Math.max(entry.index, 0), next.length);
+        next.splice(insertionIndex, 0, entry.shape);
+      });
+
+      return next;
+    });
+
+    const restoredIds = action.entries.map((entry) => entry.shape.id);
+    setSelectedIds(restoredIds);
+    setSelectedId(restoredIds[restoredIds.length - 1] ?? null);
+  }
+
+  function redoDeletedShapes() {
+    const action = deletedRedoStackRef.current.pop();
+    if (!action) {
+      return;
+    }
+
+    deletedUndoStackRef.current.push(action);
+
+    const targetIds = action.entries.map((entry) => entry.shape.id);
+    targetIds.forEach((id) => stopToggleShapeArea(id));
+
+    setShapes((prev) => prev.filter((shape) => !targetIds.includes(shape.id)));
+    setSelectedIds((prev) => prev.filter((id) => !targetIds.includes(id)));
+    setSelectedId((prev) => (prev && targetIds.includes(prev) ? null : prev));
+  }
+
+  function copyShapeIds(ids: string[]) {
+    if (ids.length === 0) {
+      return;
+    }
+
+    const idSet = new Set(ids);
+    const clipboardShapes = shapes.filter((shape) => idSet.has(shape.id));
+    setCopiedShapes(clipboardShapes);
+  }
+
+  function cutShapeIds(ids: string[]) {
+    if (ids.length === 0) {
+      return;
+    }
+
+    copyShapeIds(ids);
+    deleteShapeIds(ids);
+  }
+
+  function pasteCopiedShapesAt(point?: { x: number; y: number }) {
+    if (copiedShapes.length === 0) {
+      return false;
+    }
+
+    let duplicatedShapes = duplicateClipboardShapes(
+      copiedShapes,
+      () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    );
+
+    if (point) {
+      const anchor = duplicatedShapes[0];
+      if (anchor) {
+        const deltaX = point.x - anchor.x;
+        const deltaY = point.y - anchor.y;
+        duplicatedShapes = duplicatedShapes.map((shape) => ({
+          ...shape,
+          x: shape.x + deltaX,
+          y: shape.y + deltaY,
+        }));
+      }
+    }
+
+    const normalizedShapes = duplicatedShapes.map((shape) =>
+      normalizeShape(shape),
+    );
+    setShapes((prev) => [...prev, ...normalizedShapes]);
+
+    const duplicatedIds = normalizedShapes.map((shape) => shape.id);
+    setSelectedIds(duplicatedIds);
+    setSelectedId(duplicatedIds[duplicatedIds.length - 1] ?? null);
+    return true;
+  }
+
+  const resetDialogConfiguration = useCallback(() => {
+    modal.confirm({
+      className: "fm-confirm-modal fm-reset-config-modal",
+      title: "Reset mapper configuration?",
+      content:
+        "This resets configuration shortcuts and mapper UI state (palette selection and dialog size/position). Profiles and their shapes are kept.",
+      zIndex: 2147483647,
+      okText: "Reset",
+      okButtonProps: { danger: true },
+      cancelText: "Cancel",
+      onOk: () => {
+        const resetSettings = { ...DEFAULT_SETTINGS };
+
+        setSettings(resetSettings);
+        latestSettingsRef.current = resetSettings;
+
+        setProfiles((prev) =>
+          prev.map((profile) =>
+            profile.id === activeProfileId
+              ? {
+                  ...profile,
+                  settings: resetSettings,
+                }
+              : profile,
+          ),
+        );
+
+        setDialogRect({ ...DEFAULT_DIALOG_RECT });
+        setSelectedPaletteShape("rectangle");
+        setDraftShape((prev) => ({ ...prev, opacity: 1 }));
+      },
+    });
+  }, [activeProfileId, modal]);
+
+  const createProfile = (name?: string) => {
+    const nextName =
+      (name ?? "").trim() ||
+      makeUniqueProfileName(latestProfilesRef.current, "Profile");
+    const validationError = validateProfileName(nextName);
+    if (validationError) {
+      setProfileNameError(validationError);
+      return false;
+    }
+
+    const profile: MappingProfile = {
+      id: createProfileId(),
+      name: nextName,
+      shapes: [],
+      settings: activeProfile?.settings ?? latestSettingsRef.current,
+    };
+
+    setProfiles((prev) => [...prev, profile]);
+    requestProfileSwitch(profile.id);
+    return true;
+  };
+
+  const duplicateSelectedProfile = () => {
+    if (!selectedProfile) {
+      return;
+    }
+
+    const duplicated: MappingProfile = {
+      id: createProfileId(),
+      name: makeUniqueProfileName(
+        latestProfilesRef.current,
+        `${selectedProfile.name} Copy`,
+      ),
+      shapes: selectedProfile.shapes.map((shape) => ({ ...shape })),
+      settings: { ...selectedProfile.settings },
+    };
+
+    setProfiles((prev) => [...prev, duplicated]);
+    setSelectedProfileId(duplicated.id);
+    requestProfileSwitch(duplicated.id);
+  };
+
+  const renameSelectedProfile = (nextName: string) => {
+    if (!selectedProfile) {
+      return false;
+    }
+
+    const validationError = validateProfileName(nextName, selectedProfile.id);
+    if (validationError) {
+      setProfileNameError(validationError);
+      return false;
+    }
+
+    const trimmed = nextName.trim();
+    setProfiles((prev) =>
+      prev.map((profile) =>
+        profile.id === selectedProfile.id
+          ? {
+              ...profile,
+              name: trimmed,
+            }
+          : profile,
+      ),
+    );
+
+    if (selectedProfile.id === activeProfileId) {
+      setActiveProfileName(trimmed);
+    }
+
+    return true;
+  };
+
+  const deleteSelectedProfile = () => {
+    if (!selectedProfile) {
+      return;
+    }
+
+    const sourceProfiles = latestProfilesRef.current;
+    const removeId = selectedProfile.id;
+    const removeIndex = sourceProfiles.findIndex(
+      (profile) => profile.id === removeId,
+    );
+    const remainingProfiles = sourceProfiles.filter(
+      (profile) => profile.id !== removeId,
+    );
+
+    if (remainingProfiles.length === 0) {
+      setProfiles([]);
+      setSelectedProfileId("");
+      setActiveProfileId("");
+      setActiveProfileName("");
+      setShapes([]);
+      selectSingleShape(null);
+      setCopiedShapes([]);
+      setIsTransformingShape(false);
+      return;
+    }
+
+    const previousIndex = Math.max(0, removeIndex - 1);
+    const fallbackProfile =
+      remainingProfiles[previousIndex] ?? remainingProfiles[0] ?? null;
+    if (!fallbackProfile) {
+      return;
+    }
+
+    setProfiles(remainingProfiles);
+    setSelectedProfileId(fallbackProfile.id);
+
+    if (removeId === activeProfileId) {
+      switchProfileImmediately(fallbackProfile.id);
+    }
   };
 
   const exportMappings = async () => {
-    const payload = JSON.stringify({ shapes, settings }, null, 2);
+    if (!activeProfile) {
+      return;
+    }
+
+    const payload = JSON.stringify(
+      {
+        profileName: activeProfile.name,
+        shapes: latestShapesRef.current,
+        settings: latestSettingsRef.current,
+      },
+      null,
+      2,
+    );
     await navigator.clipboard.writeText(payload);
   };
 
-  const applyImport = () => {
+  const performImportWithName = (baseProfileName: string) => {
     try {
-      const parsed = JSON.parse(importText) as {
+      const parsed = JSON.parse(pendingImportText) as {
+        profileName?: string;
         shapes?: ShapeMapping[];
         settings?: Partial<MapperSettings>;
+        profiles?: Array<{
+          name?: string;
+          shapes?: ShapeMapping[];
+          settings?: Partial<MapperSettings>;
+        }>;
       };
 
+      const baseImportedSettings: MapperSettings = {
+        ...latestSettingsRef.current,
+        theme: parsed.settings?.theme ?? latestSettingsRef.current.theme,
+        editMode:
+          parsed.settings?.editMode ?? latestSettingsRef.current.editMode,
+        showHandles:
+          parsed.settings?.showHandles ?? latestSettingsRef.current.showHandles,
+        addKeyMapShortcut:
+          parsed.settings?.addKeyMapShortcut ??
+          latestSettingsRef.current.addKeyMapShortcut,
+        toggleModeShortcut:
+          parsed.settings?.toggleModeShortcut ??
+          latestSettingsRef.current.toggleModeShortcut,
+        strictPassthrough:
+          parsed.settings?.strictPassthrough ??
+          latestSettingsRef.current.strictPassthrough,
+        focusCanvasShortcut:
+          parsed.settings?.focusCanvasShortcut ??
+          latestSettingsRef.current.focusCanvasShortcut,
+        toggleShapesShortcut:
+          parsed.settings?.toggleShapesShortcut ??
+          latestSettingsRef.current.toggleShapesShortcut,
+        setZeroOpacityShortcut:
+          parsed.settings?.setZeroOpacityShortcut ??
+          latestSettingsRef.current.setZeroOpacityShortcut,
+      };
+
+      const importedProfiles: MappingProfile[] = [];
+
+      if (Array.isArray(parsed.profiles)) {
+        parsed.profiles.forEach((profile, index) => {
+          if (!Array.isArray(profile.shapes)) {
+            return;
+          }
+
+          const desiredName =
+            typeof profile.name === "string" && profile.name.trim().length > 0
+              ? profile.name.trim()
+              : parsed.profiles && parsed.profiles.length > 1
+                ? `${baseProfileName.trim()} ${index + 1}`
+                : baseProfileName.trim();
+
+          const uniqueName = makeUniqueProfileName(
+            [...latestProfilesRef.current, ...importedProfiles],
+            desiredName,
+          );
+
+          importedProfiles.push({
+            id: createProfileId(),
+            name: uniqueName,
+            shapes: profile.shapes.map(normalizeShape),
+            settings: {
+              ...baseImportedSettings,
+              theme: profile.settings?.theme ?? baseImportedSettings.theme,
+              editMode:
+                profile.settings?.editMode ?? baseImportedSettings.editMode,
+              showHandles:
+                profile.settings?.showHandles ??
+                baseImportedSettings.showHandles,
+              addKeyMapShortcut:
+                profile.settings?.addKeyMapShortcut ??
+                baseImportedSettings.addKeyMapShortcut,
+              toggleModeShortcut:
+                profile.settings?.toggleModeShortcut ??
+                baseImportedSettings.toggleModeShortcut,
+              strictPassthrough:
+                profile.settings?.strictPassthrough ??
+                baseImportedSettings.strictPassthrough,
+              focusCanvasShortcut:
+                profile.settings?.focusCanvasShortcut ??
+                baseImportedSettings.focusCanvasShortcut,
+              toggleShapesShortcut:
+                profile.settings?.toggleShapesShortcut ??
+                baseImportedSettings.toggleShapesShortcut,
+              setZeroOpacityShortcut:
+                profile.settings?.setZeroOpacityShortcut ??
+                baseImportedSettings.setZeroOpacityShortcut,
+            },
+          });
+        });
+      }
+
       if (Array.isArray(parsed.shapes)) {
-        setShapes(parsed.shapes.map(normalizeShape));
+        const desiredName =
+          typeof parsed.profileName === "string" &&
+          parsed.profileName.trim().length > 0
+            ? parsed.profileName.trim()
+            : baseProfileName.trim();
+
+        const uniqueName = makeUniqueProfileName(
+          [...latestProfilesRef.current, ...importedProfiles],
+          desiredName,
+        );
+
+        importedProfiles.push({
+          id: createProfileId(),
+          name: uniqueName,
+          shapes: parsed.shapes.map(normalizeShape),
+          settings: baseImportedSettings,
+        });
       }
 
-      if (parsed.settings) {
-        setSettings((prev) => ({
-          ...prev,
-          theme: parsed.settings?.theme ?? prev.theme,
-          editMode: parsed.settings?.editMode ?? prev.editMode,
-          showHandles: parsed.settings?.showHandles ?? prev.showHandles,
-          addKeyMapShortcut:
-            parsed.settings?.addKeyMapShortcut ?? prev.addKeyMapShortcut,
-          toggleModeShortcut:
-            parsed.settings?.toggleModeShortcut ?? prev.toggleModeShortcut,
-          strictPassthrough:
-            parsed.settings?.strictPassthrough ?? prev.strictPassthrough,
-          focusCanvasShortcut:
-            parsed.settings?.focusCanvasShortcut ?? prev.focusCanvasShortcut,
-          toggleShapesShortcut:
-            parsed.settings?.toggleShapesShortcut ?? prev.toggleShapesShortcut,
-        }));
+      if (importedProfiles.length === 0) {
+        Modal.error({
+          title: "Invalid import payload",
+          content:
+            "Please provide a valid JSON mapping export with shapes or profiles.",
+        });
+        return;
       }
 
+      const nextProfiles = [...latestProfilesRef.current, ...importedProfiles];
+      const nextActive = importedProfiles[importedProfiles.length - 1];
+
+      setProfiles(nextProfiles);
+      setSelectedProfileId(nextActive.id);
+      requestProfileSwitch(nextActive.id);
+
+      selectSingleShape(null);
+      setCopiedShapes([]);
+      setIsTransformingShape(false);
+
+      setPendingImportText("");
       setImportText("");
       setImportOpen(false);
+      closeProfileNameDialog();
     } catch {
       Modal.error({
         title: "Invalid import payload",
         content: "Please provide a valid JSON mapping export.",
       });
     }
+  };
+
+  const handleProfileNameDialogSave = () => {
+    const trimmed = profileNameInput.trim();
+    if (!trimmed) {
+      setProfileNameError("Profile name is required.");
+      return;
+    }
+
+    if (profileNameDialogMode === "create") {
+      const ok = createProfile(trimmed);
+      if (!ok) {
+        return;
+      }
+      closeProfileNameDialog();
+      return;
+    }
+
+    if (profileNameDialogMode === "rename") {
+      const ok = renameSelectedProfile(trimmed);
+      if (!ok) return;
+      closeProfileNameDialog();
+      return;
+    }
+
+    performImportWithName(trimmed);
+  };
+
+  const applyImport = () => {
+    if (!canImportNow) {
+      Modal.error({
+        title: "Cannot import mappings",
+        content:
+          importAnalysis.parseError ||
+          "Please provide a valid JSON mapping export with shapes.",
+      });
+      return;
+    }
+
+    let suggestedName = "Imported";
+    try {
+      const parsed = JSON.parse(importText) as {
+        profileName?: string;
+        profiles?: Array<{ name?: string }>;
+      };
+
+      suggestedName =
+        parsed.profileName?.trim() ||
+        parsed.profiles?.[0]?.name?.trim() ||
+        "Imported";
+    } catch {
+      suggestedName = "Imported";
+    }
+
+    setPendingImportText(importText);
+    openProfileNameDialog("import", suggestedName);
   };
 
   const handleThemeChange = (value: string | number) => {
@@ -928,484 +2190,117 @@ function MapperApp() {
   const algorithm =
     appliedTheme === "dark" ? theme.darkAlgorithm : theme.defaultAlgorithm;
 
+  useEffect(() => {
+    const bodyClass = "fm-dark-theme";
+    if (appliedTheme === "dark") {
+      document.body.classList.add(bodyClass);
+      return () => {
+        document.body.classList.remove(bodyClass);
+      };
+    }
+
+    document.body.classList.remove(bodyClass);
+  }, [appliedTheme]);
+
   return (
     <ConfigProvider theme={{ algorithm }}>
       <App>
+        {modalContextHolder}
         <div
           className={`fm-relative fm-size-full ${appliedTheme === "dark" ? "fm-dark" : ""}`}
         >
-          {overlayVisible &&
-            shapesVisible &&
-            shapes.map((shape) => {
-              const selected = settings.editMode && shape.id === selectedId;
-              return (
-                <Rnd
-                  key={shape.id}
-                  className={`fm-shape ${selected ? "fm-shape-selected" : ""}`}
-                  size={{ width: shape.width, height: shape.height }}
-                  position={{ x: shape.x, y: shape.y }}
-                  minWidth={5}
-                  minHeight={5}
-                  disableDragging={!settings.editMode}
-                  enableResizing={
-                    settings.editMode ? { bottomRight: true } : false
-                  }
-                  resizeHandleStyles={{
-                    bottomRight: {
-                      right: "-9px",
-                      bottom: "-9px",
-                      left: "auto",
-                      top: "auto",
-                      width: "18px",
-                      height: "18px",
-                      cursor: "nwse-resize",
-                    },
-                  }}
-                  cancel=".fm-shape-shortcut-input, .fm-close-btn, .fm-rotate-handle"
-                  bounds="window"
-                  style={{
-                    pointerEvents: settings.editMode ? "auto" : "none",
-                    zIndex: selected ? 2147483644 : 2147483643,
-                  }}
-                  onMouseDown={() => {
-                    if (!settings.editMode) return;
-                    setSelectedId(shape.id);
-                  }}
-                  onClick={(event: ReactMouseEvent) => {
-                    if (!settings.editMode) return;
-                    event.stopPropagation();
-                    setSelectedId(shape.id);
-                  }}
-                  onDragStart={() => {
-                    if (!settings.editMode) return;
-                    setSelectedId(shape.id);
-                    setIsTransformingShape(true);
-                  }}
-                  onDragStop={(_event, data) => {
-                    setIsTransformingShape(false);
-                    setShapes((prev) =>
-                      prev.map((item) =>
-                        item.id === shape.id
-                          ? normalizeShape({ ...item, x: data.x, y: data.y })
-                          : item,
-                      ),
-                    );
-                  }}
-                  onResizeStart={() => {
-                    if (!settings.editMode) return;
-                    setSelectedId(shape.id);
-                    setIsTransformingShape(true);
-                  }}
-                  onResizeStop={(_event, _dir, ref, _delta, position) => {
-                    setIsTransformingShape(false);
-                    setShapes((prev) =>
-                      prev.map((item) =>
-                        item.id === shape.id
-                          ? normalizeShape({
-                              ...item,
-                              x: position.x,
-                              y: position.y,
-                              width: Number(ref.style.width.replace("px", "")),
-                              height: Number(
-                                ref.style.height.replace("px", ""),
-                              ),
-                            })
-                          : item,
-                      ),
-                    );
-                  }}
-                >
-                  {settings.editMode && (
-                    <button
-                      type="button"
-                      className="fm-close-btn"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        removeShape(shape.id);
-                      }}
-                    >
-                      <CloseOutlined />
-                    </button>
-                  )}
-                  <div
-                    className="fm-shape-shell"
-                    style={{
-                      transform: `rotate(${shape.rotation}deg)`,
-                      opacity: shape.opacity,
-                      pointerEvents: settings.editMode ? "auto" : "none",
-                    }}
-                  >
-                    <div className={getShapeClass(shape.type)} />
-                    {settings.editMode && selected && (
-                      <div
-                        className="fm-rotate-handle"
-                        onPointerDown={(event) => {
-                          event.stopPropagation();
-                          previousBodyCursorRef.current =
-                            document.body.style.cursor;
-                          rotateIdRef.current = shape.id;
-                          document.body.style.cursor = "grabbing";
-                        }}
-                      />
-                    )}
-                    <div className="fm-shape-shortcut">
-                      <input
-                        className="fm-shape-shortcut-input"
-                        value={shape.keyBinding}
-                        placeholder={settings.editMode ? "Press keys" : ""}
-                        readOnly={!settings.editMode}
-                        tabIndex={settings.editMode ? 0 : -1}
-                        style={{
-                          pointerEvents: settings.editMode ? "auto" : "none",
-                        }}
-                        onMouseDown={(event) => {
-                          if (!settings.editMode) return;
-                          event.stopPropagation();
-                          setSelectedId(shape.id);
-                        }}
-                        onFocus={() => {
-                          if (!settings.editMode) return;
-                          setSelectedId(shape.id);
-                        }}
-                        onKeyDown={(event) => {
-                          if (!settings.editMode) return;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          if (event.key === "Escape") {
-                            (event.target as HTMLInputElement).blur();
-                            return;
-                          }
-                          const captured = buildShortcutFromEvent(event);
-                          if (!captured) return;
-                          setShapes((prev) =>
-                            prev.map((item) =>
-                              item.id === shape.id
-                                ? normalizeShape({
-                                    ...item,
-                                    keyBinding: captured,
-                                  })
-                                : item,
-                            ),
-                          );
-                        }}
-                      />
-                    </div>
-                  </div>
-                </Rnd>
-              );
-            })}
+          <ShapeOverlay
+            overlayVisible={overlayVisible}
+            shapesVisible={shapesVisible}
+            shapes={shapes}
+            settings={settings}
+            hasClipboardShapes={copiedShapes.length > 0}
+            selectedIds={selectedIds}
+            selectSingleShape={selectSingleShape}
+            toggleShapeSelection={toggleShapeSelection}
+            runningTooltip={runningTooltip}
+            setIsTransformingShape={setIsTransformingShape}
+            setShapes={setShapes}
+            removeShape={removeShape}
+            deleteShapeIds={deleteShapeIds}
+            copyShapeIds={copyShapeIds}
+            cutShapeIds={cutShapeIds}
+            pasteCopiedShapesAt={pasteCopiedShapesAt}
+            rotateIdRef={rotateIdRef}
+            previousBodyCursorRef={previousBodyCursorRef}
+            buildShortcutFromEvent={buildShortcutFromEvent}
+            normalizeShape={normalizeShape}
+          />
 
-          {overlayVisible && shapesVisible && runningTooltip && (
-            <div
-              className="fm-running-tooltip"
-              style={{
-                left: runningTooltip.x,
-                top: runningTooltip.y,
-              }}
-            >
-              <span>Trigger: </span>
-              <ShortcutKeys combo={runningTooltip.keyBinding} />
-            </div>
-          )}
+          <MapperDialog
+            overlayVisible={overlayVisible}
+            dialogVisible={dialogVisible}
+            isTransformingShape={isTransformingShape}
+            dialogRect={dialogRect}
+            setDialogRect={setDialogRect}
+            activeProfileName={activeProfileName}
+            focusGameCanvas={focusGameCanvas}
+            onResetDialogConfiguration={resetDialogConfiguration}
+            settings={settings}
+            toggleMode={toggleMode}
+            addKeyMap={addKeyMap}
+            profiles={profiles}
+            selectedProfile={selectedProfile}
+            onSelectProfileChange={(value) => {
+              requestProfileSwitch(value);
+            }}
+            onOpenCreateProfile={() =>
+              openProfileNameDialog(
+                "create",
+                makeUniqueProfileName(latestProfilesRef.current, "Profile"),
+              )
+            }
+            duplicateSelectedProfile={duplicateSelectedProfile}
+            onOpenRenameProfile={() => {
+              if (!selectedProfile) return;
+              openProfileNameDialog("rename", selectedProfile.name);
+            }}
+            deleteSelectedProfile={deleteSelectedProfile}
+            selectedPaletteShape={selectedPaletteShape}
+            setSelectedPaletteShape={setSelectedPaletteShape}
+            handleThemeChange={handleThemeChange}
+            draftShape={draftShape}
+            setDraftShape={setDraftShape}
+            setShapes={setShapes}
+            normalizeShape={normalizeShape}
+            setSettings={setSettings}
+            exportMappings={exportMappings}
+            setImportOpen={setImportOpen}
+            captureGlobalShortcut={captureGlobalShortcut}
+          />
 
-          {overlayVisible && dialogVisible && !isTransformingShape && (
-            <Rnd
-              className="fm-dialog fm-z-[2147483645]"
-              size={{ width: dialogRect.width, height: dialogRect.height }}
-              position={{ x: dialogRect.x, y: dialogRect.y }}
-              minWidth={360}
-              minHeight={430}
-              dragHandleClassName="ant-card-head"
-              bounds="window"
-              onDragStop={(_event, data) => {
-                setDialogRect((prev) => ({ ...prev, x: data.x, y: data.y }));
-              }}
-              onResizeStop={(_event, _dir, ref, _delta, position) => {
-                setDialogRect({
-                  x: position.x,
-                  y: position.y,
-                  width: Number(ref.style.width.replace("px", "")),
-                  height: Number(ref.style.height.replace("px", "")),
-                });
-              }}
-            >
-              <Card
-                title="Key Mapper"
-                size="small"
-                bodyStyle={{ height: "calc(100% - 46px)", overflow: "auto" }}
-                className="fm-panel fm-h-full"
-                extra={
-                  <Space size={8}>
-                    <Typography.Text type="secondary">
-                      Mapper Toggle: {OVERLAY_SHORTCUT}
-                    </Typography.Text>
-                    <Button
-                      size="small"
-                      onClick={focusGameCanvas}
-                      title="Focus game canvas"
-                    >
-                      F
-                    </Button>
-                  </Space>
-                }
-              >
-                <Form layout="vertical" style={{ direction: "ltr" }}>
-                  <Form.Item>
-                    <Space direction="vertical" size={8} className="fm-w-full">
-                      <Tooltip
-                        title={
-                          <span>
-                            Shortcut:{" "}
-                            <ShortcutKeys combo={settings.toggleModeShortcut} />
-                          </span>
-                        }
-                      >
-                        <Button
-                          type="primary"
-                          danger={!settings.editMode}
-                          block
-                          icon={
-                            settings.editMode ? (
-                              <PlayCircleOutlined />
-                            ) : (
-                              <StopOutlined />
-                            )
-                          }
-                          aria-label={settings.editMode ? "Start" : "Stop"}
-                          title={settings.editMode ? "Start" : "Stop"}
-                          onClick={toggleMode}
-                        >
-                          {settings.editMode ? "Start" : "Stop"}
-                        </Button>
-                      </Tooltip>
-                      <Tooltip
-                        title={
-                          <span>
-                            Shortcut:{" "}
-                            <ShortcutKeys combo={settings.addKeyMapShortcut} />
-                          </span>
-                        }
-                      >
-                        <Button
-                          type="dashed"
-                          block
-                          onClick={addKeyMap}
-                          disabled={!settings.editMode}
-                        >
-                          Add Key Map
-                        </Button>
-                      </Tooltip>
-                    </Space>
-                  </Form.Item>
-
-                  <Divider className="!fm-my-2" />
-                  <Typography.Text strong>Mapper Controls</Typography.Text>
-
-                  <Form.Item label="Shape Palette">
-                    <Space direction="vertical" size={6} className="fm-w-full">
-                      <Space wrap>
-                        {BASIC_PALETTE_SHAPES.map((shapeType) => {
-                          const isSelected = selectedPaletteShape === shapeType;
-                          return (
-                            <Tooltip key={shapeType} title={shapeType}>
-                              <Button
-                                type={isSelected ? "primary" : "default"}
-                                size="small"
-                                draggable={settings.editMode}
-                                onClick={() =>
-                                  setSelectedPaletteShape(shapeType)
-                                }
-                                onDoubleClick={() => {
-                                  if (!settings.editMode) return;
-                                  if (selectedPaletteShape !== shapeType)
-                                    return;
-                                  addKeyMapOfType(shapeType);
-                                }}
-                                onDragStart={(event) =>
-                                  onPaletteDragStart(event, shapeType)
-                                }
-                                onDragEnd={onPaletteDragEnd}
-                                disabled={!settings.editMode}
-                              >
-                                <Space size={4}>
-                                  <PaletteShapeIcon shape={shapeType} />
-                                  <span className="fm-capitalize">
-                                    {shapeType}
-                                  </span>
-                                </Space>
-                              </Button>
-                            </Tooltip>
-                          );
-                        })}
-                      </Space>
-                      <Typography.Text type="secondary">
-                        Drag a selected shape to the game canvas. Double-click
-                        the selected shape to add it at the default position.
-                      </Typography.Text>
-                    </Space>
-                  </Form.Item>
-
-                  <Form.Item label="Theme">
-                    <Segmented
-                      options={[
-                        { label: "Light", value: "light" },
-                        { label: "Dark", value: "dark" },
-                        { label: "System", value: "system" },
-                      ]}
-                      value={settings.theme}
-                      onChange={handleThemeChange}
-                    />
-                  </Form.Item>
-
-                  <Form.Item label="Strict Input Passthrough">
-                    <Space direction="vertical" size={4} className="fm-w-full">
-                      <Switch
-                        checked={settings.strictPassthrough}
-                        onChange={(checked) => {
-                          setSettings((prev) => ({
-                            ...prev,
-                            strictPassthrough: checked,
-                          }));
-                        }}
-                      />
-                      <Typography.Text type="secondary">
-                        When enabled, gameplay keys are fully passed through in
-                        Stop mode unless they match mapper shortcuts.
-                      </Typography.Text>
-                    </Space>
-                  </Form.Item>
-
-                  <Form.Item label="Opacity">
-                    <Slider
-                      min={0.05}
-                      max={1}
-                      step={0.05}
-                      value={draftShape.opacity}
-                      disabled={!settings.editMode}
-                      onChange={(value) => {
-                        const nextOpacity = Number(value);
-                        setDraftShape((prev) => ({
-                          ...prev,
-                          opacity: nextOpacity,
-                        }));
-                        setShapes((prev) =>
-                          prev.map((shape) =>
-                            normalizeShape({
-                              ...shape,
-                              opacity: nextOpacity,
-                            }),
-                          ),
-                        );
-                      }}
-                    />
-                  </Form.Item>
-
-                  <Divider className="!fm-my-2" />
-                  <Form.Item label="Share Key Maps">
-                    <Space direction="vertical" size={6} className="fm-w-full">
-                      <Space wrap>
-                        <Button onClick={exportMappings}>
-                          Copy Mapping JSON
-                        </Button>
-                        <Button onClick={() => setImportOpen(true)}>
-                          Import Mapping JSON
-                        </Button>
-                      </Space>
-                      <Typography.Text type="secondary">
-                        Copy sends your current map setup to clipboard; import
-                        loads a shared mapping JSON.
-                      </Typography.Text>
-                    </Space>
-                  </Form.Item>
-
-                  <Form.Item label="Add Key Map Shortcut">
-                    <Space direction="vertical" size={4}>
-                      <ShortcutKeys combo={settings.addKeyMapShortcut} />
-                      <Input
-                        className="fm-global-shortcut-input"
-                        value={settings.addKeyMapShortcut}
-                        placeholder="Press keys"
-                        onKeyDown={(event) => {
-                          captureGlobalShortcut(event, "addKeyMapShortcut");
-                        }}
-                      />
-                      <Typography.Text type="secondary">
-                        Default is Alt+Shift+A. Mapper toggle is fixed to
-                        Alt+Shift+M.
-                      </Typography.Text>
-                    </Space>
-                  </Form.Item>
-
-                  <Form.Item label="Start/Stop Shortcut">
-                    <Space direction="vertical" size={4} className="fm-w-full">
-                      <ShortcutKeys combo={settings.toggleModeShortcut} />
-                      <Input
-                        className="fm-global-shortcut-input"
-                        value={settings.toggleModeShortcut}
-                        placeholder="Press keys"
-                        onKeyDown={(event) => {
-                          captureGlobalShortcut(event, "toggleModeShortcut");
-                        }}
-                      />
-                    </Space>
-                  </Form.Item>
-
-                  <Form.Item label="Focus Canvas Shortcut">
-                    <Space direction="vertical" size={4} className="fm-w-full">
-                      <ShortcutKeys combo={settings.focusCanvasShortcut} />
-                      <Input
-                        className="fm-global-shortcut-input"
-                        value={settings.focusCanvasShortcut}
-                        placeholder="Press keys"
-                        onKeyDown={(event) => {
-                          captureGlobalShortcut(event, "focusCanvasShortcut");
-                        }}
-                      />
-                    </Space>
-                  </Form.Item>
-
-                  <Form.Item label="Hide Shapes Shortcut">
-                    <Space direction="vertical" size={4} className="fm-w-full">
-                      <ShortcutKeys combo={settings.toggleShapesShortcut} />
-                      <Input
-                        className="fm-global-shortcut-input"
-                        value={settings.toggleShapesShortcut}
-                        placeholder="Press keys"
-                        onKeyDown={(event) => {
-                          captureGlobalShortcut(event, "toggleShapesShortcut");
-                        }}
-                      />
-                    </Space>
-                  </Form.Item>
-                </Form>
-              </Card>
-            </Rnd>
-          )}
-
-          <Modal
-            title="Import shared mappings"
-            open={overlayVisible && importOpen && !isTransformingShape}
-            onOk={applyImport}
-            onCancel={() => {
+          <ImportMappingsModal
+            overlayVisible={overlayVisible}
+            importOpen={importOpen}
+            isTransformingShape={isTransformingShape}
+            canImportNow={canImportNow}
+            importAnalysis={importAnalysis}
+            importText={importText}
+            setImportText={setImportText}
+            applyImport={applyImport}
+            onClose={() => {
               setImportOpen(false);
               setImportText("");
+              setPendingImportText("");
             }}
-            okText="Import"
-            cancelText="Close"
-            footer={(_, { OkBtn, CancelBtn }) => (
-              <Space style={{ width: "100%", justifyContent: "flex-end" }}>
-                <OkBtn />
-                <CancelBtn />
-              </Space>
-            )}
-          >
-            <Input.TextArea
-              rows={8}
-              value={importText}
-              onChange={(event) => setImportText(event.target.value)}
-              placeholder="Paste JSON copied from Copy Share JSON"
-            />
-          </Modal>
+          />
+
+          <ProfileNameModal
+            overlayVisible={overlayVisible}
+            profileNameDialogOpen={profileNameDialogOpen}
+            profileNameDialogMode={profileNameDialogMode}
+            profileNameInput={profileNameInput}
+            profileNameError={profileNameError}
+            setProfileNameInput={setProfileNameInput}
+            clearProfileNameError={() => setProfileNameError("")}
+            onClose={closeProfileNameDialog}
+            onSave={handleProfileNameDialogSave}
+          />
         </div>
       </App>
     </ConfigProvider>
@@ -1413,7 +2308,10 @@ function MapperApp() {
 }
 
 const mount = () => {
-  if (document.getElementById(ROOT_ID)) return;
+  const existingRoot = document.getElementById(ROOT_ID);
+  if (existingRoot) {
+    existingRoot.remove();
+  }
 
   const rootElement = document.createElement("div");
   rootElement.id = ROOT_ID;

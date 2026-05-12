@@ -1651,9 +1651,7 @@ function MapperApp() {
     );
     const currentCharacterName =
       currentCharacterNameFromTitle ??
-      keyTriggerCharacters.find(
-      (tab) => tab.id === currentTabId,
-      )?.name;
+      keyTriggerCharacters.find((tab) => tab.id === currentTabId)?.name;
 
     if (!currentCharacterName) {
       return null;

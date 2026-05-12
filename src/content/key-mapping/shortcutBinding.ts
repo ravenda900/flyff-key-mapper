@@ -61,6 +61,14 @@ type ReservedShortcutEntry = {
   usedBy: string;
 };
 
+export type GlobalShortcutField =
+  | "addKeyMapShortcut"
+  | "toggleModeShortcut"
+  | "focusCanvasShortcut"
+  | "toggleShapesShortcut"
+  | "setZeroOpacityShortcut"
+  | "toggleDialogShortcut";
+
 const getReservedShortcutEntries = (
   settings: MapperSettings,
 ): ReservedShortcutEntry[] => [
@@ -70,7 +78,60 @@ const getReservedShortcutEntries = (
   { binding: settings.focusCanvasShortcut, usedBy: "Focus Canvas" },
   { binding: settings.toggleShapesShortcut, usedBy: "Show/Hide Shapes" },
   { binding: settings.setZeroOpacityShortcut, usedBy: "Opacity 0/100" },
+  { binding: settings.toggleDialogShortcut, usedBy: "Toggle Dialog" },
 ];
+
+export const getGlobalShortcutConflict = (
+  binding: string,
+  settings: MapperSettings,
+  currentField: GlobalShortcutField,
+): string | null => {
+  const normalizedTarget = normalizeShortcutForCompare(binding);
+  if (!normalizedTarget) {
+    return null;
+  }
+
+  const candidates: Array<
+    ReservedShortcutEntry & { field?: GlobalShortcutField }
+  > = [
+    { binding: OVERLAY_SHORTCUT, usedBy: "Toggle Mapper" },
+    {
+      binding: settings.addKeyMapShortcut,
+      usedBy: "Add Key Map",
+      field: "addKeyMapShortcut",
+    },
+    {
+      binding: settings.toggleModeShortcut,
+      usedBy: "Start/Stop Mode",
+      field: "toggleModeShortcut",
+    },
+    {
+      binding: settings.focusCanvasShortcut,
+      usedBy: "Focus Canvas",
+      field: "focusCanvasShortcut",
+    },
+    {
+      binding: settings.toggleShapesShortcut,
+      usedBy: "Show/Hide Shapes",
+      field: "toggleShapesShortcut",
+    },
+    {
+      binding: settings.setZeroOpacityShortcut,
+      usedBy: "Opacity 0/100",
+      field: "setZeroOpacityShortcut",
+    },
+  ];
+
+  const conflict = candidates.find((candidate) => {
+    if (candidate.field === currentField) {
+      return false;
+    }
+
+    return normalizeShortcutForCompare(candidate.binding) === normalizedTarget;
+  });
+
+  return conflict?.usedBy ?? null;
+};
 
 export const getReservedShapeShortcutUsage = (
   binding: string,

@@ -1,5 +1,5 @@
 {
-  "name": "flyff-mapper",
+  "name": "flyff-utility",
   "private": true,
   "version": "2.0.0",
   "type": "module",
@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "build:ext": "npm run build",
     "dev:ext": "vite build --watch",
+    "ocr:sample": "node scripts/ocr-sample.mjs",
     "test": "vitest run",
     "lint": "eslint .",
     "preview": "vite preview"
@@ -16,9 +17,12 @@
     "@ant-design/icons": "^6.1.0",
     "antd": "^6.3.1",
     "clsx": "^2.1.1",
+    "jsfeat": "^0.0.8",
+    "opencv-js-wasm": "^5.0.0-alpha",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-rnd": "^10.5.2"
+    "react-rnd": "^10.5.2",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
@@ -34,6 +38,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "postcss": "^8.5.6",
+    "sharp": "^0.34.5",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",

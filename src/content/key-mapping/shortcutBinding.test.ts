@@ -3,6 +3,7 @@ import {
   getReservedShapeShortcutUsage,
   sanitizeShapeBinding,
 } from "./shortcutBinding";
+import type { MapperSettings } from "../types";
 
 describe("sanitizeShapeBinding", () => {
   it("keeps only Ctrl/Alt/Shift when a pointer token is present", () => {
@@ -26,15 +27,42 @@ describe("getReservedShapeShortcutUsage", () => {
   const settings = {
     theme: "system",
     editMode: true,
+    experimentalFeaturesEnabled: false,
     showHandles: false,
     showSnapIndicators: true,
+    syncMouseEvents: false,
+    mouseSyncPositionMode: "actual",
     strictPassthrough: true,
     addKeyMapShortcut: "Alt+Shift+A",
     toggleModeShortcut: "Alt+Shift+S",
     focusCanvasShortcut: "Alt+Shift+F",
     toggleShapesShortcut: "Alt+Shift+H",
     setZeroOpacityShortcut: "Alt+Shift+0",
-  } as const;
+    toggleDialogShortcut: "Alt+Shift+M",
+    autoStopSeconds: null,
+    notifyOnRecaptcha: false,
+    stopOnRecaptcha: false,
+    autoHoly: {
+      enabled: false,
+      debuffType: "root",
+      debugOverlayEnabled: false,
+      holyKey: "",
+      scanRegion: null,
+    },
+    autoPills: {
+      enabled: false,
+      hpThreshold: 50,
+      debugOverlayEnabled: false,
+      pillKey: "",
+      scanRegion: null,
+    },
+    autoAwaken: {
+      scanRegion: null,
+      blessingType: "auto" as const,
+      stat1Criteria: [],
+      stat2Criteria: [],
+    },
+  } satisfies MapperSettings;
 
   it("matches configurable shortcuts", () => {
     expect(getReservedShapeShortcutUsage("Alt+Shift+A", settings)).toBe(

@@ -4,7 +4,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Rnd } from "react-rnd";
-import { stopToggleShapeArea, triggerShapeArea } from "../../keybinding";
+import {
+  shouldIgnoreTriggeredPointerEvent,
+  stopToggleShapeArea,
+  triggerShapeArea,
+} from "../../keybinding";
 import {
   getReservedShapeShortcutUsage,
   sanitizeShapeBinding,
@@ -40,6 +44,7 @@ type Props = {
   runningTooltip: { x: number; y: number; keyBinding: string } | null;
   setIsTransformingShape: (value: boolean) => void;
   setShapes: Dispatch<SetStateAction<ShapeMapping[]>>;
+  setShapesWithoutHistory: Dispatch<SetStateAction<ShapeMapping[]>>;
   removeShape: (id: string) => void;
   deleteShapeIds: (ids: string[]) => void;
   copyShapeIds: (ids: string[]) => void;
@@ -401,7 +406,7 @@ const ShapeOverlayItem = ({
           : false
       }
       style={{
-        pointerEvents: "auto",
+        pointerEvents: editMode ? "auto" : "none",
         zIndex: isSelected ? 2147483644 : 2147483643,
       }}
       onDragStart={() => {
@@ -797,12 +802,22 @@ const ShapeOverlayItem = ({
                 return;
               }
 
+              if (
+                shouldIgnoreTriggeredPointerEvent(event.clientX, event.clientY)
+              ) {
+                return;
+              }
+
               event.preventDefault();
               event.stopPropagation();
-              triggerShapeArea(shape, {
-                x: event.clientX,
-                y: event.clientY,
-              });
+              triggerShapeArea(
+                shape,
+                {
+                  x: event.clientX,
+                  y: event.clientY,
+                },
+                { delayMs: 0 },
+              );
             }}
             onContextMenu={(event) => {
               if (!editMode) {
@@ -878,6 +893,7 @@ export const ShapeOverlay = ({
   runningTooltip,
   setIsTransformingShape,
   setShapes,
+  setShapesWithoutHistory,
   removeShape,
   deleteShapeIds,
   copyShapeIds,
@@ -1157,7 +1173,7 @@ export const ShapeOverlay = ({
         });
       }
 
-      setShapes((prev) =>
+      setShapesWithoutHistory((prev) =>
         prev.map((item) =>
           item.id === shapeId
             ? normalizeShape({
@@ -1168,7 +1184,7 @@ export const ShapeOverlay = ({
         ),
       );
     },
-    [messageApi, normalizeShape, setShapes, settings, shapes],
+    [messageApi, normalizeShape, setShapesWithoutHistory, settings, shapes],
   );
 
   const capturePointerBinding = useCallback(
@@ -1620,25 +1636,32 @@ export const ShapeOverlay = ({
         return;
       }
 
-      const activeId = selectedIds[selectedIds.length - 1];
-      if (!activeId) {
+      if (selectedIds.length === 0) {
         return;
       }
+
+      const selectedIdSet = new Set(selectedIds);
 
       event.preventDefault();
       event.stopPropagation();
 
-      setShapes((prev) =>
-        prev.map((shape) =>
-          shape.id === activeId
-            ? normalizeShape({
-                ...shape,
-                x: shape.x + dx,
-                y: shape.y + dy,
-              })
-            : shape,
-        ),
-      );
+      setShapes((prev) => {
+        let movedAny = false;
+        const next = prev.map((shape) => {
+          if (!selectedIdSet.has(shape.id)) {
+            return shape;
+          }
+
+          movedAny = true;
+          return normalizeShape({
+            ...shape,
+            x: shape.x + dx,
+            y: shape.y + dy,
+          });
+        });
+
+        return movedAny ? next : prev;
+      });
     };
 
     window.addEventListener("keydown", onArrowMove, { capture: true });
@@ -2062,7 +2085,7 @@ export const ShapeOverlay = ({
                       Math.round(Number(event.target.value) || 0),
                     );
 
-                    setShapes((prev) =>
+                    setShapesWithoutHistory((prev) =>
                       prev.map((item) =>
                         item.id === contextShape.id
                           ? normalizeShape({
@@ -2093,7 +2116,7 @@ export const ShapeOverlay = ({
                       stopToggleShapeArea(contextShape.id);
                     }
 
-                    setShapes((prev) =>
+                    setShapesWithoutHistory((prev) =>
                       prev.map((item) =>
                         item.id === contextShape.id
                           ? normalizeShape({

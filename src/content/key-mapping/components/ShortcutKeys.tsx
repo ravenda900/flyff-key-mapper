@@ -92,7 +92,13 @@ const MouseShortcutToken = ({
   </span>
 );
 
-export const ShortcutKeys = ({ combo }: { combo: string }) => {
+export const ShortcutKeys = ({
+  combo,
+  showPlus = true,
+}: {
+  combo: string;
+  showPlus?: boolean;
+}) => {
   const parts = combo
     .split("+")
     .map((part) => part.trim())
@@ -110,7 +116,7 @@ export const ShortcutKeys = ({ combo }: { combo: string }) => {
 
             return <kbd className="fm-kbd">{part}</kbd>;
           })()}
-          {index < parts.length - 1 && (
+          {showPlus && index < parts.length - 1 && (
             <span className="fm-shortcut-plus">+</span>
           )}
         </Fragment>

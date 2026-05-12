@@ -110,6 +110,29 @@ export const makeUniqueProfileName = (
     existingProfiles.map((profile) => profile.name.toLowerCase()),
   );
 
+  // New profiles should follow Profile 1, Profile 2, ... numbering.
+  if (base.toLowerCase() === "profile") {
+    const numberedMatches = existingProfiles
+      .map((profile) => profile.name.trim())
+      .map((name) => {
+        const numbered = /^profile\s+(\d+)$/i.exec(name);
+        if (numbered) {
+          return Number(numbered[1]);
+        }
+
+        if (/^profile$/i.test(name)) {
+          return 1;
+        }
+
+        return null;
+      })
+      .filter((value): value is number => value !== null);
+
+    const nextIndex =
+      numberedMatches.length > 0 ? Math.max(...numberedMatches) + 1 : 1;
+    return `Profile ${nextIndex}`;
+  }
+
   if (!takenNames.has(base.toLowerCase())) {
     return base;
   }

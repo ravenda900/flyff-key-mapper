@@ -1,6 +1,13 @@
 import type { ShapeMapping } from "./types";
 
 const activeToggleShapeTimers = new Map<string, number>();
+const suppressedPointerEvents: Array<{
+  x: number;
+  y: number;
+  expiresAt: number;
+}> = [];
+const SUPPRESSED_POINTER_EVENT_TTL_MS = 400;
+const SUPPRESSED_POINTER_EVENT_RADIUS_PX = 10;
 
 const POINTER_STEP_TOKENS = new Set([
   "left click",
@@ -52,7 +59,22 @@ const SHIFTED_SYMBOL_TO_BASE_KEY: Record<string, string> = {
   "~": "`",
 };
 
+const CODE_TO_BINDING_TOKEN: Record<string, string> = {
+  Space: "space",
+  Tab: "tab",
+  Enter: "enter",
+  Escape: "escape",
+  ArrowUp: "arrowup",
+  ArrowDown: "arrowdown",
+  ArrowLeft: "arrowleft",
+  ArrowRight: "arrowright",
+};
+
 const getEventToken = (event: KeyboardEvent): string => {
+  if (event.code && CODE_TO_BINDING_TOKEN[event.code]) {
+    return CODE_TO_BINDING_TOKEN[event.code];
+  }
+
   const shiftedBaseKey = SHIFTED_SYMBOL_TO_BASE_KEY[event.key];
   if (shiftedBaseKey) {
     return shiftedBaseKey;
@@ -220,6 +242,44 @@ export const matchesBinding = (
   return getEventToken(event) === parsed.key;
 };
 
+const pruneSuppressedPointerEvents = (now = Date.now()) => {
+  for (let index = suppressedPointerEvents.length - 1; index >= 0; index -= 1) {
+    if (suppressedPointerEvents[index].expiresAt <= now) {
+      suppressedPointerEvents.splice(index, 1);
+    }
+  }
+};
+
+const registerSuppressedPointerEvent = (x: number, y: number) => {
+  pruneSuppressedPointerEvents();
+  suppressedPointerEvents.push({
+    x,
+    y,
+    expiresAt: Date.now() + SUPPRESSED_POINTER_EVENT_TTL_MS,
+  });
+};
+
+export const shouldIgnoreTriggeredPointerEvent = (
+  clientX: number,
+  clientY: number,
+): boolean => {
+  pruneSuppressedPointerEvents();
+
+  const matchedIndex = suppressedPointerEvents.findIndex((entry) => {
+    return (
+      Math.abs(entry.x - clientX) <= SUPPRESSED_POINTER_EVENT_RADIUS_PX &&
+      Math.abs(entry.y - clientY) <= SUPPRESSED_POINTER_EVENT_RADIUS_PX
+    );
+  });
+
+  if (matchedIndex < 0) {
+    return false;
+  }
+
+  suppressedPointerEvents.splice(matchedIndex, 1);
+  return true;
+};
+
 export const triggerShapeArea = (
   shape: ShapeMapping,
   point?: { x: number; y: number },
@@ -228,7 +288,7 @@ export const triggerShapeArea = (
   const centerX = point?.x ?? shape.x + shape.width / 2;
   const centerY = point?.y ?? shape.y + shape.height / 2;
 
-  const tryDispatch = () => {
+  const dispatchSyntheticClick = () => {
     const overlayRoot = document.getElementById("flyff-mapper-root");
     const previousOverlayPointerEvents = overlayRoot?.style.pointerEvents;
 
@@ -245,34 +305,101 @@ export const triggerShapeArea = (
       overlayRoot.style.pointerEvents = previousOverlayPointerEvents ?? "";
     }
 
+    const canvas = document.querySelector("canvas") as HTMLElement | null;
     const target =
-      (hit && !hit.closest("#flyff-mapper-root") ? hit : null) ??
-      (document.querySelector("canvas") as HTMLElement | null);
+      (hit?.closest("canvas") as HTMLElement | null) ??
+      canvas ??
+      (hit && !hit.closest("#flyff-mapper-root") ? hit : null);
 
     if (!target) {
       return;
     }
 
-    const events: Array<keyof DocumentEventMap> = [
-      "pointerdown",
-      "mousedown",
-      "mouseup",
-      "click",
-    ];
+    if (canvas && document.activeElement !== canvas) {
+      if (canvas.tabIndex < 0) {
+        canvas.tabIndex = -1;
+      }
+      canvas.focus({ preventScroll: true });
+    }
 
-    events.forEach((eventName) => {
+    const commonInit = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: centerX,
+      clientY: centerY,
+      button: 0,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+      metaKey: false,
+    };
+
+    if (typeof PointerEvent !== "undefined") {
       target.dispatchEvent(
-        new MouseEvent(eventName, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: centerX,
-          clientY: centerY,
-          button: 0,
+        new PointerEvent("pointermove", {
+          ...commonInit,
+          buttons: 0,
+          pointerId: 1,
+          pointerType: "mouse",
+          isPrimary: true,
         }),
       );
-    });
+      target.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          ...commonInit,
+          buttons: 1,
+          pointerId: 1,
+          pointerType: "mouse",
+          isPrimary: true,
+        }),
+      );
+    }
+
+    target.dispatchEvent(
+      new MouseEvent("mousemove", {
+        ...commonInit,
+        buttons: 0,
+      }),
+    );
+    target.dispatchEvent(
+      new MouseEvent("mousedown", {
+        ...commonInit,
+        buttons: 1,
+      }),
+    );
+
+    if (typeof PointerEvent !== "undefined") {
+      target.dispatchEvent(
+        new PointerEvent("pointerup", {
+          ...commonInit,
+          buttons: 0,
+          pointerId: 1,
+          pointerType: "mouse",
+          isPrimary: true,
+        }),
+      );
+    }
+
+    target.dispatchEvent(
+      new MouseEvent("mouseup", {
+        ...commonInit,
+        buttons: 0,
+      }),
+    );
+    target.dispatchEvent(
+      new MouseEvent("click", {
+        ...commonInit,
+        buttons: 0,
+      }),
+    );
   };
+
+  const tryDispatch = () => {
+    registerSuppressedPointerEvent(centerX, centerY);
+    dispatchSyntheticClick();
+  };
+
   if (shape.triggerType === "toggle") {
     const existingTimer = activeToggleShapeTimers.get(shape.id);
     if (existingTimer !== undefined) {

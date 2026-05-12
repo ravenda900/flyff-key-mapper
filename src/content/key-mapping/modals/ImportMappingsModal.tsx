@@ -4,6 +4,7 @@ type ImportAnalysis = {
   isValidJson: boolean;
   hasImportData: boolean;
   profileCount: number;
+  keyTriggerProfileCount: number;
   parseError: string;
 };
 
@@ -58,8 +59,15 @@ export const ImportMappingsModal = ({
       >
         {importAnalysis.isValidJson
           ? importAnalysis.hasImportData
-            ? `Detected ${importAnalysis.profileCount} profile${importAnalysis.profileCount > 1 ? "s" : ""} in import JSON.`
-            : "No importable shapes found in JSON."
+            ? [
+                importAnalysis.profileCount > 0 &&
+                  `${importAnalysis.profileCount} key-mapper profile${importAnalysis.profileCount > 1 ? "s" : ""}`,
+                importAnalysis.keyTriggerProfileCount > 0 &&
+                  `${importAnalysis.keyTriggerProfileCount} key-trigger profile${importAnalysis.keyTriggerProfileCount > 1 ? "s" : ""}`,
+              ]
+                .filter(Boolean)
+                .join(" and ") + " detected in import JSON."
+            : "No importable data found in JSON."
           : importAnalysis.parseError}
       </Typography.Text>
       <Input.TextArea

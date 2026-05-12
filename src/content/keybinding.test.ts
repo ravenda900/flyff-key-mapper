@@ -3,12 +3,13 @@ import { matchesBinding } from "./keybinding";
 
 type KeyEventShape = Pick<
   KeyboardEvent,
-  "key" | "ctrlKey" | "altKey" | "shiftKey" | "metaKey"
+  "key" | "code" | "ctrlKey" | "altKey" | "shiftKey" | "metaKey"
 >;
 
 const makeEvent = (partial: Partial<KeyEventShape>): KeyboardEvent =>
   ({
     key: "",
+    code: "",
     ctrlKey: false,
     altKey: false,
     shiftKey: false,
@@ -55,5 +56,19 @@ describe("matchesBinding", () => {
       shiftKey: true,
     });
     expect(matchesBinding(event, "Ctrl+Alt+Shift+1")).toBe(false);
+  });
+
+  it("matches ArrowUp when the event exposes a legacy Up key value", () => {
+    const event = makeEvent({ key: "Up", code: "ArrowUp" });
+    expect(matchesBinding(event, "ArrowUp")).toBe(true);
+  });
+
+  it("matches Ctrl+ArrowLeft using the physical key code", () => {
+    const event = makeEvent({
+      key: "Left",
+      code: "ArrowLeft",
+      ctrlKey: true,
+    });
+    expect(matchesBinding(event, "Ctrl+ArrowLeft")).toBe(true);
   });
 });

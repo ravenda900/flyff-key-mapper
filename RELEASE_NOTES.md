@@ -1,5 +1,29 @@
 # Flyff Mapper Release Notes
 
+## v3.0.0 (2026-05-13)
+
+Character-Aware Key Trigger Profiles and Parallel Synchronous Runtime.
+
+### Added
+
+- Added character-aware Key Trigger profile mapping using tab title format `<IGN> - Flyff Universe` so each character restores its previously selected Key Trigger profile.
+- Added dialog-open refresh for Key Trigger tabs so persisted checked characters/tabs are re-applied immediately when the pane is opened.
+
+### Changed
+
+- Changed Key Trigger profile persistence from tab-id-oriented behavior to character-name-oriented behavior for better stability across tab refreshes and tab id changes.
+- Updated synchronous toggle execution behavior so each action runs in parallel on its own interval (for example 500ms, 10000ms, 19000ms, 46000ms) until toggle is stopped.
+- Updated synchronous run-once execution behavior to launch each action once at its own delay in parallel.
+
+### Fixed
+
+- Fixed Key Trigger toggle delay-mode resolution when profile ids are scoped with tab ids (`profileId::tabIds`), which previously caused synchronous profiles to run as sequential.
+- Fixed inconsistent preselection restoration by combining persisted selected tab ids and persisted character names during tab reload.
+
+### Packaging
+
+- Package version updated to `3.0.0`.
+
 ## v2.0.0 (2026-03-05)
 
 Major feature and UX release focused on key-sequence control, shape interaction upgrades, theme consistency, and shortcut visualization.

@@ -33,6 +33,7 @@ export const ProfileNameModal = ({
     }
     rootClassName="fm-ltr-modal"
     open={overlayVisible && profileNameDialogOpen}
+    zIndex={2147483647}
     onCancel={onClose}
     footer={
       <Space style={{ width: "100%", justifyContent: "flex-end" }}>

@@ -1,4 +1,4 @@
-import { App, Card, ConfigProvider, Modal, theme } from "antd";
+import { App, Card, ConfigProvider, Modal, message, theme } from "antd";
 import "antd/dist/reset.css";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
@@ -1698,6 +1698,15 @@ function MapperApp() {
         shapes?: ShapeMapping[];
         profiles?: Array<{ name?: string; shapes?: ShapeMapping[] }>;
         keyTriggerProfiles?: unknown[];
+        settings?: Partial<MapperSettings>;
+        uiState?: {
+          selectedPaletteShape?: ShapeType;
+          dialogRect?: Partial<DialogRect>;
+          selectedUtilityTab?: UtilityTab;
+        };
+        selectedKeyTriggerTabIds?: unknown[];
+        selectedKeyTriggerTabNames?: unknown[];
+        keyTriggerCharacterProfileMapping?: Record<string, string>;
       };
 
       let profileCount = 0;
@@ -1734,10 +1743,36 @@ function MapperApp() {
       const keyTriggerProfileCount = Array.isArray(parsed.keyTriggerProfiles)
         ? parsed.keyTriggerProfiles.length
         : 0;
+      const selectedTabCount = Array.isArray(parsed.selectedKeyTriggerTabIds)
+        ? parsed.selectedKeyTriggerTabIds.filter((id) => Number.isFinite(id))
+            .length
+        : 0;
+      const selectedTabNameCount = Array.isArray(
+        parsed.selectedKeyTriggerTabNames,
+      )
+        ? parsed.selectedKeyTriggerTabNames.filter(
+            (name) => typeof name === "string" && name.trim().length > 0,
+          ).length
+        : 0;
+      const characterProfileMappingCount =
+        parsed.keyTriggerCharacterProfileMapping &&
+        typeof parsed.keyTriggerCharacterProfileMapping === "object"
+          ? Object.keys(parsed.keyTriggerCharacterProfileMapping).length
+          : 0;
+      const hasSettings =
+        !!parsed.settings && typeof parsed.settings === "object";
+      const hasUiState = !!parsed.uiState && typeof parsed.uiState === "object";
 
       return {
         isValidJson: true,
-        hasImportData: profileCount > 0 || keyTriggerProfileCount > 0,
+        hasImportData:
+          profileCount > 0 ||
+          keyTriggerProfileCount > 0 ||
+          selectedTabCount > 0 ||
+          selectedTabNameCount > 0 ||
+          characterProfileMappingCount > 0 ||
+          hasSettings ||
+          hasUiState,
         profileCount,
         keyTriggerProfileCount,
         missingNameCount,
@@ -7271,18 +7306,57 @@ function MapperApp() {
   };
 
   const exportMappings = async () => {
+    const selectedKeyTriggerTabNames = keyTriggerCharacters
+      .filter((tab) => selectedKeyTriggerTabIds.includes(tab.id))
+      .map((tab) => tab.name);
+
     const payload = JSON.stringify(
       {
         profiles: latestProfilesRef.current,
         activeProfileId,
         settings: latestSettingsRef.current,
+        uiState: {
+          selectedPaletteShape,
+          dialogRect,
+          selectedUtilityTab: activeUtilityTab,
+        },
         keyTriggerProfiles,
         selectedKeyTriggerTabIds,
+        selectedKeyTriggerTabNames,
+        keyTriggerCharacterProfileMapping,
       },
       null,
       2,
     );
-    await navigator.clipboard.writeText(payload);
+
+    let copied = false;
+
+    try {
+      await navigator.clipboard.writeText(payload);
+      copied = true;
+    } catch {
+      const fallbackTextarea = document.createElement("textarea");
+      fallbackTextarea.value = payload;
+      fallbackTextarea.setAttribute("readonly", "");
+      fallbackTextarea.style.position = "fixed";
+      fallbackTextarea.style.top = "-9999px";
+      fallbackTextarea.style.left = "-9999px";
+      document.body.appendChild(fallbackTextarea);
+      fallbackTextarea.focus();
+      fallbackTextarea.select();
+
+      try {
+        copied = document.execCommand("copy");
+      } finally {
+        document.body.removeChild(fallbackTextarea);
+      }
+    }
+
+    if (copied) {
+      message.success("Copy JSON successful.");
+    } else {
+      message.error("Copy JSON failed. Please try again.");
+    }
   };
 
   const performImportWithName = (baseProfileName: string) => {
@@ -7291,12 +7365,20 @@ function MapperApp() {
         profileName?: string;
         shapes?: ShapeMapping[];
         settings?: Partial<MapperSettings>;
+        uiState?: {
+          selectedPaletteShape?: ShapeType;
+          dialogRect?: Partial<DialogRect>;
+          selectedUtilityTab?: UtilityTab;
+        };
         profiles?: Array<{
           name?: string;
           shapes?: ShapeMapping[];
           settings?: Partial<MapperSettings>;
         }>;
         keyTriggerProfiles?: KeyTriggerProfile[];
+        selectedKeyTriggerTabIds?: unknown[];
+        selectedKeyTriggerTabNames?: unknown[];
+        keyTriggerCharacterProfileMapping?: Record<string, string>;
       };
 
       const resolveImportedSettings = (
@@ -7453,12 +7535,145 @@ function MapperApp() {
         setKeyTriggerProfiles((prev) => [...prev, ...incomingKtProfiles]);
       }
 
+      const importedSelectedTabIds = Array.isArray(
+        parsed.selectedKeyTriggerTabIds,
+      )
+        ? parsed.selectedKeyTriggerTabIds.filter((id): id is number =>
+            Number.isFinite(id),
+          )
+        : [];
+      const importedSelectedTabNames = Array.isArray(
+        parsed.selectedKeyTriggerTabNames,
+      )
+        ? parsed.selectedKeyTriggerTabNames.filter(
+            (name): name is string =>
+              typeof name === "string" && name.trim().length > 0,
+          )
+        : [];
+
+      if (
+        importedSelectedTabIds.length > 0 ||
+        importedSelectedTabNames.length > 0
+      ) {
+        const availableTabIdSet = new Set(
+          keyTriggerCharacters.map((tab) => tab.id),
+        );
+        const availableTabNames = new Set(importedSelectedTabNames);
+        const nameMatchedIds = keyTriggerCharacters
+          .filter((tab) => availableTabNames.has(tab.name))
+          .map((tab) => tab.id);
+
+        const mergedSelectedIds = Array.from(
+          new Set([
+            ...importedSelectedTabIds.filter((id) => availableTabIdSet.has(id)),
+            ...nameMatchedIds,
+          ]),
+        );
+
+        if (mergedSelectedIds.length > 0) {
+          setSelectedKeyTriggerTabIds(mergedSelectedIds);
+        }
+      }
+
+      if (
+        parsed.keyTriggerCharacterProfileMapping &&
+        typeof parsed.keyTriggerCharacterProfileMapping === "object"
+      ) {
+        const importedMapping = parsed.keyTriggerCharacterProfileMapping;
+        const validProfileIds = new Set(
+          [
+            ...keyTriggerProfiles,
+            ...(Array.isArray(parsed.keyTriggerProfiles)
+              ? (parsed.keyTriggerProfiles as KeyTriggerProfile[])
+              : []),
+          ].map((profile) => profile.id),
+        );
+
+        const filteredImportedMapping: Record<string, string> = {};
+        Object.entries(importedMapping).forEach(
+          ([characterName, profileId]) => {
+            if (
+              typeof characterName === "string" &&
+              characterName.trim().length > 0 &&
+              typeof profileId === "string" &&
+              validProfileIds.has(profileId)
+            ) {
+              filteredImportedMapping[characterName] = profileId;
+            }
+          },
+        );
+
+        if (Object.keys(filteredImportedMapping).length > 0) {
+          setKeyTriggerCharacterProfileMapping((prev) => ({
+            ...prev,
+            ...filteredImportedMapping,
+          }));
+        }
+      }
+
+      if (parsed.settings && typeof parsed.settings === "object") {
+        setSettings(baseImportedSettings);
+      }
+
+      if (parsed.uiState && typeof parsed.uiState === "object") {
+        const nextPaletteShape = parsed.uiState.selectedPaletteShape;
+        if (
+          nextPaletteShape === "rectangle" ||
+          nextPaletteShape === "circle" ||
+          nextPaletteShape === "ellipse" ||
+          nextPaletteShape === "triangle" ||
+          nextPaletteShape === "diamond" ||
+          nextPaletteShape === "pentagon" ||
+          nextPaletteShape === "hexagon" ||
+          nextPaletteShape === "octagon" ||
+          nextPaletteShape === "star" ||
+          nextPaletteShape === "pill" ||
+          nextPaletteShape === "arrow" ||
+          nextPaletteShape === "trapezoid"
+        ) {
+          setSelectedPaletteShape(nextPaletteShape);
+        }
+
+        const nextUtilityTab = parsed.uiState.selectedUtilityTab;
+        if (
+          nextUtilityTab === "key-mapper" ||
+          nextUtilityTab === "key-trigger" ||
+          nextUtilityTab === "auto-awaken"
+        ) {
+          setActiveUtilityTab(nextUtilityTab);
+        }
+
+        if (
+          parsed.uiState.dialogRect &&
+          typeof parsed.uiState.dialogRect === "object"
+        ) {
+          const nextRect = parsed.uiState.dialogRect;
+          const x = Number(nextRect.x);
+          const y = Number(nextRect.y);
+          const width = Number(nextRect.width);
+          const height = Number(nextRect.height);
+
+          setDialogRect({
+            x: Number.isFinite(x) ? x : DEFAULT_DIALOG_RECT.x,
+            y: Number.isFinite(y) ? y : DEFAULT_DIALOG_RECT.y,
+            width: Number.isFinite(width)
+              ? Math.max(360, width)
+              : DEFAULT_DIALOG_RECT.width,
+            height: Number.isFinite(height)
+              ? Math.max(430, height)
+              : DEFAULT_DIALOG_RECT.height,
+          });
+        }
+      }
+
       if (
         importedProfiles.length === 0 &&
         !(
           Array.isArray(parsed.keyTriggerProfiles) &&
           parsed.keyTriggerProfiles.length > 0
-        )
+        ) &&
+        !(parsed.settings && typeof parsed.settings === "object") &&
+        !(parsed.uiState && typeof parsed.uiState === "object")
       ) {
         Modal.error({
           title: "Invalid import payload",
@@ -7474,7 +7689,7 @@ function MapperApp() {
       closeProfileNameDialog();
 
       if (importWarnings.length > 0) {
-        Modal.warning({
+        modal.warning({
           title: "Some imported shortcuts were skipped",
           content: importWarnings.join(" "),
         });
@@ -7555,6 +7770,7 @@ function MapperApp() {
       return;
     }
 
+    setImportOpen(false);
     openProfileNameDialog("import", suggestedName);
   };
 

@@ -67,6 +67,7 @@ import type {
   ShapeType,
   ThemeMode,
   UtilityTab,
+  AwakenStatCriterion,
 } from "./types";
 
 const DEFAULT_DIALOG_RECT: DialogRect = {
@@ -80,6 +81,7 @@ const MAX_SHAPE_HISTORY_ENTRIES = 200;
 const RUN_STATE_STORAGE_KEY = "flyff-mapper-run-state-v1";
 
 const AUTO_IMAGE_SCALE_WIDTH = 800;
+
 const AUTO_HOLY_COOLDOWN_MS = 1200;
 const AUTO_PILLS_COOLDOWN_MS = 900;
 const AUTO_PILLS_DEBUG_LOG = true;
@@ -92,6 +94,8 @@ const HP_SCAN_REGION_WIDTH_RATIO = 0.56;
 const HP_SCAN_REGION_HEIGHT_RATIO = 0.2;
 const MIN_AUTOMATION_CAPTURE_REGION_SIZE_PX = 12;
 const AUTO_STOP_SHARED_STATE_KEY = "flyff-mapper-auto-stop-shared-v1";
+const MAPPER_CHARACTER_PROFILE_MAPPING_STORAGE_KEY =
+  "flyff-mapper-character-profiles-v1";
 const RECAPTCHA_SHARED_SIGNAL_KEY = "flyff-mapper-recaptcha-shared-v1";
 const RECAPTCHA_DEBUG_LOG = true;
 
@@ -1358,6 +1362,7 @@ type AutoHolyDebugInfo = {
 const MOUSE_SYNC_MOVE_INTERVAL_MS = 16;
 const REMOTE_CURSOR_HIDE_DELAY_MS = 900;
 const MIN_HP_ROW_BAND_HEIGHT_PX = 4;
+const MAX_KEY_TRIGGER_CHAIN_DEPTH = 6;
 const CHARACTER_TITLE_PATTERN = /^(.+?)\s*-\s*Flyff Universe$/i;
 
 const getCharacterNameFromTitle = (title: string): string | null => {
@@ -1365,6 +1370,156 @@ const getCharacterNameFromTitle = (title: string): string | null => {
   const match = trimmed.match(CHARACTER_TITLE_PATTERN);
   const candidate = match?.[1]?.trim();
   return candidate ? candidate : null;
+};
+
+const normalizeShortcutBinding = (rawBinding: string): string => {
+  const modifierRank: Record<string, number> = {
+    ctrl: 0,
+    alt: 1,
+    shift: 2,
+    meta: 3,
+  };
+
+  const modifiers = new Set<string>();
+  const keys: string[] = [];
+
+  rawBinding
+    .split("+")
+    .map((part) => part.trim().toLowerCase().replace(/\s+/g, " "))
+    .filter(Boolean)
+    .forEach((token) => {
+      if (token === "control" || token === "ctrl") {
+        modifiers.add("ctrl");
+        return;
+      }
+
+      if (token === "alt") {
+        modifiers.add("alt");
+        return;
+      }
+
+      if (token === "shift") {
+        modifiers.add("shift");
+        return;
+      }
+
+      if (token === "meta" || token === "cmd" || token === "command") {
+        modifiers.add("meta");
+        return;
+      }
+
+      keys.push(token);
+    });
+
+  const orderedModifiers = Array.from(modifiers).sort(
+    (left, right) => modifierRank[left] - modifierRank[right],
+  );
+
+  return [...orderedModifiers, ...keys].join("+");
+};
+
+const getOriginalKeyTriggerProfileId = (profileId: string): string => {
+  return profileId.split("::")[0];
+};
+
+const normalizeKeyTriggerRunCount = (value: unknown, fallback = 1): number => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.min(999, Math.max(1, Math.round(fallback)));
+  }
+
+  return Math.min(999, Math.max(1, Math.round(numeric)));
+};
+
+const normalizeKeyTriggerActionRepeatCount = (
+  value: unknown,
+  fallback = 1,
+): number => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.min(99, Math.max(1, Math.round(fallback)));
+  }
+
+  return Math.min(99, Math.max(1, Math.round(numeric)));
+};
+
+/**
+ * Computes the total sequential execution duration of a run-once/repeat profile
+ * including any profiles chained through action keys.
+ * Used by scheduleKeyTriggerActions to defer subsequent actions in sequential mode.
+ */
+const computeSequentialChainedDurationMs = (
+  profile: KeyTriggerProfile,
+  allProfiles: KeyTriggerProfile[],
+  visitedIds: Set<string>,
+  depth: number,
+): number => {
+  if (depth > MAX_KEY_TRIGGER_CHAIN_DEPTH || visitedIds.has(profile.id)) {
+    return 0;
+  }
+
+  const nextVisited = new Set(visitedIds).add(profile.id);
+  const isSequential = profile.delayMode !== "synchronous";
+  let singleRunMs = 0;
+
+  if (isSequential) {
+    for (const action of profile.actions) {
+      if (action.enabled === false || !action.key.trim()) {
+        continue;
+      }
+      const delayMs = Math.max(0, Math.round(action.delayMs || 0));
+      const repeatCount =
+        action.actionTriggerType === "repeat"
+          ? normalizeKeyTriggerActionRepeatCount(action.actionRepeatCount, 2)
+          : 1;
+      singleRunMs +=
+        delayMs + (repeatCount - 1) * Math.max(120, delayMs || 120);
+
+      // Recurse into any profile that this action's key would chain to
+      const normalizedKey = normalizeShortcutBinding(action.key);
+      const chained = allProfiles.find(
+        (p) =>
+          p.enabled !== false &&
+          p.triggerType !== "toggle" &&
+          p.triggerKey &&
+          normalizeShortcutBinding(p.triggerKey) === normalizedKey &&
+          !nextVisited.has(p.id),
+      );
+      if (chained) {
+        singleRunMs += computeSequentialChainedDurationMs(
+          chained,
+          allProfiles,
+          nextVisited,
+          depth + 1,
+        );
+      }
+    }
+  } else {
+    // synchronous: duration is the max individual action delay
+    const enabledActions = profile.actions.filter(
+      (a) => a.enabled !== false && a.key.trim().length > 0,
+    );
+    singleRunMs =
+      enabledActions.length > 0
+        ? Math.max(
+            ...enabledActions.map((a) =>
+              Math.max(0, Math.round(a.delayMs || 0)),
+            ),
+          )
+        : 0;
+  }
+
+  if (singleRunMs === 0) {
+    return 0;
+  }
+
+  // Account for profile-level repeat (each run is spaced by cycleMs)
+  const runCount =
+    profile.triggerType === "repeat"
+      ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
+      : 1;
+  const cycleMs = Math.max(120, singleRunMs + 120);
+  return runCount > 1 ? runCount * cycleMs : singleRunMs;
 };
 
 function MapperApp() {
@@ -1454,6 +1609,13 @@ function MapperApp() {
     number[]
   >(() => storage.loadKeyTriggerTargetTabIds());
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
+  const [currentCharacterName, setCurrentCharacterName] = useState<
+    string | null
+  >(() => getCharacterNameFromTitle(document.title));
+  const [mapperCharacterProfileMapping, setMapperCharacterProfileMapping] =
+    useState<Record<string, string>>(() =>
+      storage.loadMapperCharacterProfileMapping(),
+    );
   const [
     keyTriggerCharacterProfileMapping,
     setKeyTriggerCharacterProfileMapping,
@@ -1473,6 +1635,8 @@ function MapperApp() {
   const latestProfilesRef = useRef<MappingProfile[]>(profiles);
   const previousActiveProfileIdRef = useRef(activeProfileId);
   const isSwitchingProfileRef = useRef(false);
+  const isApplyingMappedProfileRef = useRef(false);
+  const skipMappedAutoApplyOnceRef = useRef(false);
   const previousShapeIdsRef = useRef<Set<string>>(new Set());
   const shapeBindingHistoryRef = useRef<
     Array<{ token: string; timestamp: number }>
@@ -1646,19 +1810,16 @@ function MapperApp() {
   );
 
   const keyTriggerCurrentCharacterSelectedProfileId = useMemo(() => {
-    const currentCharacterNameFromTitle = getCharacterNameFromTitle(
-      document.title,
-    );
-    const currentCharacterName =
-      currentCharacterNameFromTitle ??
+    const resolvedCharacterName =
+      currentCharacterName ??
       keyTriggerCharacters.find((tab) => tab.id === currentTabId)?.name;
 
-    if (!currentCharacterName) {
+    if (!resolvedCharacterName) {
       return null;
     }
 
     const savedProfileId =
-      keyTriggerCharacterProfileMapping[currentCharacterName];
+      keyTriggerCharacterProfileMapping[resolvedCharacterName];
     if (
       savedProfileId &&
       keyTriggerProfiles.some((profile) => profile.id === savedProfileId)
@@ -1668,6 +1829,7 @@ function MapperApp() {
 
     return null;
   }, [
+    currentCharacterName,
     currentTabId,
     keyTriggerCharacters,
     keyTriggerCharacterProfileMapping,
@@ -1687,6 +1849,8 @@ function MapperApp() {
         hasImportData: false,
         profileCount: 0,
         keyTriggerProfileCount: 0,
+        mapperDuplicateCount: 0,
+        keyTriggerDuplicateCount: 0,
         missingNameCount: 0,
         parseError: "Paste mapping JSON to import.",
       };
@@ -1696,8 +1860,12 @@ function MapperApp() {
       const parsed = JSON.parse(raw) as {
         profileName?: string;
         shapes?: ShapeMapping[];
-        profiles?: Array<{ name?: string; shapes?: ShapeMapping[] }>;
-        keyTriggerProfiles?: unknown[];
+        profiles?: Array<{
+          name?: string;
+          shapes?: ShapeMapping[];
+          settings?: Partial<MapperSettings>;
+        }>;
+        keyTriggerProfiles?: KeyTriggerProfile[];
         settings?: Partial<MapperSettings>;
         uiState?: {
           selectedPaletteShape?: ShapeType;
@@ -1707,6 +1875,75 @@ function MapperApp() {
         selectedKeyTriggerTabIds?: unknown[];
         selectedKeyTriggerTabNames?: unknown[];
         keyTriggerCharacterProfileMapping?: Record<string, string>;
+        mapperCharacterProfileMapping?: Record<string, string>;
+      };
+
+      const buildMapperSignature = (
+        candidate: Pick<MappingProfile, "shapes" | "settings">,
+      ): string => {
+        const normalizedShapes = candidate.shapes.map((shape) => ({
+          type: shape.type,
+          x: shape.x,
+          y: shape.y,
+          width: shape.width,
+          height: shape.height,
+          rotation: shape.rotation,
+          opacity: shape.opacity,
+          keyBinding: shape.keyBinding.trim(),
+          delayMs: Math.max(0, Math.round(shape.delayMs || 0)),
+          triggerType: shape.triggerType,
+        }));
+
+        return JSON.stringify({
+          shapes: normalizedShapes,
+          settings: candidate.settings,
+        });
+      };
+
+      const buildKeyTriggerSignature = (
+        profile: Pick<
+          KeyTriggerProfile,
+          | "enabled"
+          | "triggerType"
+          | "repeatCount"
+          | "triggerKey"
+          | "currentTabOnly"
+          | "otherTabsOnly"
+          | "delayMode"
+          | "actions"
+        >,
+      ): string => {
+        const normalizedActions = profile.actions.map((action) => ({
+          name: action.name.trim().toLowerCase(),
+          key: action.key.trim(),
+          delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+          enabled: action.enabled !== false,
+          actionTriggerType:
+            action.actionTriggerType === "repeat" ? "repeat" : "once",
+          actionRepeatCount:
+            action.actionTriggerType === "repeat"
+              ? normalizeKeyTriggerActionRepeatCount(
+                  action.actionRepeatCount,
+                  2,
+                )
+              : 1,
+          currentTabOnly: action.currentTabOnly === true,
+          otherTabsOnly: action.otherTabsOnly === true,
+        }));
+
+        return JSON.stringify({
+          enabled: profile.enabled !== false,
+          triggerType: profile.triggerType,
+          repeatCount:
+            profile.triggerType === "repeat"
+              ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
+              : 1,
+          triggerKey: profile.triggerKey.trim(),
+          currentTabOnly: profile.currentTabOnly === true,
+          otherTabsOnly: profile.otherTabsOnly === true,
+          delayMode: profile.delayMode,
+          actions: normalizedActions,
+        });
       };
 
       let profileCount = 0;
@@ -1759,9 +1996,131 @@ function MapperApp() {
         typeof parsed.keyTriggerCharacterProfileMapping === "object"
           ? Object.keys(parsed.keyTriggerCharacterProfileMapping).length
           : 0;
+      const mapperCharacterProfileMappingCount =
+        parsed.mapperCharacterProfileMapping &&
+        typeof parsed.mapperCharacterProfileMapping === "object"
+          ? Object.keys(parsed.mapperCharacterProfileMapping).length
+          : 0;
       const hasSettings =
         !!parsed.settings && typeof parsed.settings === "object";
       const hasUiState = !!parsed.uiState && typeof parsed.uiState === "object";
+
+      const mapperSignatures = new Set(
+        profiles.map((profile) =>
+          buildMapperSignature({
+            shapes: profile.shapes,
+            settings: profile.settings,
+          }),
+        ),
+      );
+      let mapperDuplicateCount = 0;
+
+      if (Array.isArray(parsed.profiles)) {
+        parsed.profiles.forEach((profile) => {
+          if (!Array.isArray(profile.shapes)) {
+            return;
+          }
+
+          const signature = buildMapperSignature({
+            shapes: profile.shapes.map(normalizeShape),
+            settings:
+              (profile.settings as MapperSettings | undefined) ??
+              (parsed.settings as MapperSettings | undefined) ??
+              settings,
+          });
+
+          if (mapperSignatures.has(signature)) {
+            mapperDuplicateCount += 1;
+            return;
+          }
+
+          mapperSignatures.add(signature);
+        });
+      }
+
+      if (Array.isArray(parsed.shapes)) {
+        const signature = buildMapperSignature({
+          shapes: parsed.shapes.map(normalizeShape),
+          settings: (parsed.settings as MapperSettings | undefined) ?? settings,
+        });
+
+        if (mapperSignatures.has(signature)) {
+          mapperDuplicateCount += 1;
+        } else {
+          mapperSignatures.add(signature);
+        }
+      }
+
+      const keyTriggerSignatures = new Set(
+        keyTriggerProfiles.map((profile) =>
+          buildKeyTriggerSignature({
+            enabled: profile.enabled,
+            triggerType: profile.triggerType,
+            triggerKey: profile.triggerKey,
+            currentTabOnly: profile.currentTabOnly,
+            otherTabsOnly: profile.otherTabsOnly,
+            delayMode: profile.delayMode,
+            actions: profile.actions,
+          }),
+        ),
+      );
+      const keyTriggerIdentifiers = new Set(
+        keyTriggerProfiles
+          .map((profile) => profile.profileIdentifier?.trim())
+          .filter((identifier): identifier is string =>
+            Boolean(identifier && identifier.length > 0),
+          ),
+      );
+      let keyTriggerDuplicateCount = 0;
+
+      if (Array.isArray(parsed.keyTriggerProfiles)) {
+        parsed.keyTriggerProfiles.forEach((profile) => {
+          const incomingIdentifier =
+            typeof profile.profileIdentifier === "string"
+              ? profile.profileIdentifier.trim()
+              : "";
+
+          if (
+            incomingIdentifier &&
+            keyTriggerIdentifiers.has(incomingIdentifier)
+          ) {
+            keyTriggerDuplicateCount += 1;
+            return;
+          }
+
+          const signature = buildKeyTriggerSignature({
+            enabled: profile.enabled,
+            triggerType:
+              profile.triggerType === "toggle"
+                ? "toggle"
+                : profile.triggerType === "repeat"
+                  ? "repeat"
+                  : "once",
+            repeatCount: normalizeKeyTriggerRunCount(profile.repeatCount, 2),
+            triggerKey:
+              typeof profile.triggerKey === "string" ? profile.triggerKey : "",
+            currentTabOnly: profile.currentTabOnly,
+            otherTabsOnly: profile.otherTabsOnly,
+            delayMode:
+              profile.delayMode === "synchronous"
+                ? "synchronous"
+                : "sequential",
+            actions: (Array.isArray(profile.actions)
+              ? profile.actions
+              : []) as KeyTriggerAction[],
+          });
+
+          if (keyTriggerSignatures.has(signature)) {
+            keyTriggerDuplicateCount += 1;
+            return;
+          }
+
+          if (incomingIdentifier) {
+            keyTriggerIdentifiers.add(incomingIdentifier);
+          }
+          keyTriggerSignatures.add(signature);
+        });
+      }
 
       return {
         isValidJson: true,
@@ -1771,10 +2130,13 @@ function MapperApp() {
           selectedTabCount > 0 ||
           selectedTabNameCount > 0 ||
           characterProfileMappingCount > 0 ||
+          mapperCharacterProfileMappingCount > 0 ||
           hasSettings ||
           hasUiState,
         profileCount,
         keyTriggerProfileCount,
+        mapperDuplicateCount,
+        keyTriggerDuplicateCount,
         missingNameCount,
         parseError: "",
       };
@@ -1784,11 +2146,13 @@ function MapperApp() {
         hasImportData: false,
         profileCount: 0,
         keyTriggerProfileCount: 0,
+        mapperDuplicateCount: 0,
+        keyTriggerDuplicateCount: 0,
         missingNameCount: 0,
         parseError: "Invalid JSON format.",
       };
     }
-  }, [importText]);
+  }, [importText, keyTriggerProfiles, profiles, settings]);
 
   const canImportNow =
     importAnalysis.isValidJson && importAnalysis.hasImportData;
@@ -1939,6 +2303,85 @@ function MapperApp() {
   }, [selectedPaletteShape]);
 
   useEffect(() => {
+    const updateCharacterName = () => {
+      const nextCharacterName = getCharacterNameFromTitle(document.title);
+      setCurrentCharacterName((prev) =>
+        prev === nextCharacterName ? prev : nextCharacterName,
+      );
+    };
+
+    updateCharacterName();
+
+    const titleElement = document.querySelector("title");
+    const observer = new MutationObserver(updateCharacterName);
+    if (titleElement) {
+      observer.observe(titleElement, {
+        childList: true,
+      });
+    }
+
+    const intervalId = window.setInterval(updateCharacterName, 1000);
+
+    return () => {
+      observer.disconnect();
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentCharacterName || !activeProfileId) {
+      return;
+    }
+
+    if (skipMappedAutoApplyOnceRef.current) {
+      skipMappedAutoApplyOnceRef.current = false;
+      return;
+    }
+
+    const mappedProfileId = mapperCharacterProfileMapping[currentCharacterName];
+    const hasMappedProfile =
+      typeof mappedProfileId === "string" &&
+      profiles.some((profile) => profile.id === mappedProfileId);
+
+    if (hasMappedProfile && mappedProfileId !== activeProfileId) {
+      stopAllToggleShapeAreas();
+      isApplyingMappedProfileRef.current = true;
+      isSwitchingProfileRef.current = true;
+      setActiveProfileId(mappedProfileId);
+      setSelectedProfileId(mappedProfileId);
+    }
+  }, [
+    activeProfileId,
+    currentCharacterName,
+    mapperCharacterProfileMapping,
+    profiles,
+  ]);
+
+  useEffect(() => {
+    if (!currentCharacterName || !activeProfileId) {
+      return;
+    }
+
+    setMapperCharacterProfileMapping((prev) => {
+      if (isApplyingMappedProfileRef.current) {
+        isApplyingMappedProfileRef.current = false;
+        return prev;
+      }
+
+      const existing = prev[currentCharacterName];
+
+      if (existing === activeProfileId) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        [currentCharacterName]: activeProfileId,
+      };
+    });
+  }, [activeProfileId, currentCharacterName, profiles]);
+
+  useEffect(() => {
     storage.saveUiState({
       selectedPaletteShape,
       dialogRect,
@@ -1952,13 +2395,14 @@ function MapperApp() {
         RUN_STATE_STORAGE_KEY,
         JSON.stringify({
           editMode: settings.editMode,
+          experimentalFeaturesEnabled: settings.experimentalFeaturesEnabled,
           updatedAt: Date.now(),
         }),
       );
     } catch {
       // Ignore storage write failures.
     }
-  }, [settings.editMode]);
+  }, [settings.editMode, settings.experimentalFeaturesEnabled]);
 
   useEffect(() => {
     storage.saveKeyTriggerState({
@@ -1981,6 +2425,10 @@ function MapperApp() {
   }, [keyTriggerCharacterProfileMapping]);
 
   useEffect(() => {
+    storage.saveMapperCharacterProfileMapping(mapperCharacterProfileMapping);
+  }, [mapperCharacterProfileMapping]);
+
+  useEffect(() => {
     // Validate that all stored profiles still exist
     const validatedMapping: Record<string, string> = {};
     for (const [charName, profileId] of Object.entries(
@@ -1998,6 +2446,24 @@ function MapperApp() {
       setKeyTriggerCharacterProfileMapping(validatedMapping);
     }
   }, [keyTriggerProfiles, keyTriggerCharacterProfileMapping]);
+
+  useEffect(() => {
+    const validatedMapping: Record<string, string> = {};
+    for (const [charName, profileId] of Object.entries(
+      mapperCharacterProfileMapping,
+    )) {
+      if (profiles.some((profile) => profile.id === profileId)) {
+        validatedMapping[charName] = profileId;
+      }
+    }
+
+    if (
+      Object.keys(validatedMapping).length !==
+      Object.keys(mapperCharacterProfileMapping).length
+    ) {
+      setMapperCharacterProfileMapping(validatedMapping);
+    }
+  }, [mapperCharacterProfileMapping, profiles]);
 
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
@@ -2024,27 +2490,58 @@ function MapperApp() {
         return;
       }
 
+      if (event.key === MAPPER_CHARACTER_PROFILE_MAPPING_STORAGE_KEY) {
+        setMapperCharacterProfileMapping(
+          storage.loadMapperCharacterProfileMapping(),
+        );
+        return;
+      }
+
       if (event.key === RUN_STATE_STORAGE_KEY) {
         if (!event.newValue) {
           return;
         }
 
         try {
-          const parsed = JSON.parse(event.newValue) as { editMode?: unknown };
-          if (typeof parsed.editMode !== "boolean") {
+          const parsed = JSON.parse(event.newValue) as {
+            editMode?: unknown;
+            experimentalFeaturesEnabled?: unknown;
+          };
+          const nextEditMode =
+            typeof parsed.editMode === "boolean" ? parsed.editMode : null;
+          const nextExperimentalFeaturesEnabled =
+            typeof parsed.experimentalFeaturesEnabled === "boolean"
+              ? parsed.experimentalFeaturesEnabled
+              : null;
+
+          if (
+            nextEditMode === null &&
+            nextExperimentalFeaturesEnabled === null
+          ) {
             return;
           }
 
-          const nextEditMode = parsed.editMode;
+          setSettings((prev) => {
+            let changed = false;
+            const updates: Partial<MapperSettings> = {};
 
-          setSettings((prev) =>
-            prev.editMode === nextEditMode
-              ? prev
-              : {
-                  ...prev,
-                  editMode: nextEditMode,
-                },
-          );
+            if (nextEditMode !== null && prev.editMode !== nextEditMode) {
+              updates.editMode = nextEditMode;
+              changed = true;
+            }
+
+            if (
+              nextExperimentalFeaturesEnabled !== null &&
+              prev.experimentalFeaturesEnabled !==
+                nextExperimentalFeaturesEnabled
+            ) {
+              updates.experimentalFeaturesEnabled =
+                nextExperimentalFeaturesEnabled;
+              changed = true;
+            }
+
+            return changed ? { ...prev, ...updates } : prev;
+          });
         } catch {
           // Ignore malformed sync payload.
         }
@@ -2093,8 +2590,12 @@ function MapperApp() {
           }));
 
         setKeyTriggerCharacters(tabs);
-        const tabIdSet = new Set(tabs.map((tab: CharacterTabInfo) => tab.id));
         setSelectedKeyTriggerTabIds((prev) => {
+          if (tabs.length === 0) {
+            return prev;
+          }
+
+          const tabIdSet = new Set(tabs.map((tab: CharacterTabInfo) => tab.id));
           const preselected = prev.filter((id) => tabIdSet.has(id));
           const loadedSelected = storage.loadKeyTriggerTargetTabIds();
           const toRestore = loadedSelected.filter((id) => tabIdSet.has(id));
@@ -2105,7 +2606,7 @@ function MapperApp() {
           const merged = Array.from(
             new Set([...preselected, ...toRestore, ...nameMatched]),
           );
-          return merged.length > 0 ? merged : preselected;
+          return merged.length > 0 ? merged : prev;
         });
       },
     );
@@ -2634,45 +3135,136 @@ function MapperApp() {
     [currentTabId, getKeyTriggerTargetTabIds],
   );
 
-  const getKeyTriggerTabIdsForProfile = useCallback(
-    (profile: KeyTriggerProfile): number[] => {
-      const targetTabIds = getKeyTriggerTargetTabIds();
-      // Keep backward compatibility: if profile has currentTabOnly, use it
-      if (profile.currentTabOnly) {
-        if (currentTabId === null) {
-          return [];
-        }
+  const isActionEnabled = useCallback(
+    (action: KeyTriggerAction) => action.enabled !== false,
+    [],
+  );
 
-        return targetTabIds.includes(currentTabId) ? [currentTabId] : [];
+  const executeTriggeredKeyTriggerProfiles = useCallback(
+    (
+      triggeredProfiles: KeyTriggerProfile[],
+      chainDepth = 0,
+      inheritedDelayMode?: "sequential" | "synchronous",
+    ) => {
+      if (
+        triggeredProfiles.length === 0 ||
+        chainDepth > MAX_KEY_TRIGGER_CHAIN_DEPTH
+      ) {
+        return;
       }
-      return targetTabIds;
+
+      if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+        return;
+      }
+
+      const toggleProfiles = triggeredProfiles.filter(
+        (profile) => profile.triggerType === "toggle",
+      );
+      const runProfiles = triggeredProfiles.filter(
+        (profile) => profile.triggerType !== "toggle",
+      );
+
+      toggleProfiles.forEach((profile) => {
+        const actionsByTabIds = new Map<string, KeyTriggerAction[]>();
+
+        profile.actions.forEach((action) => {
+          if (!isActionEnabled(action)) {
+            return;
+          }
+
+          const tabIds = getTabIdsForAction(
+            action,
+            profile.currentTabOnly,
+            profile.otherTabsOnly,
+          );
+          const key = JSON.stringify(tabIds);
+          const existing = actionsByTabIds.get(key) ?? [];
+          actionsByTabIds.set(key, [...existing, action]);
+        });
+
+        actionsByTabIds.forEach((actions, tabIdsJson) => {
+          const tabIds = JSON.parse(tabIdsJson) as number[];
+          if (tabIds.length === 0 || actions.length === 0) {
+            return;
+          }
+
+          const normalizedTabIds = [...tabIds].sort((a, b) => a - b);
+          const scopedToggleProfileId = `${profile.id}::${normalizedTabIds.join(",")}`;
+
+          void safeSendRuntimeMessage({
+            type: "KEY_TRIGGER_TOGGLE",
+            profileId: scopedToggleProfileId,
+            tabIds,
+            actions,
+            chainDepth,
+            delayMode: inheritedDelayMode ?? profile.delayMode,
+          });
+        });
+      });
+
+      runProfiles.forEach((profile) => {
+        const actionsByTabIds = new Map<string, KeyTriggerAction[]>();
+        const runCount =
+          profile.triggerType === "repeat"
+            ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
+            : 1;
+
+        profile.actions.forEach((action) => {
+          if (!isActionEnabled(action)) {
+            return;
+          }
+
+          const tabIds = getTabIdsForAction(
+            action,
+            profile.currentTabOnly,
+            profile.otherTabsOnly,
+          );
+          const key = JSON.stringify(tabIds);
+          const existing = actionsByTabIds.get(key) ?? [];
+          actionsByTabIds.set(key, [...existing, action]);
+        });
+
+        actionsByTabIds.forEach((actions, tabIdsJson) => {
+          const tabIds = JSON.parse(tabIdsJson) as number[];
+          if (tabIds.length === 0 || actions.length === 0) {
+            return;
+          }
+
+          void safeSendRuntimeMessage({
+            type: "KEY_TRIGGER_RUN_ONCE",
+            profileId: profile.id,
+            tabIds,
+            actions,
+            chainDepth,
+            runCount,
+            delayMode: inheritedDelayMode ?? profile.delayMode,
+          });
+        });
+      });
     },
-    [currentTabId, getKeyTriggerTargetTabIds],
+    [getTabIdsForAction, isActionEnabled],
   );
 
   const handleKeyTriggerSelectedProfileIdChange = useCallback(
     (profileId: string | null) => {
-      const currentCharacterNameFromTitle = getCharacterNameFromTitle(
-        document.title,
-      );
-      const currentCharacterName =
-        currentCharacterNameFromTitle ??
+      const resolvedCharacterName =
+        currentCharacterName ??
         keyTriggerCharacters.find((tab) => tab.id === currentTabId)?.name;
 
-      if (!currentCharacterName) {
+      if (!resolvedCharacterName) {
         return;
       }
 
       setKeyTriggerCharacterProfileMapping((prev) => {
         if (profileId === null) {
           const next = { ...prev };
-          delete next[currentCharacterName];
+          delete next[resolvedCharacterName];
           return next;
         }
-        return { ...prev, [currentCharacterName]: profileId };
+        return { ...prev, [resolvedCharacterName]: profileId };
       });
     },
-    [currentTabId, keyTriggerCharacters],
+    [currentCharacterName, currentTabId, keyTriggerCharacters],
   );
 
   const applyRemoteCursorBodyStyle = useCallback((cursor: HTMLDivElement) => {
@@ -3153,54 +3745,22 @@ function MapperApp() {
   );
 
   const dispatchKeyTriggerKey = useCallback(
-    (binding: string) => {
-      const normalizeShortcutBinding = (rawBinding: string): string => {
-        const modifierRank: Record<string, number> = {
-          ctrl: 0,
-          alt: 1,
-          shift: 2,
-          meta: 3,
-        };
-
-        const modifiers = new Set<string>();
-        const keys: string[] = [];
-
-        rawBinding
-          .split("+")
-          .map((part) => part.trim().toLowerCase().replace(/\s+/g, " "))
-          .filter(Boolean)
-          .forEach((token) => {
-            if (token === "control" || token === "ctrl") {
-              modifiers.add("ctrl");
-              return;
-            }
-
-            if (token === "alt") {
-              modifiers.add("alt");
-              return;
-            }
-
-            if (token === "shift") {
-              modifiers.add("shift");
-              return;
-            }
-
-            if (token === "meta" || token === "cmd" || token === "command") {
-              modifiers.add("meta");
-              return;
-            }
-
-            keys.push(token);
-          });
-
-        const orderedModifiers = Array.from(modifiers).sort(
-          (left, right) => modifierRank[left] - modifierRank[right],
-        );
-
-        return [...orderedModifiers, ...keys].join("+");
-      };
-
+    (
+      binding: string,
+      options?: {
+        sourceProfileId?: string;
+        chainDepth?: number;
+        delayMode?: "sequential" | "synchronous";
+      },
+    ) => {
       const normalizedBinding = normalizeShortcutBinding(binding);
+      const sourceProfileId = options?.sourceProfileId
+        ? getOriginalKeyTriggerProfileId(options.sourceProfileId)
+        : null;
+      const chainDepth = Math.max(
+        0,
+        Math.round(Number(options?.chainDepth ?? 0) || 0),
+      );
 
       if (normalizedBinding.length > 0) {
         const matchedShapes = shapes.filter((shape) => {
@@ -3225,6 +3785,31 @@ function MapperApp() {
           });
           return;
         }
+
+        if (chainDepth < MAX_KEY_TRIGGER_CHAIN_DEPTH) {
+          const triggeredProfiles = keyTriggerProfiles.filter((profile) => {
+            if (profile.enabled === false || !profile.triggerKey) {
+              return false;
+            }
+
+            if (sourceProfileId && profile.id === sourceProfileId) {
+              return false;
+            }
+
+            const normalizedTriggerKey = normalizeShortcutBinding(
+              profile.triggerKey,
+            );
+            return normalizedTriggerKey === normalizedBinding;
+          });
+
+          if (triggeredProfiles.length > 0) {
+            executeTriggeredKeyTriggerProfiles(
+              triggeredProfiles,
+              chainDepth + 1,
+              options?.delayMode,
+            );
+          }
+        }
       }
 
       isDispatchingKeyTriggerRef.current = true;
@@ -3234,7 +3819,13 @@ function MapperApp() {
         isDispatchingKeyTriggerRef.current = false;
       }
     },
-    [dispatchBindingToCanvas, settings, shapes],
+    [
+      dispatchBindingToCanvas,
+      executeTriggeredKeyTriggerProfiles,
+      keyTriggerProfiles,
+      settings,
+      shapes,
+    ],
   );
 
   const captureGameplayScreenshot = useCallback(async (): Promise<
@@ -4595,7 +5186,7 @@ function MapperApp() {
         }
 
         // ── Evaluate criteria ──────────────────────────────────────────────
-        // OR logic: stop if ANY configured Stat Name + Value is found.
+        // OR logic within each configured section, AND logic across both sections.
         // Cross-panel: stats from either panel are pooled into occurrencesByStat,
         // so Stat 1 criteria can match the right panel and vice versa.
         // Sum mode: when only ONE section is configured, occurrences of the same
@@ -4604,18 +5195,33 @@ function MapperApp() {
         const hasStat2Section = cfg.stat2Criteria.length > 0;
         const singleSectionMode = hasStat1Section !== hasStat2Section;
 
-        const allCriteria = [...cfg.stat1Criteria, ...cfg.stat2Criteria];
-        const matched =
-          allCriteria.length > 0 &&
-          allCriteria.some((criterion) => {
+        const sectionMatches = (criteria: AwakenStatCriterion[]): boolean => {
+          if (criteria.length === 0) {
+            return true;
+          }
+
+          return criteria.some((criterion) => {
             const occurrences = occurrencesByStat.get(criterion.statId) ?? [];
-            if (occurrences.length === 0) return false;
+            if (occurrences.length === 0) {
+              return false;
+            }
+
             if (singleSectionMode && occurrences.length >= 2) {
-              const sum = occurrences.reduce((a, b) => a + b, 0);
+              const sum = occurrences.reduce(
+                (total, value) => total + value,
+                0,
+              );
               return sum >= criterion.statValue;
             }
+
             return occurrences.some((value) => value >= criterion.statValue);
           });
+        };
+
+        const matched =
+          (hasStat1Section || hasStat2Section) &&
+          sectionMatches(cfg.stat1Criteria) &&
+          sectionMatches(cfg.stat2Criteria);
 
         const detectedSummary = detected
           .map((d) => {
@@ -5177,7 +5783,23 @@ function MapperApp() {
       profileId: string,
       actions: KeyTriggerAction[],
       delayMode: "sequential" | "synchronous" = "sequential",
+      options?: {
+        sourceProfileId?: string;
+        chainDepth?: number;
+        startDelayMs?: number;
+      },
     ) => {
+      const sourceProfileId =
+        options?.sourceProfileId ?? getOriginalKeyTriggerProfileId(profileId);
+      const chainDepth = Math.max(
+        0,
+        Math.round(Number(options?.chainDepth ?? 0) || 0),
+      );
+      const startDelayMs = Math.max(
+        0,
+        Math.round(Number(options?.startDelayMs ?? 0) || 0),
+      );
+
       let timerIds: number[] = [];
       if (delayMode === "sequential") {
         let accumulatedDelayMs = 0;
@@ -5186,13 +5808,67 @@ function MapperApp() {
             ...action,
             key: action.key.trim(),
             delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+            actionTriggerType:
+              action.actionTriggerType === "repeat" ? "repeat" : "once",
+            actionRepeatCount:
+              action.actionTriggerType === "repeat"
+                ? normalizeKeyTriggerActionRepeatCount(
+                    action.actionRepeatCount,
+                    2,
+                  )
+                : 1,
           }))
-          .filter((action) => action.key.length > 0)
-          .map((action) => {
-            accumulatedDelayMs += action.delayMs;
-            return window.setTimeout(() => {
-              dispatchKeyTriggerKey(action.key);
-            }, accumulatedDelayMs);
+          .filter((action) => action.enabled !== false && action.key.length > 0)
+          .flatMap((action) => {
+            const repeatCount =
+              action.actionTriggerType === "repeat"
+                ? normalizeKeyTriggerActionRepeatCount(
+                    action.actionRepeatCount,
+                    2,
+                  )
+                : 1;
+            const repeatIntervalMs = Math.max(120, action.delayMs || 120);
+            const actionTimerIds: number[] = [];
+
+            for (let index = 0; index < repeatCount; index += 1) {
+              accumulatedDelayMs += action.delayMs;
+              const offsetMs =
+                startDelayMs + accumulatedDelayMs + index * repeatIntervalMs;
+              actionTimerIds.push(
+                window.setTimeout(() => {
+                  dispatchKeyTriggerKey(action.key, {
+                    sourceProfileId,
+                    chainDepth,
+                    delayMode,
+                  });
+                }, offsetMs),
+              );
+            }
+
+            // In sequential mode: if this action's key chains to a run-once/repeat
+            // profile, defer all subsequent actions until that profile finishes.
+            if (action.key.length > 0) {
+              const normalizedActionKey = normalizeShortcutBinding(action.key);
+              const chainedProfile = keyTriggerProfiles.find(
+                (p) =>
+                  p.enabled !== false &&
+                  p.triggerType !== "toggle" &&
+                  p.triggerKey &&
+                  normalizeShortcutBinding(p.triggerKey) ===
+                    normalizedActionKey &&
+                  p.id !== sourceProfileId,
+              );
+              if (chainedProfile) {
+                accumulatedDelayMs += computeSequentialChainedDurationMs(
+                  chainedProfile,
+                  keyTriggerProfiles,
+                  new Set([sourceProfileId]),
+                  chainDepth + 1,
+                );
+              }
+            }
+
+            return actionTimerIds;
           });
       } else {
         // synchronous: each action triggers once at its individual delay
@@ -5201,12 +5877,44 @@ function MapperApp() {
             ...action,
             key: action.key.trim(),
             delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+            actionTriggerType:
+              action.actionTriggerType === "repeat" ? "repeat" : "once",
+            actionRepeatCount:
+              action.actionTriggerType === "repeat"
+                ? normalizeKeyTriggerActionRepeatCount(
+                    action.actionRepeatCount,
+                    2,
+                  )
+                : 1,
           }))
-          .filter((action) => action.key.length > 0)
-          .map((action) => {
-            return window.setTimeout(() => {
-              dispatchKeyTriggerKey(action.key);
-            }, action.delayMs);
+          .filter((action) => action.enabled !== false && action.key.length > 0)
+          .flatMap((action) => {
+            const repeatCount =
+              action.actionTriggerType === "repeat"
+                ? normalizeKeyTriggerActionRepeatCount(
+                    action.actionRepeatCount,
+                    2,
+                  )
+                : 1;
+            const repeatIntervalMs = Math.max(120, action.delayMs || 120);
+            const actionTimerIds: number[] = [];
+
+            for (let index = 0; index < repeatCount; index += 1) {
+              actionTimerIds.push(
+                window.setTimeout(
+                  () => {
+                    dispatchKeyTriggerKey(action.key, {
+                      sourceProfileId,
+                      chainDepth,
+                      delayMode,
+                    });
+                  },
+                  startDelayMs + action.delayMs + index * repeatIntervalMs,
+                ),
+              );
+            }
+
+            return actionTimerIds;
           });
       }
 
@@ -5220,7 +5928,7 @@ function MapperApp() {
         ...timerIds,
       ]);
     },
-    [dispatchKeyTriggerKey],
+    [dispatchKeyTriggerKey, keyTriggerProfiles],
   );
 
   const clearKeyTriggerProfileTimers = useCallback((profileId: string) => {
@@ -5270,6 +5978,9 @@ function MapperApp() {
           type?: string;
           profileId?: string;
           actions?: KeyTriggerAction[];
+          chainDepth?: number;
+          runCount?: number;
+          delayMode?: "sequential" | "synchronous";
           event?: MouseSyncEventPayload;
           keyEvent?: KeyboardSyncEventPayload;
         };
@@ -5281,21 +5992,112 @@ function MapperApp() {
         if (msg.type === "KEY_TRIGGER_EXECUTE_ONCE") {
           const profileId = msg.profileId ?? `once-${Date.now()}`;
           clearKeyTriggerProfileTimers(profileId);
-          // Find delayMode from profile if available, default to sequential
-          let delayMode: "sequential" | "synchronous" = "sequential";
-          if (msg.profileId) {
-            const profile = keyTriggerProfiles.find(
-              (p) => p.id === msg.profileId,
-            );
-            if (profile && profile.delayMode === "synchronous") {
-              delayMode = "synchronous";
-            }
-          }
-          scheduleKeyTriggerActions(
-            profileId,
-            Array.isArray(msg.actions) ? msg.actions : [],
-            delayMode,
+          const chainDepth = Math.max(
+            0,
+            Math.round(Number(msg.chainDepth ?? 0) || 0),
           );
+          const sourceProfileId = msg.profileId
+            ? getOriginalKeyTriggerProfileId(msg.profileId)
+            : undefined;
+
+          // Find profile settings if available.
+          const sourceProfile = sourceProfileId
+            ? keyTriggerProfiles.find(
+                (profile) => profile.id === sourceProfileId,
+              )
+            : undefined;
+
+          // Prefer propagated delayMode for chained executions, otherwise use profile mode.
+          let delayMode: "sequential" | "synchronous" = "sequential";
+          if (msg.delayMode === "synchronous") {
+            delayMode = "synchronous";
+          } else if (
+            sourceProfile &&
+            sourceProfile.delayMode === "synchronous"
+          ) {
+            delayMode = "synchronous";
+          }
+
+          const fallbackRunCount =
+            sourceProfile?.triggerType === "repeat"
+              ? normalizeKeyTriggerRunCount(sourceProfile.repeatCount, 2)
+              : 1;
+          const runCount = normalizeKeyTriggerRunCount(
+            msg.runCount,
+            fallbackRunCount,
+          );
+          const actions = Array.isArray(msg.actions) ? msg.actions : [];
+
+          if (runCount <= 1) {
+            scheduleKeyTriggerActions(profileId, actions, delayMode, {
+              sourceProfileId,
+              chainDepth,
+            });
+            return;
+          }
+
+          const runnableActions = actions
+            .map((action) => ({
+              ...action,
+              key: action.key.trim(),
+              delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+              actionTriggerType:
+                action.actionTriggerType === "repeat" ? "repeat" : "once",
+              actionRepeatCount:
+                action.actionTriggerType === "repeat"
+                  ? normalizeKeyTriggerActionRepeatCount(
+                      action.actionRepeatCount,
+                      2,
+                    )
+                  : 1,
+            }))
+            .filter(
+              (action) => action.enabled !== false && action.key.length > 0,
+            );
+
+          if (runnableActions.length === 0) {
+            return;
+          }
+
+          const baseCycleMs =
+            delayMode === "synchronous"
+              ? Math.max(
+                  ...runnableActions.map(
+                    (action) =>
+                      action.delayMs +
+                      (action.actionTriggerType === "repeat"
+                        ? (normalizeKeyTriggerActionRepeatCount(
+                            action.actionRepeatCount,
+                            2,
+                          ) -
+                            1) *
+                          Math.max(120, action.delayMs || 120)
+                        : 0),
+                  ),
+                )
+              : runnableActions.reduce(
+                  (total, action) =>
+                    total +
+                    action.delayMs +
+                    (action.actionTriggerType === "repeat"
+                      ? (normalizeKeyTriggerActionRepeatCount(
+                          action.actionRepeatCount,
+                          2,
+                        ) -
+                          1) *
+                        Math.max(120, action.delayMs || 120)
+                      : 0),
+                  0,
+                );
+          const cycleMs = Math.max(120, baseCycleMs + 120);
+
+          for (let index = 0; index < runCount; index += 1) {
+            scheduleKeyTriggerActions(profileId, actions, delayMode, {
+              sourceProfileId,
+              chainDepth,
+              startDelayMs: index * cycleMs,
+            });
+          }
           return;
         }
 
@@ -5305,15 +6107,25 @@ function MapperApp() {
           }
 
           clearKeyTriggerProfileTimers(msg.profileId);
-          const actions = Array.isArray(msg.actions) ? msg.actions : [];
-          // Find delayMode from profile if available, default to sequential
+          const actions = Array.isArray(msg.actions)
+            ? msg.actions.filter((action) => action.enabled !== false)
+            : [];
+          const chainDepth = Math.max(
+            0,
+            Math.round(Number(msg.chainDepth ?? 0) || 0),
+          );
+          // Prefer propagated delayMode for chained executions, otherwise use profile mode.
           // profileId may be scoped as "originalId::tabIds", extract original to look up
           let delayMode: "sequential" | "synchronous" = "sequential";
-          const originalProfileId = msg.profileId.split("::")[0];
+          const originalProfileId = getOriginalKeyTriggerProfileId(
+            msg.profileId,
+          );
           const profile = keyTriggerProfiles.find(
             (p) => p.id === originalProfileId,
           );
-          if (profile && profile.delayMode === "synchronous") {
+          if (msg.delayMode === "synchronous") {
+            delayMode = "synchronous";
+          } else if (profile && profile.delayMode === "synchronous") {
             delayMode = "synchronous";
           }
 
@@ -5323,15 +6135,64 @@ function MapperApp() {
             actions.forEach((action) => {
               const cleanKey = action.key.trim();
               const delayMs = Math.max(0, Math.round(action.delayMs || 0));
+              const actionRepeatCount =
+                action.actionTriggerType === "repeat"
+                  ? normalizeKeyTriggerActionRepeatCount(
+                      action.actionRepeatCount,
+                      2,
+                    )
+                  : 1;
+              const actionRepeatInterval = Math.max(120, delayMs || 120);
 
               if (cleanKey.length > 0) {
                 // Fire immediately first
-                dispatchKeyTriggerKey(cleanKey);
+                for (
+                  let repeatIndex = 0;
+                  repeatIndex < actionRepeatCount;
+                  repeatIndex += 1
+                ) {
+                  if (repeatIndex === 0) {
+                    dispatchKeyTriggerKey(cleanKey, {
+                      sourceProfileId: originalProfileId,
+                      chainDepth,
+                      delayMode,
+                    });
+                  } else {
+                    const repeatTimerId = window.setTimeout(() => {
+                      dispatchKeyTriggerKey(cleanKey, {
+                        sourceProfileId: originalProfileId,
+                        chainDepth,
+                        delayMode,
+                      });
+                    }, repeatIndex * actionRepeatInterval);
+                    timerIds.push(repeatTimerId);
+                  }
+                }
 
                 // Then repeat at the specified interval
                 if (delayMs > 0) {
                   const intervalId = window.setInterval(() => {
-                    dispatchKeyTriggerKey(cleanKey);
+                    for (
+                      let repeatIndex = 0;
+                      repeatIndex < actionRepeatCount;
+                      repeatIndex += 1
+                    ) {
+                      if (repeatIndex === 0) {
+                        dispatchKeyTriggerKey(cleanKey, {
+                          sourceProfileId: originalProfileId,
+                          chainDepth,
+                          delayMode,
+                        });
+                      } else {
+                        window.setTimeout(() => {
+                          dispatchKeyTriggerKey(cleanKey, {
+                            sourceProfileId: originalProfileId,
+                            chainDepth,
+                            delayMode,
+                          });
+                        }, repeatIndex * actionRepeatInterval);
+                      }
+                    }
                   }, delayMs);
                   timerIds.push(intervalId);
                 }
@@ -5344,7 +6205,19 @@ function MapperApp() {
           } else {
             // For sequential toggle: cycle through all actions in sequence and repeat the cycle
             const totalSequenceDelay = actions.reduce((totalDelay, action) => {
-              return totalDelay + Math.max(0, Math.round(action.delayMs || 0));
+              const delayMs = Math.max(0, Math.round(action.delayMs || 0));
+              const actionRepeatCount =
+                action.actionTriggerType === "repeat"
+                  ? normalizeKeyTriggerActionRepeatCount(
+                      action.actionRepeatCount,
+                      2,
+                    )
+                  : 1;
+              return (
+                totalDelay +
+                delayMs +
+                (actionRepeatCount - 1) * Math.max(120, delayMs || 120)
+              );
             }, 0);
             const cycleMs = Math.max(250, totalSequenceDelay + 120);
 
@@ -5353,11 +6226,18 @@ function MapperApp() {
                 msg.profileId ?? "",
                 actions,
                 delayMode,
+                {
+                  sourceProfileId: originalProfileId,
+                  chainDepth,
+                },
               );
             }, cycleMs);
 
             activeKeyTriggerTimersRef.current.set(msg.profileId, [intervalId]);
-            scheduleKeyTriggerActions(msg.profileId, actions, delayMode);
+            scheduleKeyTriggerActions(msg.profileId, actions, delayMode, {
+              sourceProfileId: originalProfileId,
+              chainDepth,
+            });
           }
           return;
         }
@@ -5693,6 +6573,90 @@ function MapperApp() {
       metaKey: boolean;
       timestamp: number;
     } | null = null;
+    const activeHoldTriggerTimers = new Map<
+      string,
+      {
+        timerId: number;
+        keyCode: string;
+        ctrl: boolean;
+        alt: boolean;
+        shift: boolean;
+        meta: boolean;
+      }
+    >();
+
+    const getPressSignature = (event: KeyboardEvent): string => {
+      return [
+        event.code || event.key,
+        event.ctrlKey ? "1" : "0",
+        event.altKey ? "1" : "0",
+        event.shiftKey ? "1" : "0",
+        event.metaKey ? "1" : "0",
+      ].join("|");
+    };
+
+    const getProfileTriggerIntervalMs = (
+      profile: KeyTriggerProfile,
+    ): number => {
+      const runnableActions = profile.actions
+        .map((action) => ({
+          ...action,
+          key: action.key.trim(),
+          delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+          actionTriggerType:
+            action.actionTriggerType === "repeat" ? "repeat" : "once",
+          actionRepeatCount:
+            action.actionTriggerType === "repeat"
+              ? normalizeKeyTriggerActionRepeatCount(
+                  action.actionRepeatCount,
+                  2,
+                )
+              : 1,
+        }))
+        .filter((action) => action.enabled !== false && action.key.length > 0);
+
+      if (runnableActions.length === 0) {
+        return 250;
+      }
+
+      const baseCycleMs =
+        profile.delayMode === "synchronous"
+          ? Math.max(
+              ...runnableActions.map(
+                (action) =>
+                  action.delayMs +
+                  (action.actionTriggerType === "repeat"
+                    ? (normalizeKeyTriggerActionRepeatCount(
+                        action.actionRepeatCount,
+                        2,
+                      ) -
+                        1) *
+                      Math.max(120, action.delayMs || 120)
+                    : 0),
+              ),
+            )
+          : runnableActions.reduce(
+              (total, action) =>
+                total +
+                action.delayMs +
+                (action.actionTriggerType === "repeat"
+                  ? (normalizeKeyTriggerActionRepeatCount(
+                      action.actionRepeatCount,
+                      2,
+                    ) -
+                      1) *
+                    Math.max(120, action.delayMs || 120)
+                  : 0),
+              0,
+            );
+
+      const runCount =
+        profile.triggerType === "repeat"
+          ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
+          : 1;
+
+      return Math.max(250, (baseCycleMs + 120) * runCount);
+    };
 
     const dispatchPendingKeyToCanvas = () => {
       if (!pendingSequencePassThrough) {
@@ -6038,6 +7002,11 @@ function MapperApp() {
       }
 
       if (!settings.editMode && !isInputTarget && !event.repeat) {
+        const pressSignature = getPressSignature(event);
+        if (activeHoldTriggerTimers.has(pressSignature)) {
+          return;
+        }
+
         const triggeredProfiles = keyTriggerProfiles.filter((profile) => {
           return (
             profile.enabled !== false &&
@@ -6067,81 +7036,28 @@ function MapperApp() {
             isDispatchingKeyTriggerRef.current = false;
           }
 
-          if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
-            return;
-          }
+          executeTriggeredKeyTriggerProfiles(triggeredProfiles, 0);
 
-          const toggleProfiles = triggeredProfiles.filter(
-            (profile) => profile.triggerType === "toggle",
-          );
-          const onceProfiles = triggeredProfiles.filter(
-            (profile) => profile.triggerType !== "toggle",
+          const repeatIntervalMs = triggeredProfiles.reduce(
+            (maxMs, profile) => {
+              return Math.max(maxMs, getProfileTriggerIntervalMs(profile));
+            },
+            250,
           );
 
-          toggleProfiles.forEach((profile) => {
-            // Group actions by their target tabs
-            const actionsByTabIds = new Map<string, KeyTriggerAction[]>();
+          const timerId = window.setInterval(() => {
+            executeTriggeredKeyTriggerProfiles(triggeredProfiles, 0);
+          }, repeatIntervalMs);
 
-            profile.actions.forEach((action) => {
-              const tabIds = getTabIdsForAction(
-                action,
-                profile.currentTabOnly,
-                profile.otherTabsOnly,
-              );
-              const key = JSON.stringify(tabIds);
-              const existing = actionsByTabIds.get(key) ?? [];
-              actionsByTabIds.set(key, [...existing, action]);
-            });
-
-            // Send one message per unique set of target tabs
-            actionsByTabIds.forEach((actions, tabIdsJson) => {
-              const tabIds = JSON.parse(tabIdsJson) as number[];
-              if (tabIds.length === 0) {
-                return;
-              }
-
-              const normalizedTabIds = [...tabIds].sort((a, b) => a - b);
-              const scopedToggleProfileId = `${profile.id}::${normalizedTabIds.join(",")}`;
-
-              void safeSendRuntimeMessage({
-                type: "KEY_TRIGGER_TOGGLE",
-                profileId: scopedToggleProfileId,
-                tabIds,
-                actions,
-              });
-            });
+          activeHoldTriggerTimers.set(pressSignature, {
+            timerId,
+            keyCode: event.code || event.key,
+            ctrl: event.ctrlKey,
+            alt: event.altKey,
+            shift: event.shiftKey,
+            meta: event.metaKey,
           });
 
-          onceProfiles.forEach((profile) => {
-            // Group actions by their target tabs
-            const actionsByTabIds = new Map<string, KeyTriggerAction[]>();
-
-            profile.actions.forEach((action) => {
-              const tabIds = getTabIdsForAction(
-                action,
-                profile.currentTabOnly,
-                profile.otherTabsOnly,
-              );
-              const key = JSON.stringify(tabIds);
-              const existing = actionsByTabIds.get(key) ?? [];
-              actionsByTabIds.set(key, [...existing, action]);
-            });
-
-            // Send one message per unique set of target tabs
-            actionsByTabIds.forEach((actions, tabIdsJson) => {
-              const tabIds = JSON.parse(tabIdsJson) as number[];
-              if (tabIds.length === 0) {
-                return;
-              }
-
-              void safeSendRuntimeMessage({
-                type: "KEY_TRIGGER_RUN_ONCE",
-                profileId: profile.id,
-                tabIds,
-                actions,
-              });
-            });
-          });
           return;
         }
       }
@@ -6338,10 +7254,47 @@ function MapperApp() {
       }
     };
 
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!event.isTrusted) {
+        return;
+      }
+
+      const releasedKeyCode = event.code || event.key;
+      const releasedModifier = event.key.toLowerCase();
+
+      activeHoldTriggerTimers.forEach((entry, signature) => {
+        const modifierReleasedStopsTimer =
+          (releasedModifier === "control" && entry.ctrl) ||
+          (releasedModifier === "alt" && entry.alt) ||
+          (releasedModifier === "shift" && entry.shift) ||
+          (releasedModifier === "meta" && entry.meta);
+
+        if (entry.keyCode === releasedKeyCode || modifierReleasedStopsTimer) {
+          window.clearInterval(entry.timerId);
+          activeHoldTriggerTimers.delete(signature);
+        }
+      });
+    };
+
+    const onWindowBlur = () => {
+      activeHoldTriggerTimers.forEach((entry) => {
+        window.clearInterval(entry.timerId);
+      });
+      activeHoldTriggerTimers.clear();
+    };
+
     window.addEventListener("keydown", onKeyDown, { capture: true });
+    window.addEventListener("keyup", onKeyUp, { capture: true });
+    window.addEventListener("blur", onWindowBlur);
     return () => {
       clearPendingSequencePassThrough();
+      activeHoldTriggerTimers.forEach((entry) => {
+        window.clearInterval(entry.timerId);
+      });
+      activeHoldTriggerTimers.clear();
       window.removeEventListener("keydown", onKeyDown, { capture: true });
+      window.removeEventListener("keyup", onKeyUp, { capture: true });
+      window.removeEventListener("blur", onWindowBlur);
     };
   }, [
     copiedShapes,
@@ -6362,8 +7315,7 @@ function MapperApp() {
     settings.toggleModeShortcut,
     settings.toggleShapesShortcut,
     settings.toggleDialogShortcut,
-    getKeyTriggerTabIdsForProfile,
-    getTabIdsForAction,
+    executeTriggeredKeyTriggerProfiles,
     shapes,
     dispatchKeyboardEventToCanvas,
     selectSingleShape,
@@ -6373,7 +7325,7 @@ function MapperApp() {
   ]);
 
   useEffect(() => {
-    if (settings.editMode || !shapesVisible) {
+    if (settings.editMode) {
       return;
     }
 
@@ -6532,6 +7484,64 @@ function MapperApp() {
       });
     };
 
+    const hasKeyTriggerPointerBinding = (
+      token:
+        | "left click"
+        | "right click"
+        | "double left click"
+        | "double right click",
+      action: {
+        ctrlKey: boolean;
+        altKey: boolean;
+        shiftKey: boolean;
+        metaKey: boolean;
+      },
+    ) => {
+      return keyTriggerProfiles.some((profile) => {
+        if (profile.enabled === false || !profile.triggerKey) {
+          return false;
+        }
+
+        const bindingParts = profile.triggerKey
+          .split("+")
+          .map((part) => part.trim().toLowerCase())
+          .filter(Boolean);
+
+        const modifiers = {
+          ctrl:
+            bindingParts.includes("ctrl") || bindingParts.includes("control"),
+          alt: bindingParts.includes("alt"),
+          shift: bindingParts.includes("shift"),
+          meta:
+            bindingParts.includes("meta") ||
+            bindingParts.includes("cmd") ||
+            bindingParts.includes("command"),
+        };
+
+        const steps = bindingParts.filter(
+          (part) =>
+            ![
+              "ctrl",
+              "control",
+              "alt",
+              "shift",
+              "meta",
+              "cmd",
+              "command",
+            ].includes(part),
+        );
+
+        return (
+          steps.length === 1 &&
+          steps[0] === token &&
+          action.ctrlKey === modifiers.ctrl &&
+          action.altKey === modifiers.alt &&
+          action.shiftKey === modifiers.shift &&
+          action.metaKey === modifiers.meta
+        );
+      });
+    };
+
     const triggerShapesFromAction = (
       token: string,
       event: {
@@ -6550,7 +7560,7 @@ function MapperApp() {
       const pointerToken = token.toLowerCase();
       const shouldDelaySingleClickPassThrough =
         (pointerToken === "left click" || pointerToken === "right click") &&
-        hasPointerBinding(
+        (hasPointerBinding(
           pointerToken === "left click"
             ? "double left click"
             : "double right click",
@@ -6560,15 +7570,37 @@ function MapperApp() {
             shiftKey: event.shiftKey,
             metaKey: event.metaKey,
           },
-        ) &&
-        !hasPointerBinding(
-          pointerToken === "left click" ? "left click" : "right click",
-          {
-            ctrlKey: event.ctrlKey,
-            altKey: event.altKey,
-            shiftKey: event.shiftKey,
-            metaKey: event.metaKey,
-          },
+        ) ||
+          hasKeyTriggerPointerBinding(
+            pointerToken === "left click"
+              ? "double left click"
+              : "double right click",
+            {
+              ctrlKey: event.ctrlKey,
+              altKey: event.altKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            },
+          )) &&
+        !(
+          hasPointerBinding(
+            pointerToken === "left click" ? "left click" : "right click",
+            {
+              ctrlKey: event.ctrlKey,
+              altKey: event.altKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            },
+          ) ||
+          hasKeyTriggerPointerBinding(
+            pointerToken === "left click" ? "left click" : "right click",
+            {
+              ctrlKey: event.ctrlKey,
+              altKey: event.altKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            },
+          )
         );
 
       recordBindingAction(shapeBindingHistoryRef.current, token);
@@ -6619,7 +7651,24 @@ function MapperApp() {
           ),
       );
 
-      if (hitAreas.length === 0) {
+      const triggeredProfiles = keyTriggerProfiles.filter((profile) => {
+        return (
+          profile.enabled !== false &&
+          profile.triggerKey &&
+          matchesBindingAction(
+            profile.triggerKey,
+            {
+              ctrlKey: event.ctrlKey,
+              altKey: event.altKey,
+              shiftKey: event.shiftKey,
+              metaKey: event.metaKey,
+            },
+            shapeBindingHistoryRef.current,
+          )
+        );
+      });
+
+      if (hitAreas.length === 0 && triggeredProfiles.length === 0) {
         return;
       }
 
@@ -6633,6 +7682,10 @@ function MapperApp() {
       hitAreas.forEach((shape) => {
         triggerShapeArea(shape, undefined, { delayMs: shape.delayMs });
       });
+
+      if (triggeredProfiles.length > 0) {
+        executeTriggeredKeyTriggerProfiles(triggeredProfiles, 0);
+      }
     };
 
     const onMouseDown = (event: MouseEvent) => {
@@ -6713,7 +7766,14 @@ function MapperApp() {
       });
       window.removeEventListener("wheel", onWheel, { capture: true });
     };
-  }, [settings.editMode, shapes, shapesVisible]);
+  }, [
+    executeTriggeredKeyTriggerProfiles,
+    keyTriggerProfiles,
+    settings,
+    settings.editMode,
+    shapes,
+    shapesVisible,
+  ]);
 
   const captureGlobalShortcut = (
     event: ReactKeyboardEvent<HTMLInputElement>,
@@ -7026,6 +8086,8 @@ function MapperApp() {
 
   const switchProfileImmediately = (nextProfileId: string) => {
     stopAllToggleShapeAreas();
+    // Allow one render cycle for manual profile change to persist mapping.
+    skipMappedAutoApplyOnceRef.current = true;
     isSwitchingProfileRef.current = true;
     setActiveProfileId(nextProfileId);
     setSelectedProfileId(nextProfileId);
@@ -7305,29 +8367,134 @@ function MapperApp() {
     }
   };
 
+  const buildMapperProfileSignature = (profile: MappingProfile): string => {
+    const normalizedShapes = profile.shapes.map((shape) => ({
+      type: shape.type,
+      x: shape.x,
+      y: shape.y,
+      width: shape.width,
+      height: shape.height,
+      rotation: shape.rotation,
+      opacity: shape.opacity,
+      keyBinding: shape.keyBinding.trim(),
+      delayMs: Math.max(0, Math.round(shape.delayMs || 0)),
+      triggerType: shape.triggerType,
+    }));
+
+    return JSON.stringify({
+      shapes: normalizedShapes,
+      settings: profile.settings,
+    });
+  };
+
+  const buildKeyTriggerProfileSignature = (
+    profile: Pick<
+      KeyTriggerProfile,
+      | "name"
+      | "enabled"
+      | "triggerType"
+      | "repeatCount"
+      | "triggerKey"
+      | "currentTabOnly"
+      | "otherTabsOnly"
+      | "delayMode"
+      | "actions"
+    >,
+  ): string => {
+    const normalizedActions = profile.actions.map((action) => ({
+      name: action.name.trim().toLowerCase(),
+      key: action.key.trim(),
+      delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+      enabled: action.enabled !== false,
+      actionTriggerType:
+        action.actionTriggerType === "repeat" ? "repeat" : "once",
+      actionRepeatCount:
+        action.actionTriggerType === "repeat"
+          ? normalizeKeyTriggerActionRepeatCount(action.actionRepeatCount, 2)
+          : 1,
+      currentTabOnly: action.currentTabOnly === true,
+      otherTabsOnly: action.otherTabsOnly === true,
+    }));
+
+    return JSON.stringify({
+      enabled: profile.enabled !== false,
+      triggerType: profile.triggerType,
+      repeatCount:
+        profile.triggerType === "repeat"
+          ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
+          : 1,
+      triggerKey: profile.triggerKey.trim(),
+      currentTabOnly: profile.currentTabOnly === true,
+      otherTabsOnly: profile.otherTabsOnly === true,
+      delayMode: profile.delayMode,
+      actions: normalizedActions,
+    });
+  };
+
+  const filterCharacterMappingByProfileIds = (
+    mapping: Record<string, string>,
+    validProfileIds: Set<string>,
+  ): Record<string, string> => {
+    const filtered: Record<string, string> = {};
+    Object.entries(mapping).forEach(([characterName, profileId]) => {
+      const normalizedCharacterName = characterName.trim();
+      if (
+        normalizedCharacterName.length > 0 &&
+        typeof profileId === "string" &&
+        validProfileIds.has(profileId)
+      ) {
+        filtered[normalizedCharacterName] = profileId;
+      }
+    });
+    return filtered;
+  };
+
   const exportMappings = async () => {
+    const selectedKeyTriggerTabIdsUnique = Array.from(
+      new Set(selectedKeyTriggerTabIds.filter((id) => Number.isFinite(id))),
+    );
     const selectedKeyTriggerTabNames = keyTriggerCharacters
       .filter((tab) => selectedKeyTriggerTabIds.includes(tab.id))
       .map((tab) => tab.name);
 
-    const payload = JSON.stringify(
-      {
-        profiles: latestProfilesRef.current,
-        activeProfileId,
-        settings: latestSettingsRef.current,
-        uiState: {
-          selectedPaletteShape,
-          dialogRect,
-          selectedUtilityTab: activeUtilityTab,
-        },
-        keyTriggerProfiles,
-        selectedKeyTriggerTabIds,
-        selectedKeyTriggerTabNames,
-        keyTriggerCharacterProfileMapping,
-      },
-      null,
-      2,
+    const mapperProfileIds = new Set(
+      latestProfilesRef.current.map((profile) => profile.id),
     );
+    const keyTriggerProfileIds = new Set(
+      keyTriggerProfiles.map((profile) => profile.id),
+    );
+
+    const filteredMapperCharacterProfileMapping =
+      filterCharacterMappingByProfileIds(
+        mapperCharacterProfileMapping,
+        mapperProfileIds,
+      );
+    const filteredKeyTriggerCharacterProfileMapping =
+      filterCharacterMappingByProfileIds(
+        keyTriggerCharacterProfileMapping,
+        keyTriggerProfileIds,
+      );
+
+    const payloadObject = {
+      schemaVersion: 2,
+      exportedAt: new Date().toISOString(),
+      profiles: latestProfilesRef.current,
+      activeProfileId,
+      settings: latestSettingsRef.current,
+      uiState: {
+        selectedPaletteShape,
+        dialogRect,
+        selectedUtilityTab: activeUtilityTab,
+      },
+      keyTriggerProfiles,
+      selectedKeyTriggerTabIds: selectedKeyTriggerTabIdsUnique,
+      selectedKeyTriggerTabNames,
+      keyTriggerCharacterProfileMapping:
+        filteredKeyTriggerCharacterProfileMapping,
+      mapperCharacterProfileMapping: filteredMapperCharacterProfileMapping,
+    };
+
+    const payload = JSON.stringify(payloadObject);
 
     let copied = false;
 
@@ -7361,9 +8528,13 @@ function MapperApp() {
 
   const performImportWithName = (baseProfileName: string) => {
     try {
+      const createImportedKeyTriggerProfileIdentifier = () =>
+        `kt-identifier-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       const parsed = JSON.parse(pendingImportText) as {
+        schemaVersion?: number;
         profileName?: string;
         shapes?: ShapeMapping[];
+        profileId?: string;
         settings?: Partial<MapperSettings>;
         uiState?: {
           selectedPaletteShape?: ShapeType;
@@ -7371,6 +8542,7 @@ function MapperApp() {
           selectedUtilityTab?: UtilityTab;
         };
         profiles?: Array<{
+          id?: string;
           name?: string;
           shapes?: ShapeMapping[];
           settings?: Partial<MapperSettings>;
@@ -7379,6 +8551,7 @@ function MapperApp() {
         selectedKeyTriggerTabIds?: unknown[];
         selectedKeyTriggerTabNames?: unknown[];
         keyTriggerCharacterProfileMapping?: Record<string, string>;
+        mapperCharacterProfileMapping?: Record<string, string>;
       };
 
       const resolveImportedSettings = (
@@ -7450,6 +8623,13 @@ function MapperApp() {
       const baseImportedSettings = baseSettingsResolution.settings;
 
       const importedProfiles: MappingProfile[] = [];
+      const skippedMapperDuplicates: string[] = [];
+      const mapperImportedToNewProfileId = new Map<string, string>();
+      const existingMapperProfileSignatures = new Set(
+        latestProfilesRef.current.map((profile) =>
+          buildMapperProfileSignature(profile),
+        ),
+      );
 
       if (Array.isArray(parsed.profiles)) {
         parsed.profiles.forEach((profile, index) => {
@@ -7475,12 +8655,25 @@ function MapperApp() {
           );
           importWarnings.push(...profileSettingsResolution.warnings);
 
-          importedProfiles.push({
+          const nextProfile: MappingProfile = {
             id: createProfileId(),
             name: uniqueName,
             shapes: profile.shapes.map(normalizeShape),
             settings: profileSettingsResolution.settings,
-          });
+          };
+
+          const signature = buildMapperProfileSignature(nextProfile);
+          if (existingMapperProfileSignatures.has(signature)) {
+            skippedMapperDuplicates.push(uniqueName);
+            return;
+          }
+
+          existingMapperProfileSignatures.add(signature);
+          importedProfiles.push(nextProfile);
+
+          if (typeof profile.id === "string" && profile.id.trim().length > 0) {
+            mapperImportedToNewProfileId.set(profile.id, nextProfile.id);
+          }
         });
       }
 
@@ -7496,12 +8689,26 @@ function MapperApp() {
           desiredName,
         );
 
-        importedProfiles.push({
+        const nextProfile: MappingProfile = {
           id: createProfileId(),
           name: uniqueName,
           shapes: parsed.shapes.map(normalizeShape),
           settings: baseImportedSettings,
-        });
+        };
+
+        const signature = buildMapperProfileSignature(nextProfile);
+        if (existingMapperProfileSignatures.has(signature)) {
+          skippedMapperDuplicates.push(uniqueName);
+        } else {
+          existingMapperProfileSignatures.add(signature);
+          importedProfiles.push(nextProfile);
+          if (
+            typeof parsed.profileId === "string" &&
+            parsed.profileId.trim().length > 0
+          ) {
+            mapperImportedToNewProfileId.set(parsed.profileId, nextProfile.id);
+          }
+        }
       }
 
       if (importedProfiles.length === 0) {
@@ -7526,13 +8733,211 @@ function MapperApp() {
         Array.isArray(parsed.keyTriggerProfiles) &&
         parsed.keyTriggerProfiles.length > 0
       ) {
-        const incomingKtProfiles = (
-          parsed.keyTriggerProfiles as KeyTriggerProfile[]
-        ).map((profile) => ({
-          ...profile,
-          enabled: profile.enabled !== false,
-        }));
-        setKeyTriggerProfiles((prev) => [...prev, ...incomingKtProfiles]);
+        const createImportedKeyTriggerProfileId = () =>
+          `kt-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const createImportedKeyTriggerActionId = () =>
+          `kt-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        const existingKeyTriggerProfileByIdentifier = new Map(
+          keyTriggerProfiles
+            .map((profile) => {
+              const identifier = profile.profileIdentifier?.trim() ?? "";
+              return identifier.length > 0
+                ? ([identifier, profile] as const)
+                : null;
+            })
+            .filter(
+              (entry): entry is readonly [string, KeyTriggerProfile] =>
+                entry !== null,
+            ),
+        );
+        const existingKeyTriggerProfileSignatures = new Set(
+          keyTriggerProfiles.map((profile) =>
+            buildKeyTriggerProfileSignature(profile),
+          ),
+        );
+        const keyTriggerImportedToNewProfileId = new Map<string, string>();
+        const incomingKtProfiles: KeyTriggerProfile[] = [];
+        const skippedKeyTriggerDuplicates: string[] = [];
+
+        (parsed.keyTriggerProfiles as KeyTriggerProfile[]).forEach(
+          (profile, profileIndex) => {
+            const importedProfileIdentifier =
+              typeof profile.profileIdentifier === "string"
+                ? profile.profileIdentifier.trim()
+                : "";
+
+            if (importedProfileIdentifier) {
+              const matchedExistingProfile =
+                existingKeyTriggerProfileByIdentifier.get(
+                  importedProfileIdentifier,
+                );
+              if (matchedExistingProfile) {
+                skippedKeyTriggerDuplicates.push(
+                  profile.name?.trim() || matchedExistingProfile.name,
+                );
+                if (
+                  typeof profile.id === "string" &&
+                  profile.id.trim().length > 0
+                ) {
+                  keyTriggerImportedToNewProfileId.set(
+                    profile.id,
+                    matchedExistingProfile.id,
+                  );
+                }
+                return;
+              }
+            }
+
+            const normalizedActions: KeyTriggerAction[] = (
+              Array.isArray(profile.actions) ? profile.actions : []
+            ).map((action, actionIndex) => ({
+              ...action,
+              id: createImportedKeyTriggerActionId(),
+              name: action.name?.trim() || `Action ${actionIndex + 1}`,
+              key: action.key?.trim() || "",
+              delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+              enabled: action.enabled !== false,
+              actionTriggerType:
+                action.actionTriggerType === "repeat" ? "repeat" : "once",
+              actionRepeatCount:
+                action.actionTriggerType === "repeat"
+                  ? normalizeKeyTriggerActionRepeatCount(
+                      action.actionRepeatCount,
+                      2,
+                    )
+                  : 1,
+              currentTabOnly: action.currentTabOnly === true,
+              otherTabsOnly: action.otherTabsOnly === true,
+            }));
+
+            const normalizedProfile: KeyTriggerProfile = {
+              id: createImportedKeyTriggerProfileId(),
+              profileIdentifier:
+                importedProfileIdentifier ||
+                createImportedKeyTriggerProfileIdentifier(),
+              name:
+                profile.name?.trim() ||
+                `Imported key-trigger ${profileIndex + 1}`,
+              enabled: profile.enabled !== false,
+              triggerType:
+                profile.triggerType === "toggle"
+                  ? "toggle"
+                  : profile.triggerType === "repeat"
+                    ? "repeat"
+                    : "once",
+              repeatCount:
+                profile.triggerType === "repeat"
+                  ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
+                  : 1,
+              triggerKey: profile.triggerKey?.trim() || "",
+              currentTabOnly: profile.currentTabOnly === true,
+              otherTabsOnly: profile.otherTabsOnly === true,
+              delayMode:
+                profile.delayMode === "synchronous"
+                  ? "synchronous"
+                  : "sequential",
+              actions: normalizedActions,
+            };
+
+            const signature =
+              buildKeyTriggerProfileSignature(normalizedProfile);
+            if (existingKeyTriggerProfileSignatures.has(signature)) {
+              skippedKeyTriggerDuplicates.push(normalizedProfile.name);
+              return;
+            }
+
+            existingKeyTriggerProfileSignatures.add(signature);
+            if (normalizedProfile.profileIdentifier) {
+              existingKeyTriggerProfileByIdentifier.set(
+                normalizedProfile.profileIdentifier,
+                normalizedProfile,
+              );
+            }
+            incomingKtProfiles.push(normalizedProfile);
+
+            if (
+              typeof profile.id === "string" &&
+              profile.id.trim().length > 0
+            ) {
+              keyTriggerImportedToNewProfileId.set(
+                profile.id,
+                normalizedProfile.id,
+              );
+            }
+          },
+        );
+
+        if (incomingKtProfiles.length > 0) {
+          setKeyTriggerProfiles((prev) => [...prev, ...incomingKtProfiles]);
+        }
+
+        if (
+          parsed.keyTriggerCharacterProfileMapping &&
+          typeof parsed.keyTriggerCharacterProfileMapping === "object"
+        ) {
+          const importedMapping = parsed.keyTriggerCharacterProfileMapping;
+          const nextMapping: Record<string, string> = {};
+
+          Object.entries(importedMapping).forEach(
+            ([characterName, profileId]) => {
+              if (
+                typeof characterName !== "string" ||
+                characterName.trim().length === 0 ||
+                typeof profileId !== "string"
+              ) {
+                return;
+              }
+
+              const remappedId =
+                keyTriggerImportedToNewProfileId.get(profileId);
+              if (remappedId) {
+                nextMapping[characterName.trim()] = remappedId;
+              }
+            },
+          );
+
+          if (Object.keys(nextMapping).length > 0) {
+            setKeyTriggerCharacterProfileMapping((prev) => ({
+              ...prev,
+              ...nextMapping,
+            }));
+          }
+        }
+
+        if (skippedKeyTriggerDuplicates.length > 0) {
+          importWarnings.push(
+            `Skipped ${skippedKeyTriggerDuplicates.length} duplicate key-trigger profile${skippedKeyTriggerDuplicates.length > 1 ? "s" : ""}.`,
+          );
+        }
+      } else if (
+        parsed.keyTriggerCharacterProfileMapping &&
+        typeof parsed.keyTriggerCharacterProfileMapping === "object"
+      ) {
+        const validProfileIds = new Set(
+          keyTriggerProfiles.map((profile) => profile.id),
+        );
+        const filteredImportedMapping: Record<string, string> = {};
+
+        Object.entries(parsed.keyTriggerCharacterProfileMapping).forEach(
+          ([characterName, profileId]) => {
+            if (
+              typeof characterName === "string" &&
+              characterName.trim().length > 0 &&
+              typeof profileId === "string" &&
+              validProfileIds.has(profileId)
+            ) {
+              filteredImportedMapping[characterName.trim()] = profileId;
+            }
+          },
+        );
+
+        if (Object.keys(filteredImportedMapping).length > 0) {
+          setKeyTriggerCharacterProfileMapping((prev) => ({
+            ...prev,
+            ...filteredImportedMapping,
+          }));
+        }
       }
 
       const importedSelectedTabIds = Array.isArray(
@@ -7576,39 +8981,39 @@ function MapperApp() {
       }
 
       if (
-        parsed.keyTriggerCharacterProfileMapping &&
-        typeof parsed.keyTriggerCharacterProfileMapping === "object"
+        parsed.mapperCharacterProfileMapping &&
+        typeof parsed.mapperCharacterProfileMapping === "object"
       ) {
-        const importedMapping = parsed.keyTriggerCharacterProfileMapping;
-        const validProfileIds = new Set(
-          [
-            ...keyTriggerProfiles,
-            ...(Array.isArray(parsed.keyTriggerProfiles)
-              ? (parsed.keyTriggerProfiles as KeyTriggerProfile[])
-              : []),
-          ].map((profile) => profile.id),
-        );
+        const importedMapperMapping = parsed.mapperCharacterProfileMapping;
 
-        const filteredImportedMapping: Record<string, string> = {};
-        Object.entries(importedMapping).forEach(
+        const filteredMapperMapping: Record<string, string> = {};
+        Object.entries(importedMapperMapping).forEach(
           ([characterName, profileId]) => {
             if (
               typeof characterName === "string" &&
               characterName.trim().length > 0 &&
-              typeof profileId === "string" &&
-              validProfileIds.has(profileId)
+              typeof profileId === "string"
             ) {
-              filteredImportedMapping[characterName] = profileId;
+              const remappedId = mapperImportedToNewProfileId.get(profileId);
+              if (remappedId) {
+                filteredMapperMapping[characterName.trim()] = remappedId;
+              }
             }
           },
         );
 
-        if (Object.keys(filteredImportedMapping).length > 0) {
-          setKeyTriggerCharacterProfileMapping((prev) => ({
+        if (Object.keys(filteredMapperMapping).length > 0) {
+          setMapperCharacterProfileMapping((prev) => ({
             ...prev,
-            ...filteredImportedMapping,
+            ...filteredMapperMapping,
           }));
         }
+      }
+
+      if (skippedMapperDuplicates.length > 0) {
+        importWarnings.push(
+          `Skipped ${skippedMapperDuplicates.length} duplicate key-mapper profile${skippedMapperDuplicates.length > 1 ? "s" : ""}.`,
+        );
       }
 
       if (parsed.settings && typeof parsed.settings === "object") {
@@ -7672,13 +9077,32 @@ function MapperApp() {
           Array.isArray(parsed.keyTriggerProfiles) &&
           parsed.keyTriggerProfiles.length > 0
         ) &&
+        !(
+          Array.isArray(parsed.selectedKeyTriggerTabIds) &&
+          parsed.selectedKeyTriggerTabIds.length > 0
+        ) &&
+        !(
+          Array.isArray(parsed.selectedKeyTriggerTabNames) &&
+          parsed.selectedKeyTriggerTabNames.length > 0
+        ) &&
+        !(
+          parsed.keyTriggerCharacterProfileMapping &&
+          typeof parsed.keyTriggerCharacterProfileMapping === "object" &&
+          Object.keys(parsed.keyTriggerCharacterProfileMapping).length > 0
+        ) &&
         !(parsed.settings && typeof parsed.settings === "object") &&
-        !(parsed.uiState && typeof parsed.uiState === "object")
+        !(parsed.uiState && typeof parsed.uiState === "object") &&
+        !(
+          parsed.mapperCharacterProfileMapping &&
+          typeof parsed.mapperCharacterProfileMapping === "object" &&
+          Object.keys(parsed.mapperCharacterProfileMapping).length > 0
+        )
       ) {
         Modal.error({
           title: "Invalid import payload",
           content:
             "Please provide a valid JSON mapping export with shapes or profiles.",
+          zIndex: 2147483647,
         });
         return;
       }
@@ -7690,14 +9114,16 @@ function MapperApp() {
 
       if (importWarnings.length > 0) {
         modal.warning({
-          title: "Some imported shortcuts were skipped",
+          title: "Some import items were skipped",
           content: importWarnings.join(" "),
+          zIndex: 2147483647,
         });
       }
     } catch {
       Modal.error({
         title: "Invalid import payload",
         content: "Please provide a valid JSON mapping export.",
+        zIndex: 2147483647,
       });
     }
   };
@@ -7735,6 +9161,7 @@ function MapperApp() {
         content:
           importAnalysis.parseError ||
           "Please provide a valid JSON mapping export with shapes.",
+        zIndex: 2147483647,
       });
       return;
     }

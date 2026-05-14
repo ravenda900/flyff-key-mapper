@@ -13,7 +13,7 @@ export type ShapeType =
   | "trapezoid";
 
 export type ThemeMode = "light" | "dark" | "system";
-export type TriggerType = "once" | "toggle";
+export type TriggerType = "once" | "toggle" | "repeat";
 export type UtilityTab = "key-mapper" | "key-trigger" | "auto-awaken";
 export type AutoHolyDebuffType = "all" | "root" | "stun";
 export type MouseSyncPositionMode = "actual" | "ratio";
@@ -123,15 +123,20 @@ export interface KeyTriggerAction {
   name: string;
   key: string;
   delayMs: number;
+  enabled?: boolean;
+  actionTriggerType?: "once" | "repeat";
+  actionRepeatCount?: number;
   currentTabOnly?: boolean;
   otherTabsOnly?: boolean;
 }
 
 export interface KeyTriggerProfile {
   id: string;
+  profileIdentifier?: string;
   name: string;
   enabled: boolean;
   triggerType: TriggerType;
+  repeatCount?: number;
   triggerKey: string;
   currentTabOnly?: boolean;
   otherTabsOnly?: boolean;

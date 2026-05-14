@@ -60,6 +60,10 @@ export const ProfileNameModal = ({
             clearProfileNameError();
           }
         }}
+        onPressEnter={(event) => {
+          event.preventDefault();
+          onSave();
+        }}
         placeholder="Enter profile name"
         autoFocus
       />

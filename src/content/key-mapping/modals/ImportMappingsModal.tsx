@@ -5,6 +5,8 @@ type ImportAnalysis = {
   hasImportData: boolean;
   profileCount: number;
   keyTriggerProfileCount: number;
+  mapperDuplicateCount: number;
+  keyTriggerDuplicateCount: number;
   parseError: string;
 };
 
@@ -70,6 +72,20 @@ export const ImportMappingsModal = ({
             : "No importable data found in JSON."
           : importAnalysis.parseError}
       </Typography.Text>
+      {importAnalysis.isValidJson &&
+        (importAnalysis.mapperDuplicateCount > 0 ||
+          importAnalysis.keyTriggerDuplicateCount > 0) && (
+          <Typography.Text type="warning">
+            {[
+              importAnalysis.mapperDuplicateCount > 0 &&
+                `${importAnalysis.mapperDuplicateCount} duplicate key-mapper profile${importAnalysis.mapperDuplicateCount > 1 ? "s" : ""}`,
+              importAnalysis.keyTriggerDuplicateCount > 0 &&
+                `${importAnalysis.keyTriggerDuplicateCount} duplicate key-trigger profile${importAnalysis.keyTriggerDuplicateCount > 1 ? "s" : ""}`,
+            ]
+              .filter(Boolean)
+              .join(" and ") + " will be skipped on import."}
+          </Typography.Text>
+        )}
       <Input.TextArea
         className="fm-w-full"
         rows={14}

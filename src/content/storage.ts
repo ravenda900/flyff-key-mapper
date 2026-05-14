@@ -1,3 +1,4 @@
+import { compressToUTF16, decompressFromUTF16 } from "lz-string";
 import type {
   KeyTriggerAction,
   KeyTriggerProfile,
@@ -32,6 +33,126 @@ const KEY_TRIGGER_TARGET_TAB_NAMES_KEY =
   "flyff-mapper-key-trigger-target-tab-names-v1";
 const KEY_TRIGGER_CHARACTER_PROFILE_MAPPING_KEY =
   "flyff-mapper-key-trigger-character-profiles-v1";
+const MAPPER_CHARACTER_PROFILE_MAPPING_KEY =
+  "flyff-mapper-character-profiles-v1";
+const CHUNK_KEY_MARKER = "__chunked_v1__";
+const COMPRESSED_KEY_MARKER = "__lz_v1__";
+const STORAGE_CHUNK_SIZE = 240_000;
+
+const getChunkMetaKey = (key: string) => `${key}::meta`;
+const getChunkValueKey = (key: string, index: number) => `${key}::${index}`;
+
+const clearChunkedStorage = (key: string) => {
+  const metaRaw = window.localStorage.getItem(getChunkMetaKey(key));
+  if (!metaRaw) {
+    return;
+  }
+
+  const [marker, countRaw] = metaRaw.split(":");
+  if (marker === CHUNK_KEY_MARKER) {
+    const chunkCount = Number(countRaw);
+    if (Number.isFinite(chunkCount) && chunkCount > 0) {
+      for (let index = 0; index < chunkCount; index += 1) {
+        window.localStorage.removeItem(getChunkValueKey(key, index));
+      }
+    }
+  }
+
+  window.localStorage.removeItem(getChunkMetaKey(key));
+};
+
+const writeStorageString = (key: string, value: string) => {
+  clearChunkedStorage(key);
+
+  if (value.length <= STORAGE_CHUNK_SIZE) {
+    window.localStorage.setItem(key, value);
+    return;
+  }
+
+  const chunks: string[] = [];
+  for (let start = 0; start < value.length; start += STORAGE_CHUNK_SIZE) {
+    chunks.push(value.slice(start, start + STORAGE_CHUNK_SIZE));
+  }
+
+  chunks.forEach((chunk, index) => {
+    window.localStorage.setItem(getChunkValueKey(key, index), chunk);
+  });
+
+  window.localStorage.setItem(
+    getChunkMetaKey(key),
+    `${CHUNK_KEY_MARKER}:${chunks.length}`,
+  );
+  window.localStorage.removeItem(key);
+};
+
+const readStorageString = (key: string): string | null => {
+  const direct = window.localStorage.getItem(key);
+  if (typeof direct === "string") {
+    return direct;
+  }
+
+  const metaRaw = window.localStorage.getItem(getChunkMetaKey(key));
+  if (!metaRaw) {
+    return null;
+  }
+
+  const [marker, countRaw] = metaRaw.split(":");
+  if (marker !== CHUNK_KEY_MARKER) {
+    return null;
+  }
+
+  const chunkCount = Number(countRaw);
+  if (!Number.isFinite(chunkCount) || chunkCount <= 0) {
+    return null;
+  }
+
+  const parts: string[] = [];
+  for (let index = 0; index < chunkCount; index += 1) {
+    const chunk = window.localStorage.getItem(getChunkValueKey(key, index));
+    if (typeof chunk !== "string") {
+      return null;
+    }
+    parts.push(chunk);
+  }
+
+  return parts.join("");
+};
+
+const serializeForStorage = (value: unknown): string => {
+  const json = JSON.stringify(value);
+  const compressed = compressToUTF16(json);
+  if (!compressed || compressed.length >= json.length) {
+    return json;
+  }
+
+  return `${COMPRESSED_KEY_MARKER}${compressed}`;
+};
+
+const deserializeFromStorage = <TValue>(raw: string): TValue => {
+  const source = raw.startsWith(COMPRESSED_KEY_MARKER)
+    ? decompressFromUTF16(raw.slice(COMPRESSED_KEY_MARKER.length))
+    : raw;
+
+  if (typeof source !== "string") {
+    throw new Error("Unable to decode stored value");
+  }
+
+  return JSON.parse(source) as TValue;
+};
+
+const saveStorageValue = (key: string, value: unknown) => {
+  const serialized = serializeForStorage(value);
+  writeStorageString(key, serialized);
+};
+
+const loadStorageValue = <TValue>(key: string): TValue | null => {
+  const raw = readStorageString(key);
+  if (!raw) {
+    return null;
+  }
+
+  return deserializeFromStorage<TValue>(raw);
+};
 
 const DEFAULT_DIALOG_RECT: DialogRect = {
   x: 40,
@@ -131,6 +252,15 @@ const normalizeDelayMs = (value: unknown): number => {
   return Math.max(0, Math.round(numeric));
 };
 
+const normalizeKeyTriggerRunCount = (value: unknown, fallback = 1): number => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(1, Math.round(fallback));
+  }
+
+  return Math.min(999, Math.max(1, Math.round(numeric)));
+};
+
 const normalizeLoadedShapes = (shapes: ShapeMapping[]): ShapeMapping[] =>
   shapes.map((shape) => ({
     ...shape,
@@ -143,6 +273,9 @@ const normalizeLoadedShapes = (shapes: ShapeMapping[]): ShapeMapping[] =>
 
 const createKeyTriggerProfileId = () =>
   `kt-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const createKeyTriggerProfileIdentifier = () =>
+  `kt-identifier-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 const createKeyTriggerActionId = () =>
   `kt-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -170,6 +303,13 @@ const normalizeKeyTriggerAction = (value: unknown): KeyTriggerAction | null => {
     name,
     key,
     delayMs: normalizeDelayMs(parsed.delayMs),
+    enabled: parsed.enabled !== false,
+    actionTriggerType:
+      parsed.actionTriggerType === "repeat" ? "repeat" : "once",
+    actionRepeatCount:
+      parsed.actionTriggerType === "repeat"
+        ? normalizeKeyTriggerRunCount(parsed.actionRepeatCount, 2)
+        : normalizeKeyTriggerRunCount(parsed.actionRepeatCount, 1),
   };
 
   if (parsed.currentTabOnly === true) {
@@ -197,17 +337,34 @@ const normalizeKeyTriggerProfile = (
         .filter((action): action is KeyTriggerAction => action !== null)
     : [];
 
+  const triggerType =
+    parsed.triggerType === "toggle"
+      ? "toggle"
+      : parsed.triggerType === "repeat"
+        ? "repeat"
+        : "once";
+  const repeatCount =
+    triggerType === "repeat"
+      ? normalizeKeyTriggerRunCount(parsed.repeatCount, 2)
+      : normalizeKeyTriggerRunCount(parsed.repeatCount, 1);
+
   return {
     id:
       typeof parsed.id === "string" && parsed.id.trim().length > 0
         ? parsed.id
         : createKeyTriggerProfileId(),
+    profileIdentifier:
+      typeof parsed.profileIdentifier === "string" &&
+      parsed.profileIdentifier.trim().length > 0
+        ? parsed.profileIdentifier.trim()
+        : createKeyTriggerProfileIdentifier(),
     name:
       typeof parsed.name === "string" && parsed.name.trim().length > 0
         ? parsed.name.trim()
         : "Profile",
     enabled: parsed.enabled !== false,
-    triggerType: parsed.triggerType === "toggle" ? "toggle" : "once",
+    triggerType,
+    repeatCount,
     triggerKey:
       typeof parsed.triggerKey === "string" ? parsed.triggerKey.trim() : "",
     currentTabOnly: parsed.currentTabOnly === true,
@@ -454,9 +611,9 @@ export const storage = {
   loadProfiles(): MapperProfilesState {
     try {
       const legacySettings = storage.loadSettings();
-      const rawProfiles = window.localStorage.getItem(PROFILES_KEY);
-      if (rawProfiles) {
-        const parsed = JSON.parse(rawProfiles) as Partial<MapperProfilesState>;
+      const parsed =
+        loadStorageValue<Partial<MapperProfilesState>>(PROFILES_KEY);
+      if (parsed) {
         const profiles = Array.isArray(parsed.profiles)
           ? parsed.profiles
               .map((profile) => toValidProfile(profile, legacySettings))
@@ -504,16 +661,15 @@ export const storage = {
       })),
     };
 
-    window.localStorage.setItem(PROFILES_KEY, JSON.stringify(sanitizedState));
+    saveStorageValue(PROFILES_KEY, sanitizedState);
   },
 
   loadShapes(): ShapeMapping[] {
     try {
-      const raw = window.localStorage.getItem(SHAPES_KEY);
-      if (!raw) {
+      const parsed = loadStorageValue<unknown>(SHAPES_KEY);
+      if (!parsed) {
         return [];
       }
-      const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
         return [];
       }
@@ -524,16 +680,15 @@ export const storage = {
   },
 
   saveShapes(shapes: ShapeMapping[]): void {
-    window.localStorage.setItem(SHAPES_KEY, JSON.stringify(shapes));
+    saveStorageValue(SHAPES_KEY, shapes);
   },
 
   loadSettings(): MapperSettings {
     try {
-      const raw = window.localStorage.getItem(SETTINGS_KEY);
-      if (!raw) {
+      const parsed = loadStorageValue<Partial<MapperSettings>>(SETTINGS_KEY);
+      if (!parsed) {
         return DEFAULT_SETTINGS;
       }
-      const parsed = JSON.parse(raw) as Partial<MapperSettings>;
       return normalizeSettings(parsed);
     } catch {
       return DEFAULT_SETTINGS;
@@ -541,24 +696,19 @@ export const storage = {
   },
 
   saveSettings(settings: MapperSettings): void {
-    window.localStorage.setItem(
-      SETTINGS_KEY,
-      JSON.stringify(sanitizeSettingsForStorage(settings)),
-    );
+    saveStorageValue(SETTINGS_KEY, sanitizeSettingsForStorage(settings));
   },
 
   loadUiState(): MapperUiState {
     try {
-      const raw = window.localStorage.getItem(UI_STATE_KEY);
-      if (!raw) {
+      const parsed = loadStorageValue<Partial<MapperUiState>>(UI_STATE_KEY);
+      if (!parsed) {
         return {
           selectedPaletteShape: "rectangle",
           dialogRect: { ...DEFAULT_DIALOG_RECT },
           selectedUtilityTab: "key-mapper",
         };
       }
-
-      const parsed = JSON.parse(raw) as Partial<MapperUiState>;
       const selectedPaletteShape = isShapeType(parsed.selectedPaletteShape)
         ? parsed.selectedPaletteShape
         : "rectangle";
@@ -581,19 +731,18 @@ export const storage = {
   },
 
   saveUiState(state: MapperUiState): void {
-    window.localStorage.setItem(UI_STATE_KEY, JSON.stringify(state));
+    saveStorageValue(UI_STATE_KEY, state);
   },
 
   loadKeyTriggerState(): KeyTriggerState {
     try {
-      const raw = window.localStorage.getItem(KEY_TRIGGER_KEY);
-      if (!raw) {
+      const parsed =
+        loadStorageValue<Partial<KeyTriggerState>>(KEY_TRIGGER_KEY);
+      if (!parsed) {
         return {
           profiles: [],
         };
       }
-
-      const parsed = JSON.parse(raw) as Partial<KeyTriggerState>;
       const profiles = Array.isArray(parsed.profiles)
         ? parsed.profiles
             .map((profile) => normalizeKeyTriggerProfile(profile))
@@ -611,17 +760,15 @@ export const storage = {
   },
 
   saveKeyTriggerState(state: KeyTriggerState): void {
-    window.localStorage.setItem(KEY_TRIGGER_KEY, JSON.stringify(state));
+    saveStorageValue(KEY_TRIGGER_KEY, state);
   },
 
   loadKeyTriggerTargetTabIds(): number[] {
     try {
-      const raw = window.localStorage.getItem(KEY_TRIGGER_TARGET_TABS_KEY);
-      if (!raw) {
+      const parsed = loadStorageValue<unknown>(KEY_TRIGGER_TARGET_TABS_KEY);
+      if (!parsed) {
         return [];
       }
-
-      const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
         return [];
       }
@@ -633,20 +780,20 @@ export const storage = {
   },
 
   saveKeyTriggerTargetTabIds(ids: number[]): void {
-    window.localStorage.setItem(
+    saveStorageValue(
       KEY_TRIGGER_TARGET_TABS_KEY,
-      JSON.stringify(ids.filter((id) => Number.isFinite(id))),
+      ids.filter((id) => Number.isFinite(id)),
     );
   },
 
   loadKeyTriggerTargetTabNames(): string[] {
     try {
-      const raw = window.localStorage.getItem(KEY_TRIGGER_TARGET_TAB_NAMES_KEY);
-      if (!raw) {
+      const parsed = loadStorageValue<unknown>(
+        KEY_TRIGGER_TARGET_TAB_NAMES_KEY,
+      );
+      if (!parsed) {
         return [];
       }
-
-      const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
         return [];
       }
@@ -658,22 +805,20 @@ export const storage = {
   },
 
   saveKeyTriggerTargetTabNames(names: string[]): void {
-    window.localStorage.setItem(
+    saveStorageValue(
       KEY_TRIGGER_TARGET_TAB_NAMES_KEY,
-      JSON.stringify(names.filter((name) => typeof name === "string")),
+      names.filter((name) => typeof name === "string"),
     );
   },
 
   loadKeyTriggerCharacterProfileMapping(): Record<string, string> {
     try {
-      const raw = window.localStorage.getItem(
+      const parsed = loadStorageValue<unknown>(
         KEY_TRIGGER_CHARACTER_PROFILE_MAPPING_KEY,
       );
-      if (!raw) {
+      if (!parsed) {
         return {};
       }
-
-      const parsed = JSON.parse(raw);
       if (typeof parsed !== "object" || !parsed) {
         return {};
       }
@@ -692,9 +837,35 @@ export const storage = {
   },
 
   saveKeyTriggerCharacterProfileMapping(mapping: Record<string, string>): void {
-    window.localStorage.setItem(
-      KEY_TRIGGER_CHARACTER_PROFILE_MAPPING_KEY,
-      JSON.stringify(mapping),
-    );
+    saveStorageValue(KEY_TRIGGER_CHARACTER_PROFILE_MAPPING_KEY, mapping);
+  },
+
+  loadMapperCharacterProfileMapping(): Record<string, string> {
+    try {
+      const parsed = loadStorageValue<unknown>(
+        MAPPER_CHARACTER_PROFILE_MAPPING_KEY,
+      );
+      if (!parsed) {
+        return {};
+      }
+      if (typeof parsed !== "object" || !parsed) {
+        return {};
+      }
+
+      const mapping: Record<string, string> = {};
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof key === "string" && typeof value === "string") {
+          mapping[key] = value;
+        }
+      }
+
+      return mapping;
+    } catch {
+      return {};
+    }
+  },
+
+  saveMapperCharacterProfileMapping(mapping: Record<string, string>): void {
+    saveStorageValue(MAPPER_CHARACTER_PROFILE_MAPPING_KEY, mapping);
   },
 };

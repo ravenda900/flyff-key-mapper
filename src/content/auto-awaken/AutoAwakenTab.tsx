@@ -9,6 +9,7 @@ import {
   Button,
   Divider,
   Form,
+  Popconfirm,
   Select,
   Space,
   Tag,
@@ -49,10 +50,17 @@ const formatRegionLabel = (region: NormalizedRect | null): string => {
 };
 
 const getSelectPopupContainer = (triggerNode: HTMLElement) =>
-  (triggerNode.closest(".ant-card-body") as HTMLElement | null) ??
-  document.body;
+  (triggerNode.closest(".fm-dialog") as HTMLElement | null) ?? document.body;
 
 const SELECT_DROPDOWN_STYLE = { zIndex: 2147483647 };
+const TOOLTIP_PROPS = {
+  getPopupContainer: getSelectPopupContainer,
+  zIndex: 2147483647,
+};
+const POPCONFIRM_PROPS = {
+  getPopupContainer: getSelectPopupContainer,
+  zIndex: 2147483647,
+};
 
 const StatCriteriaSection = ({
   section,
@@ -175,14 +183,23 @@ const StatCriteriaSection = ({
                 style={{ minWidth: 72 }}
                 onChange={(v: number) => updateRow(row.id, "statValue", v)}
               />
-              <Tooltip title="Remove">
-                <Button
-                  type="text"
-                  size="small"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => removeRow(row.id)}
-                />
+              <Tooltip title="Remove" {...TOOLTIP_PROPS}>
+                <Popconfirm
+                  title="Delete condition?"
+                  description="This cannot be undone."
+                  okText="Delete"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true }}
+                  onConfirm={() => removeRow(row.id)}
+                  {...POPCONFIRM_PROPS}
+                >
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                  />
+                </Popconfirm>
               </Tooltip>
             </Space>
           );
@@ -377,6 +394,7 @@ export const AutoAwakenTab = ({
                   ? "Add at least one stat condition"
                   : ""
             }
+            {...TOOLTIP_PROPS}
           >
             <Button
               block

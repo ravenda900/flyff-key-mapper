@@ -1,5 +1,39 @@
 # Flyff Mapper Release Notes
 
+## v3.1.0 (2026-05-15)
+
+Chained Profile Timing, Cross-Tab Mapper Stability, and Auto-Awaken Reliability.
+
+### Added
+
+- Added profile-level Key Trigger repeat mode (triggerType: repeat) with configurable repeat count.
+- Added action-level repeat mode (actionTriggerType: repeat) with per-action repeat count.
+- Added hold-to-repeat trigger behavior for Key Trigger profiles while the trigger key is held.
+
+### Changed
+
+- Changed chained profile behavior in sequential mode: when an action triggers another profile, subsequent actions now wait for the triggered profile to finish, then apply the next action delay.
+- Changed chained profile behavior in synchronous mode: inherited synchronous timing is now applied consistently to plain actions and profile-triggered actions across the full chain.
+- Updated cross-tab run-state sync payload to include experimentalFeaturesEnabled.
+- Updated selected character/tab retention so Key Trigger selections survive transient tab reload windows.
+
+### Fixed
+
+- Fixed Key Mapper character-profile mapping getting stuck after switching profiles in other tabs.
+- Fixed mapping sync race that could revert manual profile switches during auto-apply mapping.
+- Fixed Auto-Awaken criteria evaluation to match intended semantics.
+- Fixed Auto-Awaken section matching to use OR logic within each configured section and AND logic across Stat 1 and Stat 2 sections.
+- Fixed Auto-Awaken cross-panel occurrence pooling and single-section sum-mode handling.
+
+### Tests
+
+- Added and stabilized Auto-Awaken regression coverage for criteria matching behavior.
+
+### Packaging
+
+- Package version updated to 3.1.0.
+- Manifest extension version updated to 3.1.0.
+
 ## v3.0.0 (2026-05-13)
 
 Character-Aware Key Trigger Profiles and Parallel Synchronous Runtime.

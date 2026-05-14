@@ -37,6 +37,45 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
   - Rename, create, and delete profiles.
 - Persistent local storage for settings and shapes.
 
+## What's new in v3.1.0
+
+### Key Trigger chaining and execution model
+
+- Profile-level repeat trigger mode:
+  - Profiles can now run in `once`, `toggle`, or `repeat` mode.
+  - `repeat` mode runs a profile for a configured number of cycles.
+
+- Action-level repeat mode:
+  - Each action can run in `once` or `repeat` mode.
+  - Action repeat count is configurable per action.
+
+- Hold-to-repeat trigger behavior:
+  - Holding a profile trigger key now repeatedly executes profile actions at interval.
+
+- Chain-aware sequential timing:
+  - If an action triggers another profile (by using that profile's trigger key), sequential mode now waits for the triggered profile chain to complete before continuing.
+  - Next action timing becomes: `triggered chain total duration + next action delay`.
+
+- Chain-aware synchronous timing:
+  - Synchronous delay mode is now inherited through profile chains.
+  - This inheritance applies to both plain key actions and profile-triggering actions.
+
+### Cross-tab sync and profile mapping
+
+- Key Mapper character-profile switching in other tabs no longer sticks to an old mapping.
+- Mapper auto-apply mapping now avoids overwriting manual profile switches.
+- Selected Key Trigger character/tab targets are preserved across transient tab reloads and restored when tabs are available again.
+- Cross-tab runtime sync now includes `experimentalFeaturesEnabled` state.
+
+### Auto-Awaken reliability improvements
+
+- Criteria evaluation now follows intended logic:
+  - OR inside each criteria section.
+  - AND between Stat 1 and Stat 2 sections.
+  - Correct handling of pooled detections across both stat panels.
+  - Correct single-section sum behavior.
+- Added regression tests for Auto-Awaken matching behavior.
+
 ## Tech stack
 
 - React + TypeScript + Vite
@@ -130,26 +169,44 @@ All configurable shortcuts can be edited from the control panel.
 
 ## Import/Export format
 
-Export copies the active profile as JSON with a `profileName`, `shapes`, and `settings`.
+`Copy Share JSON` exports a schema-based payload that includes Key Mapper, Key Trigger, settings, UI state, and character-profile mappings.
 
-Top-level format:
+Top-level payload (`schemaVersion: 2`):
 
 ```json
 {
-  "profileName": "My Farm Profile",
-  "shapes": [
+  "schemaVersion": 2,
+  "exportedAt": "2025-03-01T11:22:33.000Z",
+  "profiles": [
     {
-      "id": "...",
-      "type": "rectangle",
-      "x": 120,
-      "y": 240,
-      "width": 140,
-      "height": 100,
-      "rotation": 0,
-      "opacity": 1,
-      "keyBinding": "Q"
+      "id": "profile-1",
+      "name": "My Mapper Profile",
+      "shapes": [
+        {
+          "id": "shape-1",
+          "type": "rectangle",
+          "x": 120,
+          "y": 240,
+          "width": 140,
+          "height": 100,
+          "rotation": 0,
+          "opacity": 1,
+          "keyBinding": "Q"
+        }
+      ],
+      "settings": {
+        "theme": "system",
+        "editMode": true,
+        "showHandles": false,
+        "strictPassthrough": true,
+        "addKeyMapShortcut": "Alt+Shift+A",
+        "toggleModeShortcut": "Alt+Shift+S",
+        "focusCanvasShortcut": "Alt+Shift+F",
+        "toggleShapesShortcut": "Alt+Shift+H"
+      }
     }
   ],
+  "activeProfileId": "profile-1",
   "settings": {
     "theme": "system",
     "editMode": true,
@@ -159,15 +216,86 @@ Top-level format:
     "toggleModeShortcut": "Alt+Shift+S",
     "focusCanvasShortcut": "Alt+Shift+F",
     "toggleShapesShortcut": "Alt+Shift+H"
+  },
+  "uiState": {
+    "selectedPaletteShape": "rectangle",
+    "dialogRect": {
+      "x": 90,
+      "y": 70,
+      "width": 560,
+      "height": 680
+    },
+    "selectedUtilityTab": "key-mapper"
+  },
+  "keyTriggerProfiles": [
+    {
+      "id": "kt-profile-1",
+      "profileIdentifier": "kt-identifier-abc123",
+      "name": "Burst Combo",
+      "enabled": true,
+      "triggerType": "once",
+      "triggerKey": "R",
+      "delayMode": "sequential",
+      "actions": [
+        {
+          "id": "kt-action-1",
+          "name": "Action 1",
+          "key": "1",
+          "delayMs": 0,
+          "enabled": true,
+          "currentTabOnly": false,
+          "otherTabsOnly": false
+        }
+      ]
+    }
+  ],
+  "selectedKeyTriggerTabIds": [123],
+  "selectedKeyTriggerTabNames": ["MyCharacter"],
+  "keyTriggerCharacterProfileMapping": {
+    "MyCharacter": "kt-profile-1"
+  },
+  "mapperCharacterProfileMapping": {
+    "MyCharacter": "profile-1"
   }
 }
 ```
 
-Import behavior:
+How import works:
 
-- Import never replaces your current mappings.
-- Every import is added as a new profile.
-- If the payload has no `profileName`, a generated imported profile name is used.
+- Paste JSON into `Import shared mappings` and click `Import`.
+- If key-mapper profiles are present, you are prompted for a base profile name.
+- Imported key-mapper profile IDs are regenerated, and character mappings are remapped to those new IDs.
+- Imported key-trigger profile/action IDs are regenerated, and key-trigger character mappings are remapped.
+- Import merges into existing data; it does not wipe current profiles.
+
+Duplicate handling:
+
+- Key Mapper duplicate detection is signature-based (normalized profile content).
+- Key Trigger duplicate detection prioritizes `profileIdentifier` first, then falls back to signature matching.
+- If a key-trigger profile matches an existing `profileIdentifier`, import skips creating a duplicate and remaps imported references to the existing local profile.
+- Duplicate profiles are skipped and summarized in an import warning.
+
+Settings and UI merge behavior:
+
+- Top-level `settings` are applied if present.
+- Profile-level settings inside `profiles[]` are preserved for each imported key-mapper profile.
+- Conflicting global shortcuts are not blindly overwritten; conflicts are detected and kept on current local values with warnings.
+- `uiState.selectedPaletteShape`, `uiState.selectedUtilityTab`, and `uiState.dialogRect` are applied only when valid.
+- `selectedKeyTriggerTabIds` and `selectedKeyTriggerTabNames` are resolved against currently available characters/tabs.
+
+Supported payload shapes:
+
+- Current schema (`schemaVersion: 2`) full payload.
+- Legacy payload with top-level `profileName` + `shapes` (+ optional `settings`).
+
+Edge cases:
+
+- Invalid JSON or payloads without importable data show an error and are rejected.
+- Key-trigger actions with missing values are normalized (`name`, `delayMs`, `enabled`, tab flags).
+- Empty/invalid character mapping entries are ignored.
+- If imported profile names collide, unique names are generated.
+- If imported key-mapper profiles are all duplicates, only non-profile sections (for example key-trigger data/settings/UI) can still be applied when valid.
+- Importing the same key-trigger payload repeatedly will not duplicate profiles when `profileIdentifier` is present and stable.
 
 ## Troubleshooting
 
@@ -195,6 +323,8 @@ Declared in manifest:
 
 ## Versioning
 
-Manifest version is currently `2.0.0`.
+Current release version is `3.1.0`.
+
+Extension manifest format remains **Manifest V3**.
 
 See `RELEASE_NOTES.md` for publish-ready release notes.

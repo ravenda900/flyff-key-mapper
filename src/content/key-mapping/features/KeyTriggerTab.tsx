@@ -12,6 +12,7 @@ import {
   Empty,
   Input,
   InputNumber,
+  Popconfirm,
   Popover,
   Segmented,
   Space,
@@ -46,9 +47,11 @@ type Props = {
 
 type ProfileEditorDraft = {
   id: string;
+  profileIdentifier: string;
   name: string;
   enabled: boolean;
   triggerType: TriggerType;
+  repeatCount: number;
   triggerKey: string;
   currentTabOnly?: boolean;
   otherTabsOnly?: boolean;
@@ -56,8 +59,29 @@ type ProfileEditorDraft = {
   actions: KeyTriggerAction[];
 };
 
+const normalizeRepeatCount = (value: unknown, fallback = 2): number => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.min(999, Math.max(2, Math.round(fallback)));
+  }
+
+  return Math.min(999, Math.max(2, Math.round(numeric)));
+};
+
+const normalizeActionRepeatCount = (value: unknown, fallback = 2): number => {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.min(99, Math.max(2, Math.round(fallback)));
+  }
+
+  return Math.min(99, Math.max(2, Math.round(numeric)));
+};
+
 const createProfileId = () =>
   `kt-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const createProfileIdentifier = () =>
+  `kt-identifier-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
 const createActionId = () =>
   `kt-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -250,6 +274,9 @@ const createDefaultAction = (
     name: getNextActionName(existingNames),
     key: "",
     delayMs: 0,
+    enabled: true,
+    actionTriggerType: "once",
+    actionRepeatCount: 1,
   };
 };
 
@@ -264,6 +291,12 @@ export const KeyTriggerTab = ({
 }: Props) => {
   const { token } = theme.useToken();
   const dialogTooltipProps = {
+    getPopupContainer: (triggerNode: HTMLElement) =>
+      (triggerNode.closest(".fm-dialog") as HTMLElement | null) ??
+      document.body,
+    zIndex: 2147483647,
+  };
+  const dialogPopconfirmProps = {
     getPopupContainer: (triggerNode: HTMLElement) =>
       (triggerNode.closest(".fm-dialog") as HTMLElement | null) ??
       document.body,
@@ -374,9 +407,11 @@ export const KeyTriggerTab = ({
     setEditingProfileId(id);
     setEditorDraft({
       id,
+      profileIdentifier: createProfileIdentifier(),
       name,
       enabled: true,
       triggerType: "once",
+      repeatCount: 2,
       triggerKey: "",
       delayMode: "sequential",
       actions: [createDefaultAction()],
@@ -388,16 +423,26 @@ export const KeyTriggerTab = ({
     setEditingProfileId(profile.id);
     setEditorDraft({
       id: profile.id,
+      profileIdentifier: profile.profileIdentifier ?? createProfileIdentifier(),
       name: profile.name,
       enabled: profile.enabled !== false,
       triggerType: profile.triggerType,
+      repeatCount: normalizeRepeatCount(profile.repeatCount, 2),
       triggerKey: profile.triggerKey,
       currentTabOnly: profile.currentTabOnly,
       otherTabsOnly: profile.otherTabsOnly,
       delayMode: profile.delayMode || "sequential",
       actions:
         profile.actions.length > 0
-          ? profile.actions.map((action) => ({ ...action }))
+          ? profile.actions.map((action) => ({
+              ...action,
+              actionTriggerType:
+                action.actionTriggerType === "repeat" ? "repeat" : "once",
+              actionRepeatCount:
+                action.actionTriggerType === "repeat"
+                  ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
+                  : 1,
+            }))
           : [createDefaultAction()],
     });
   };
@@ -412,12 +457,20 @@ export const KeyTriggerTab = ({
     const duplicated: KeyTriggerProfile = {
       ...profile,
       id: duplicatedId,
+      profileIdentifier: createProfileIdentifier(),
       name: duplicatedName,
       enabled: profile.enabled !== false,
+      repeatCount: normalizeRepeatCount(profile.repeatCount, 2),
       delayMode: profile.delayMode || "sequential",
       actions: profile.actions.map((action) => ({
         ...action,
         id: createActionId(),
+        actionTriggerType:
+          action.actionTriggerType === "repeat" ? "repeat" : "once",
+        actionRepeatCount:
+          action.actionTriggerType === "repeat"
+            ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
+            : 1,
       })),
     };
 
@@ -474,18 +527,32 @@ export const KeyTriggerTab = ({
         ? editorDraft.actions
         : [createDefaultAction()];
 
-    const normalizedActions = sourceActions.map((action, index) => ({
-      ...action,
-      name: action.name.trim() || `Action ${index + 1}`,
-      key: action.key.trim(),
-      delayMs: Math.max(0, Math.round(action.delayMs || 0)),
-    }));
+    const normalizedActions: KeyTriggerAction[] = sourceActions.map(
+      (action, index) => ({
+        ...action,
+        name: action.name.trim() || `Action ${index + 1}`,
+        key: action.key.trim(),
+        delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+        enabled: action.enabled !== false,
+        actionTriggerType:
+          action.actionTriggerType === "repeat" ? "repeat" : "once",
+        actionRepeatCount:
+          action.actionTriggerType === "repeat"
+            ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
+            : 1,
+      }),
+    );
 
     const nextProfile: KeyTriggerProfile = {
       id: editorDraft.id,
+      profileIdentifier: editorDraft.profileIdentifier,
       name: normalizedName,
       enabled: editorDraft.enabled,
       triggerType: editorDraft.triggerType,
+      repeatCount:
+        editorDraft.triggerType === "repeat"
+          ? normalizeRepeatCount(editorDraft.repeatCount, 2)
+          : 1,
       triggerKey: normalizedTriggerKey,
       ...(editorDraft.currentTabOnly && { currentTabOnly: true }),
       ...(editorDraft.otherTabsOnly && { otherTabsOnly: true }),
@@ -549,6 +616,9 @@ export const KeyTriggerTab = ({
           name: nextName,
           key: "",
           delayMs: 0,
+          enabled: true,
+          actionTriggerType: "once",
+          actionRepeatCount: 1,
         },
       ],
     });
@@ -706,19 +776,29 @@ export const KeyTriggerTab = ({
                                 />
                               </Tooltip>
                               <Tooltip title="Delete" {...dialogTooltipProps}>
-                                <Button
-                                  type="text"
-                                  size="small"
-                                  danger
-                                  style={{
-                                    color: isConfigLocked
-                                      ? token.colorTextDisabled
-                                      : token.colorError,
-                                  }}
-                                  icon={<DeleteOutlined />}
-                                  onClick={() => deleteProfile(profile.id)}
+                                <Popconfirm
+                                  title="Delete profile?"
+                                  description="This cannot be undone."
+                                  okText="Delete"
+                                  cancelText="Cancel"
+                                  okButtonProps={{ danger: true }}
+                                  onConfirm={() => deleteProfile(profile.id)}
                                   disabled={isConfigLocked}
-                                />
+                                  {...dialogPopconfirmProps}
+                                >
+                                  <Button
+                                    type="text"
+                                    size="small"
+                                    danger
+                                    style={{
+                                      color: isConfigLocked
+                                        ? token.colorTextDisabled
+                                        : token.colorError,
+                                    }}
+                                    icon={<DeleteOutlined />}
+                                    disabled={isConfigLocked}
+                                  />
+                                </Popconfirm>
                               </Tooltip>
                             </Space>
                           </div>
@@ -747,7 +827,9 @@ export const KeyTriggerTab = ({
                               <Typography.Text type="secondary">
                                 {profile.triggerType === "toggle"
                                   ? "Toggle"
-                                  : "Once"}
+                                  : profile.triggerType === "repeat"
+                                    ? `Repeat (${normalizeRepeatCount(profile.repeatCount, 2)}x)`
+                                    : "Once"}
                               </Typography.Text>
                             </div>
                             <div className="fm-kt-profile-meta-row">
@@ -789,6 +871,13 @@ export const KeyTriggerTab = ({
                                               {action.name.trim() ||
                                                 `Action ${index + 1}`}
                                             </Typography.Text>
+                                            {action.enabled === false && (
+                                              <div>
+                                                <Typography.Text type="warning">
+                                                  Disabled
+                                                </Typography.Text>
+                                              </div>
+                                            )}
                                             <div>
                                               <Typography.Text type="secondary">
                                                 Shortcut:{" "}
@@ -869,16 +958,50 @@ export const KeyTriggerTab = ({
                       options={[
                         { label: "Once", value: "once" },
                         { label: "Toggle", value: "toggle" },
+                        { label: "Repeat", value: "repeat" },
                       ]}
                       disabled={isConfigLocked}
                       onChange={(value) => {
+                        const triggerType: TriggerType =
+                          value === "toggle"
+                            ? "toggle"
+                            : value === "repeat"
+                              ? "repeat"
+                              : "once";
                         setEditorDraft({
                           ...editorDraft,
-                          triggerType: value === "toggle" ? "toggle" : "once",
+                          triggerType,
+                          repeatCount:
+                            triggerType === "repeat"
+                              ? normalizeRepeatCount(editorDraft.repeatCount, 2)
+                              : editorDraft.repeatCount,
                         });
                       }}
                     />
                   </div>
+
+                  {editorDraft.triggerType === "repeat" && (
+                    <div>
+                      <Typography.Text type="secondary">
+                        Repeat Count
+                      </Typography.Text>
+                      <InputNumber
+                        className="fm-w-full"
+                        min={2}
+                        max={999}
+                        step={1}
+                        precision={0}
+                        value={normalizeRepeatCount(editorDraft.repeatCount, 2)}
+                        disabled={isConfigLocked}
+                        onChange={(value) => {
+                          setEditorDraft({
+                            ...editorDraft,
+                            repeatCount: normalizeRepeatCount(value, 2),
+                          });
+                        }}
+                      />
+                    </div>
+                  )}
 
                   <div>
                     <Typography.Text type="secondary">
@@ -1105,8 +1228,13 @@ export const KeyTriggerTab = ({
                           <span>Name</span>
                           <span>Key</span>
                           <Tooltip title="ms" {...dialogTooltipProps}>
-                            <span>Delay</span>
+                            <div style={{ width: "100%" }}>
+                              <span>Delay</span>
+                            </div>
                           </Tooltip>
+                          <span>Mode</span>
+                          <span>Times</span>
+                          <span>Enabled</span>
                           <span>Actions</span>
                         </div>
 
@@ -1348,6 +1476,104 @@ export const KeyTriggerTab = ({
                                   </div>
                                 </Tooltip>
 
+                                <Segmented
+                                  size="small"
+                                  value={
+                                    action.actionTriggerType === "repeat"
+                                      ? "repeat"
+                                      : "once"
+                                  }
+                                  options={[
+                                    { label: "Once", value: "once" },
+                                    { label: "Repeat", value: "repeat" },
+                                  ]}
+                                  disabled={isConfigLocked}
+                                  onChange={(value) => {
+                                    setEditorDraft({
+                                      ...editorDraft,
+                                      actions: editorDraft.actions.map(
+                                        (item) =>
+                                          item.id === action.id
+                                            ? {
+                                                ...item,
+                                                actionTriggerType:
+                                                  value === "repeat"
+                                                    ? "repeat"
+                                                    : "once",
+                                                actionRepeatCount:
+                                                  value === "repeat"
+                                                    ? normalizeActionRepeatCount(
+                                                        item.actionRepeatCount,
+                                                        2,
+                                                      )
+                                                    : 1,
+                                              }
+                                            : item,
+                                      ),
+                                    });
+                                  }}
+                                />
+
+                                <InputNumber
+                                  min={1}
+                                  max={99}
+                                  step={1}
+                                  precision={0}
+                                  value={
+                                    action.actionTriggerType === "repeat"
+                                      ? normalizeActionRepeatCount(
+                                          action.actionRepeatCount,
+                                          2,
+                                        )
+                                      : 1
+                                  }
+                                  disabled={
+                                    isConfigLocked ||
+                                    action.actionTriggerType !== "repeat"
+                                  }
+                                  onChange={(value) => {
+                                    setEditorDraft({
+                                      ...editorDraft,
+                                      actions: editorDraft.actions.map(
+                                        (item) =>
+                                          item.id === action.id
+                                            ? {
+                                                ...item,
+                                                actionRepeatCount:
+                                                  item.actionTriggerType ===
+                                                  "repeat"
+                                                    ? normalizeActionRepeatCount(
+                                                        value,
+                                                        2,
+                                                      )
+                                                    : 1,
+                                              }
+                                            : item,
+                                      ),
+                                    });
+                                  }}
+                                  style={{ width: "100%" }}
+                                />
+
+                                <Checkbox
+                                  checked={action.enabled !== false}
+                                  disabled={isConfigLocked}
+                                  onChange={(event) => {
+                                    setEditorDraft({
+                                      ...editorDraft,
+                                      actions: editorDraft.actions.map(
+                                        (item) =>
+                                          item.id === action.id
+                                            ? {
+                                                ...item,
+                                                enabled: event.target.checked,
+                                              }
+                                            : item,
+                                      ),
+                                    });
+                                  }}
+                                />
+
                                 <Space size={4}>
                                   <Tooltip
                                     title="Duplicate"
@@ -1413,22 +1639,17 @@ export const KeyTriggerTab = ({
                                     }
                                     {...dialogTooltipProps}
                                   >
-                                    <Button
-                                      type="text"
-                                      danger
-                                      style={{
-                                        color:
-                                          isConfigLocked ||
-                                          editorDraft.actions.length <= 1
-                                            ? token.colorTextDisabled
-                                            : token.colorError,
-                                      }}
-                                      icon={<DeleteOutlined />}
+                                    <Popconfirm
+                                      title="Delete action?"
+                                      description="This cannot be undone."
+                                      okText="Delete"
+                                      cancelText="Cancel"
+                                      okButtonProps={{ danger: true }}
                                       disabled={
                                         isConfigLocked ||
                                         editorDraft.actions.length <= 1
                                       }
-                                      onClick={() => {
+                                      onConfirm={() => {
                                         if (editorDraft.actions.length <= 1) {
                                           return;
                                         }
@@ -1440,7 +1661,25 @@ export const KeyTriggerTab = ({
                                           ),
                                         });
                                       }}
-                                    />
+                                      {...dialogPopconfirmProps}
+                                    >
+                                      <Button
+                                        type="text"
+                                        danger
+                                        style={{
+                                          color:
+                                            isConfigLocked ||
+                                            editorDraft.actions.length <= 1
+                                              ? token.colorTextDisabled
+                                              : token.colorError,
+                                        }}
+                                        icon={<DeleteOutlined />}
+                                        disabled={
+                                          isConfigLocked ||
+                                          editorDraft.actions.length <= 1
+                                        }
+                                      />
+                                    </Popconfirm>
                                   </Tooltip>
                                 </Space>
                               </div>

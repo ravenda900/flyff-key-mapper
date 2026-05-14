@@ -40,6 +40,11 @@ type KeyTriggerActionMessage = {
   name: string;
   key: string;
   delayMs: number;
+  enabled?: boolean;
+  actionTriggerType?: "once" | "repeat";
+  actionRepeatCount?: number;
+  currentTabOnly?: boolean;
+  otherTabsOnly?: boolean;
 };
 
 const activeToggleTargets = new Map<string, number[]>();
@@ -191,6 +196,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       tabIds?: number[];
       actions?: KeyTriggerActionMessage[];
       profileId?: string;
+      chainDepth?: number;
+      runCount?: number;
+      delayMode?: "sequential" | "synchronous";
     };
 
     const tabIds = Array.isArray(payload.tabIds)
@@ -208,6 +216,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           type: "KEY_TRIGGER_EXECUTE_ONCE",
           profileId: payload.profileId,
           actions,
+          chainDepth: payload.chainDepth,
+          runCount: payload.runCount,
+          delayMode: payload.delayMode,
         })
         .catch(() => undefined);
     });
@@ -221,6 +232,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       tabIds?: number[];
       actions?: KeyTriggerActionMessage[];
       profileId?: string;
+      chainDepth?: number;
+      delayMode?: "sequential" | "synchronous";
     };
 
     if (!payload.profileId) {
@@ -259,6 +272,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           type: "KEY_TRIGGER_START_TOGGLE",
           profileId: payload.profileId,
           actions,
+          chainDepth: payload.chainDepth,
+          delayMode: payload.delayMode,
         })
         .catch(() => undefined);
     });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { matchesBinding } from "./keybinding";
+import {
+  matchesBinding,
+  matchesBindingAction,
+  recordBindingAction,
+  type BindingHistoryEntry,
+} from "./keybinding";
 
 type KeyEventShape = Pick<
   KeyboardEvent,
@@ -16,6 +21,19 @@ const makeEvent = (partial: Partial<KeyEventShape>): KeyboardEvent =>
     metaKey: false,
     ...partial,
   }) as KeyboardEvent;
+
+const makeAction = (partial: {
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  metaKey?: boolean;
+}) => ({
+  ctrlKey: false,
+  altKey: false,
+  shiftKey: false,
+  metaKey: false,
+  ...partial,
+});
 
 describe("matchesBinding", () => {
   it("matches Shift+1 when event key is !", () => {
@@ -70,5 +88,52 @@ describe("matchesBinding", () => {
       ctrlKey: true,
     });
     expect(matchesBinding(event, "Ctrl+ArrowLeft")).toBe(true);
+  });
+});
+
+describe("matchesBindingAction", () => {
+  it("matches modifier + mouse token (Ctrl+Left Click)", () => {
+    const history: BindingHistoryEntry[] = [];
+    recordBindingAction(history, "Left Click", 1000);
+
+    expect(
+      matchesBindingAction(
+        "Ctrl+Left Click",
+        makeAction({ ctrlKey: true }),
+        history,
+      ),
+    ).toBe(true);
+  });
+
+  it("matches mouse token regardless of token case/spacing", () => {
+    const history: BindingHistoryEntry[] = [];
+    recordBindingAction(history, "  dOuBlE   rIgHt   ClIcK  ", 1000);
+
+    expect(
+      matchesBindingAction("double right click", makeAction({}), history),
+    ).toBe(true);
+  });
+
+  it("does not match mouse token when modifier state differs", () => {
+    const history: BindingHistoryEntry[] = [];
+    recordBindingAction(history, "Left Click", 1000);
+
+    expect(
+      matchesBindingAction(
+        "Ctrl+Left Click",
+        makeAction({ ctrlKey: false }),
+        history,
+      ),
+    ).toBe(false);
+  });
+
+  it("matches keyboard + mouse sequence", () => {
+    const history: BindingHistoryEntry[] = [];
+    recordBindingAction(history, "g", 1000);
+    recordBindingAction(history, "Left Click", 1100);
+
+    expect(matchesBindingAction("g+left click", makeAction({}), history)).toBe(
+      true,
+    );
   });
 });

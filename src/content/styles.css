@@ -1295,7 +1295,7 @@
 
 .fm-kt-action-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1.1fr) minmax(0, 1fr) 80px auto;
+  grid-template-columns: 18px minmax(0, 1.1fr) minmax(0, 1fr) 80px 140px 72px 68px auto;
   gap: 6px;
   align-items: center;
   width: 100%;
@@ -1304,7 +1304,7 @@
 .fm-kt-action-header {
   width: 100%;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1.1fr) minmax(0, 1fr) 80px auto;
+  grid-template-columns: 18px minmax(0, 1.1fr) minmax(0, 1fr) 80px 140px 72px 68px auto;
   gap: 6px;
   align-items: center;
 }
@@ -1663,12 +1663,12 @@
 
 @media (max-width: 640px) {
   .fm-kt-action-row {
-    grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr) 72px auto;
+    grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr) 72px 120px 56px 60px auto;
     gap: 4px;
   }
 
   .fm-kt-action-header {
-    grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr) 72px auto !important;
+    grid-template-columns: 18px minmax(0, 1fr) minmax(0, 1fr) 72px 120px 56px 60px auto !important;
   }
 
   .fm-kt-profile-row,

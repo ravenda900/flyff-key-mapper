@@ -25,6 +25,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Select,
   Slider,
   Space,
@@ -1107,15 +1108,26 @@ export const MapperDialog = ({
                             placement="top"
                             arrow={{ pointAtCenter: true }}
                           >
-                            <Button
-                              danger
-                              block
-                              className="fm-profile-action-btn"
-                              icon={<DeleteOutlined />}
-                              onClick={deleteSelectedProfile}
+                            <Popconfirm
+                              title="Delete profile?"
+                              description="This cannot be undone."
+                              okText="Delete"
+                              cancelText="Cancel"
+                              okButtonProps={{ danger: true }}
+                              onConfirm={deleteSelectedProfile}
                               disabled={isLocked || !selectedProfile}
-                              aria-label="Delete selected profile"
-                            />
+                              getPopupContainer={getDialogPopupContainer}
+                              zIndex={2147483647}
+                            >
+                              <Button
+                                danger
+                                block
+                                className="fm-profile-action-btn"
+                                icon={<DeleteOutlined />}
+                                disabled={isLocked || !selectedProfile}
+                                aria-label="Delete selected profile"
+                              />
+                            </Popconfirm>
                           </Tooltip>
                         </div>
                         <Typography.Text type="secondary">

@@ -2415,7 +2415,18 @@ function MapperApp() {
     const selectedNames = keyTriggerCharacters
       .filter((tab) => selectedKeyTriggerTabIds.includes(tab.id))
       .map((tab) => tab.name);
-    storage.saveKeyTriggerTargetTabNames(selectedNames);
+
+    // Only clear saved names when the user clears selection.
+    // During tab/title refresh, names can be temporarily unresolved;
+    // preserve existing saved names so selection can be restored by name.
+    if (selectedKeyTriggerTabIds.length === 0) {
+      storage.saveKeyTriggerTargetTabNames([]);
+      return;
+    }
+
+    if (selectedNames.length > 0) {
+      storage.saveKeyTriggerTargetTabNames(Array.from(new Set(selectedNames)));
+    }
   }, [selectedKeyTriggerTabIds, keyTriggerCharacters]);
 
   useEffect(() => {
@@ -2757,6 +2768,11 @@ function MapperApp() {
 
       const current = readSharedAutoStopState();
       if (current.notifiedSignalId === signalId) {
+        return;
+      }
+
+      // If stop signal has an owner tab, only that tab should notify.
+      if (current.stopSignalBy && current.stopSignalBy !== tabId) {
         return;
       }
 
@@ -3744,6 +3760,103 @@ function MapperApp() {
     [dispatchKeyboardEventToCanvas, resolveDispatchKey],
   );
 
+  const dispatchPlainKeyChordToCanvas = useCallback(
+    (bindings: string[]): boolean => {
+      const parsed = bindings
+        .map((binding) => {
+          const parts = binding
+            .split("+")
+            .map((part) => part.trim())
+            .filter(Boolean);
+
+          if (parts.length === 0) {
+            return null;
+          }
+
+          const modifiers = {
+            ctrlKey: parts.some((part) => /^(ctrl|control)$/i.test(part)),
+            altKey: parts.some((part) => /^alt$/i.test(part)),
+            shiftKey: parts.some((part) => /^shift$/i.test(part)),
+            metaKey: parts.some((part) => /^(meta|cmd|command)$/i.test(part)),
+          };
+
+          // Keep chord dispatch focused on plain keys so it mirrors
+          // multi-finger key presses without modifier ambiguity.
+          if (
+            modifiers.ctrlKey ||
+            modifiers.altKey ||
+            modifiers.shiftKey ||
+            modifiers.metaKey
+          ) {
+            return null;
+          }
+
+          const key =
+            parts.find(
+              (part) =>
+                !/^(ctrl|control|alt|shift|meta|cmd|command)$/i.test(part),
+            ) ?? "";
+
+          if (!key || isMouseWheelShortcutToken(key)) {
+            return null;
+          }
+
+          const resolved = resolveDispatchKey(key, false);
+          if (!resolved) {
+            return null;
+          }
+
+          return {
+            key: resolved.key,
+            code: resolved.code,
+          };
+        })
+        .filter((entry): entry is { key: string; code: string } => entry !== null);
+
+      if (parsed.length < 2) {
+        return false;
+      }
+
+      const canvas = document.querySelector("canvas") as HTMLElement | null;
+      const target =
+        canvas ?? (document.activeElement as HTMLElement | null) ?? window;
+
+      if (canvas && document.activeElement !== canvas) {
+        if (canvas.tabIndex < 0) {
+          canvas.tabIndex = -1;
+        }
+        canvas.focus({ preventScroll: true });
+      }
+
+      parsed.forEach((entry) => {
+        target.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: entry.key,
+            code: entry.code,
+            bubbles: true,
+            cancelable: true,
+            repeat: false,
+          }),
+        );
+      });
+
+      [...parsed].reverse().forEach((entry) => {
+        target.dispatchEvent(
+          new KeyboardEvent("keyup", {
+            key: entry.key,
+            code: entry.code,
+            bubbles: true,
+            cancelable: true,
+            repeat: false,
+          }),
+        );
+      });
+
+      return true;
+    },
+    [resolveDispatchKey],
+  );
+
   const dispatchKeyTriggerKey = useCallback(
     (
       binding: string,
@@ -3826,6 +3939,128 @@ function MapperApp() {
       settings,
       shapes,
     ],
+  );
+
+  const dispatchKeyTriggerBindingsAtSameTiming = useCallback(
+    (
+      bindings: string[],
+      options?: {
+        sourceProfileId?: string;
+        chainDepth?: number;
+        delayMode?: "sequential" | "synchronous";
+      },
+    ) => {
+      const sourceProfileId = options?.sourceProfileId
+        ? getOriginalKeyTriggerProfileId(options.sourceProfileId)
+        : null;
+      const chainDepth = Math.max(
+        0,
+        Math.round(Number(options?.chainDepth ?? 0) || 0),
+      );
+      const delayMode = options?.delayMode ?? "sequential";
+
+      // Collect matching shapes by array index so duplicate IDs still trigger.
+      const shapesToTrigger = new Set<number>();
+      const plainChordBindings: string[] = [];
+      const individualBindings: string[] = [];
+
+      bindings.forEach((binding) => {
+        const normalizedBinding = normalizeShortcutBinding(binding);
+        let foundShape = false;
+
+        shapes.forEach((shape, shapeIndex) => {
+          if (!shape.keyBinding) return;
+          if (getReservedShapeShortcutUsage(shape.keyBinding, settings)) return;
+          if (normalizeShortcutBinding(shape.keyBinding) === normalizedBinding) {
+            shapesToTrigger.add(shapeIndex);
+            foundShape = true;
+          }
+        });
+
+        const hasProfileMatch =
+          chainDepth < MAX_KEY_TRIGGER_CHAIN_DEPTH &&
+          keyTriggerProfiles.some((profile) => {
+            if (profile.enabled === false || !profile.triggerKey) {
+              return false;
+            }
+            if (sourceProfileId && profile.id === sourceProfileId) {
+              return false;
+            }
+            return normalizeShortcutBinding(profile.triggerKey) === normalizedBinding;
+          });
+
+        const parts = binding
+          .split("+")
+          .map((part) => part.trim())
+          .filter(Boolean);
+        const hasModifier = parts.some((part) =>
+          /^(ctrl|control|alt|shift|meta|cmd|command)$/i.test(part),
+        );
+
+        if (foundShape) {
+          return;
+        }
+
+        if (!hasProfileMatch && !hasModifier) {
+          plainChordBindings.push(binding);
+          return;
+        }
+
+        // Keep non-plain bindings on the regular path (profiles, modified keys)
+        // so Ctrl+D never falls through as plain D behavior.
+        individualBindings.push(binding);
+      });
+
+      // Trigger all unique shapes for this batch
+      if (shapesToTrigger.size > 0) {
+        shapesToTrigger.forEach((shapeIndex) => {
+          const shape = shapes[shapeIndex];
+          if (shape) {
+            triggerShapeArea(shape, undefined, { delayMs: shape.delayMs });
+          }
+        });
+      }
+
+      if (individualBindings.length > 0) {
+        individualBindings.forEach((binding) => {
+          dispatchKeyTriggerKey(binding, {
+            sourceProfileId: sourceProfileId ?? undefined,
+            chainDepth,
+            delayMode,
+          });
+        });
+      }
+
+      if (plainChordBindings.length === 0) {
+        return;
+      }
+
+      if (plainChordBindings.length === 1) {
+        dispatchKeyTriggerKey(plainChordBindings[0], {
+          sourceProfileId: sourceProfileId ?? undefined,
+          chainDepth,
+          delayMode,
+        });
+        return;
+      }
+
+      isDispatchingKeyTriggerRef.current = true;
+      try {
+        const dispatched = dispatchPlainKeyChordToCanvas(plainChordBindings);
+        if (!dispatched) {
+          plainChordBindings.forEach((binding) => {
+            dispatchKeyTriggerKey(binding, {
+              sourceProfileId: sourceProfileId ?? undefined,
+              chainDepth,
+              delayMode,
+            });
+          });
+        }
+      } finally {
+        isDispatchingKeyTriggerRef.current = false;
+      }
+    },
+    [dispatchKeyTriggerKey, dispatchPlainKeyChordToCanvas, keyTriggerProfiles, settings, shapes],
   );
 
   const captureGameplayScreenshot = useCallback(async (): Promise<
@@ -5800,10 +6035,10 @@ function MapperApp() {
         Math.round(Number(options?.startDelayMs ?? 0) || 0),
       );
 
-      let timerIds: number[] = [];
+      const entries: Array<{ key: string; offsetMs: number }> = [];
       if (delayMode === "sequential") {
         let accumulatedDelayMs = 0;
-        timerIds = actions
+        actions
           .map((action) => ({
             ...action,
             key: action.key.trim(),
@@ -5819,7 +6054,7 @@ function MapperApp() {
                 : 1,
           }))
           .filter((action) => action.enabled !== false && action.key.length > 0)
-          .flatMap((action) => {
+          .forEach((action) => {
             const repeatCount =
               action.actionTriggerType === "repeat"
                 ? normalizeKeyTriggerActionRepeatCount(
@@ -5828,21 +6063,18 @@ function MapperApp() {
                   )
                 : 1;
             const repeatIntervalMs = Math.max(120, action.delayMs || 120);
-            const actionTimerIds: number[] = [];
+
+            // Sequential mode: action delay applies once before the action block,
+            // then repeats use repeatIntervalMs relative to that action start.
+            accumulatedDelayMs += action.delayMs;
 
             for (let index = 0; index < repeatCount; index += 1) {
-              accumulatedDelayMs += action.delayMs;
               const offsetMs =
                 startDelayMs + accumulatedDelayMs + index * repeatIntervalMs;
-              actionTimerIds.push(
-                window.setTimeout(() => {
-                  dispatchKeyTriggerKey(action.key, {
-                    sourceProfileId,
-                    chainDepth,
-                    delayMode,
-                  });
-                }, offsetMs),
-              );
+              entries.push({
+                key: action.key,
+                offsetMs,
+              });
             }
 
             // In sequential mode: if this action's key chains to a run-once/repeat
@@ -5868,11 +6100,10 @@ function MapperApp() {
               }
             }
 
-            return actionTimerIds;
           });
       } else {
-        // synchronous: each action triggers once at its individual delay
-        timerIds = actions
+        // synchronous: actions with equal offsets fire in the same tick.
+        actions
           .map((action) => ({
             ...action,
             key: action.key.trim(),
@@ -5888,7 +6119,7 @@ function MapperApp() {
                 : 1,
           }))
           .filter((action) => action.enabled !== false && action.key.length > 0)
-          .flatMap((action) => {
+          .forEach((action) => {
             const repeatCount =
               action.actionTriggerType === "repeat"
                 ? normalizeKeyTriggerActionRepeatCount(
@@ -5897,26 +6128,33 @@ function MapperApp() {
                   )
                 : 1;
             const repeatIntervalMs = Math.max(120, action.delayMs || 120);
-            const actionTimerIds: number[] = [];
 
             for (let index = 0; index < repeatCount; index += 1) {
-              actionTimerIds.push(
-                window.setTimeout(
-                  () => {
-                    dispatchKeyTriggerKey(action.key, {
-                      sourceProfileId,
-                      chainDepth,
-                      delayMode,
-                    });
-                  },
+              entries.push({
+                key: action.key,
+                offsetMs:
                   startDelayMs + action.delayMs + index * repeatIntervalMs,
-                ),
-              );
+              });
             }
-
-            return actionTimerIds;
           });
       }
+
+      const groupedByOffset = new Map<number, string[]>();
+      entries.forEach((entry) => {
+        const existing = groupedByOffset.get(entry.offsetMs) ?? [];
+        groupedByOffset.set(entry.offsetMs, [...existing, entry.key]);
+      });
+
+      const timerIds = Array.from(groupedByOffset.entries()).map(
+        ([offsetMs, bindings]) =>
+          window.setTimeout(() => {
+            dispatchKeyTriggerBindingsAtSameTiming(bindings, {
+              sourceProfileId,
+              chainDepth,
+              delayMode,
+            });
+          }, offsetMs),
+      );
 
       if (timerIds.length === 0) {
         return;
@@ -5928,7 +6166,10 @@ function MapperApp() {
         ...timerIds,
       ]);
     },
-    [dispatchKeyTriggerKey, keyTriggerProfiles],
+    [
+      dispatchKeyTriggerBindingsAtSameTiming,
+      keyTriggerProfiles,
+    ],
   );
 
   const clearKeyTriggerProfileTimers = useCallback((profileId: string) => {
@@ -6148,72 +6389,77 @@ function MapperApp() {
           }
 
           if (delayMode === "synchronous") {
-            // For synchronous toggle: each action repeats independently at its own interval
+            // For synchronous toggle: same-delay action groups fire together.
             const timerIds: number[] = [];
-            actions.forEach((action) => {
-              const cleanKey = action.key.trim();
-              const delayMs = Math.max(0, Math.round(action.delayMs || 0));
-              const actionRepeatCount =
-                action.actionTriggerType === "repeat"
-                  ? normalizeKeyTriggerActionRepeatCount(
-                      action.actionRepeatCount,
-                      2,
-                    )
-                  : 1;
-              const actionRepeatInterval = Math.max(120, delayMs || 120);
+            const groupedByDelay = new Map<
+              number,
+              Array<{ key: string; repeatCount: number }>
+            >();
 
-              if (cleanKey.length > 0) {
-                // Fire immediately first
+            actions
+              .map((action) => ({
+                key: action.key.trim(),
+                delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+                repeatCount:
+                  action.actionTriggerType === "repeat"
+                    ? normalizeKeyTriggerActionRepeatCount(
+                        action.actionRepeatCount,
+                        2,
+                      )
+                    : 1,
+              }))
+              .filter((action) => action.key.length > 0)
+              .forEach((action) => {
+                const existing = groupedByDelay.get(action.delayMs) ?? [];
+                groupedByDelay.set(action.delayMs, [...existing, action]);
+              });
+
+            groupedByDelay.forEach((groupActions, delayMs) => {
+              const repeatIntervalMs = Math.max(120, delayMs || 120);
+
+              const fireGroup = () => {
+                const immediateKeys = groupActions.map((action) => action.key);
+                dispatchKeyTriggerBindingsAtSameTiming(immediateKeys, {
+                  sourceProfileId: originalProfileId,
+                  chainDepth,
+                  delayMode,
+                });
+
+                const maxRepeatCount = Math.max(
+                  1,
+                  ...groupActions.map((action) => action.repeatCount),
+                );
                 for (
-                  let repeatIndex = 0;
-                  repeatIndex < actionRepeatCount;
+                  let repeatIndex = 1;
+                  repeatIndex < maxRepeatCount;
                   repeatIndex += 1
                 ) {
-                  if (repeatIndex === 0) {
-                    dispatchKeyTriggerKey(cleanKey, {
+                  const keysAtRepeat = groupActions
+                    .filter((action) => action.repeatCount > repeatIndex)
+                    .map((action) => action.key);
+
+                  if (keysAtRepeat.length === 0) {
+                    continue;
+                  }
+
+                  const repeatTimerId = window.setTimeout(() => {
+                    dispatchKeyTriggerBindingsAtSameTiming(keysAtRepeat, {
                       sourceProfileId: originalProfileId,
                       chainDepth,
                       delayMode,
                     });
-                  } else {
-                    const repeatTimerId = window.setTimeout(() => {
-                      dispatchKeyTriggerKey(cleanKey, {
-                        sourceProfileId: originalProfileId,
-                        chainDepth,
-                        delayMode,
-                      });
-                    }, repeatIndex * actionRepeatInterval);
-                    timerIds.push(repeatTimerId);
-                  }
+                  }, repeatIndex * repeatIntervalMs);
+                  timerIds.push(repeatTimerId);
                 }
+              };
 
-                // Then repeat at the specified interval
-                if (delayMs > 0) {
-                  const intervalId = window.setInterval(() => {
-                    for (
-                      let repeatIndex = 0;
-                      repeatIndex < actionRepeatCount;
-                      repeatIndex += 1
-                    ) {
-                      if (repeatIndex === 0) {
-                        dispatchKeyTriggerKey(cleanKey, {
-                          sourceProfileId: originalProfileId,
-                          chainDepth,
-                          delayMode,
-                        });
-                      } else {
-                        window.setTimeout(() => {
-                          dispatchKeyTriggerKey(cleanKey, {
-                            sourceProfileId: originalProfileId,
-                            chainDepth,
-                            delayMode,
-                          });
-                        }, repeatIndex * actionRepeatInterval);
-                      }
-                    }
-                  }, delayMs);
-                  timerIds.push(intervalId);
-                }
+              fireGroup();
+
+              if (delayMs > 0) {
+                const intervalId = window.setInterval(() => {
+                  fireGroup();
+                }, delayMs);
+                timerIds.push(intervalId);
               }
             });
 
@@ -6303,6 +6549,7 @@ function MapperApp() {
   }, [
     clearAllKeyTriggerTimers,
     clearKeyTriggerProfileTimers,
+    dispatchKeyTriggerBindingsAtSameTiming,
     dispatchRemoteKeyboardSyncEvent,
     dispatchRemoteMouseSyncEvent,
     reloadKeyTriggerCharacters,

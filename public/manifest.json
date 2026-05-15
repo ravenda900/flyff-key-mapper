@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Flyff Utility",
   "description": "Unified Flyff utilities for key mapping and key trigger workflows.",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "permissions": ["activeTab", "storage", "scripting", "tabs", "notifications"],
   "host_permissions": ["https://universe.flyff.com/*"],
   "background": {

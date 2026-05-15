@@ -4,7 +4,6 @@ import {
   EditOutlined,
   HolderOutlined,
   PoweroffOutlined,
-  PlusOutlined,
 } from "@ant-design/icons";
 import {
   Button,
@@ -40,9 +39,23 @@ type Props = {
   onProfilesChange: (profiles: KeyTriggerProfile[]) => void;
   isConfigLocked: boolean;
   onEditorOpenChange?: (isOpen: boolean) => void;
+  onFooterControlsChange?: (controls: KeyTriggerFooterControls | null) => void;
   backRequestVersion?: number;
   selectedProfileId?: string | null;
   onSelectedProfileIdChange?: (profileId: string | null) => void;
+};
+
+export type KeyTriggerFooterControls = {
+  showAddProfile: boolean;
+  addProfileDisabled: boolean;
+  onAddProfile: () => void;
+  showAddAction: boolean;
+  addActionDisabled: boolean;
+  onAddAction: () => void;
+  showSaveCancel: boolean;
+  saveDisabled: boolean;
+  onSave: () => void;
+  onCancel: () => void;
 };
 
 type ProfileEditorDraft = {
@@ -285,6 +298,7 @@ export const KeyTriggerTab = ({
   onProfilesChange,
   isConfigLocked,
   onEditorOpenChange,
+  onFooterControlsChange,
   backRequestVersion,
   selectedProfileId: initialSelectedProfileId,
   onSelectedProfileIdChange,
@@ -319,6 +333,9 @@ export const KeyTriggerTab = ({
   const [dragActionId, setDragActionId] = useState<string | null>(null);
   const profilesPaneContentRef = useRef<HTMLDivElement | null>(null);
   const editorPaneContentRef = useRef<HTMLDivElement | null>(null);
+  const profilesPaneScrollTopRef = useRef(0);
+  const editorPaneScrollTopRef = useRef(0);
+  const wasEditorOpenRef = useRef(false);
   const [activePaneHeight, setActivePaneHeight] = useState<number | null>(null);
   const triggerKeyLastClickRef = useRef<{ button: number; time: number }>({
     button: -1,
@@ -384,19 +401,44 @@ export const KeyTriggerTab = ({
   }, [isEditorOpen, profiles.length, editorDraft]);
 
   useEffect(() => {
-    if (!isEditorOpen) {
-      return;
+    const wasEditorOpen = wasEditorOpenRef.current;
+
+    if (!wasEditorOpen && isEditorOpen) {
+      const profilesPane = profilesPaneContentRef.current?.closest(
+        ".fm-dialog-slider-pane",
+      ) as HTMLElement | null;
+      if (profilesPane) {
+        profilesPaneScrollTopRef.current = profilesPane.scrollTop;
+      }
+
+      const editorPane = editorPaneContentRef.current?.closest(
+        ".fm-dialog-slider-pane",
+      ) as HTMLElement | null;
+      if (editorPane) {
+        editorPane.scrollTop = editorPaneScrollTopRef.current;
+      }
     }
 
-    const pane = editorPaneContentRef.current?.closest(
-      ".fm-dialog-slider-pane",
-    ) as HTMLElement | null;
-    if (!pane) {
-      return;
+    if (wasEditorOpen && !isEditorOpen) {
+      const editorPane = editorPaneContentRef.current?.closest(
+        ".fm-dialog-slider-pane",
+      ) as HTMLElement | null;
+      if (editorPane) {
+        editorPaneScrollTopRef.current = editorPane.scrollTop;
+      }
+
+      const profilesPane = profilesPaneContentRef.current?.closest(
+        ".fm-dialog-slider-pane",
+      ) as HTMLElement | null;
+      if (profilesPane) {
+        window.requestAnimationFrame(() => {
+          profilesPane.scrollTop = profilesPaneScrollTopRef.current;
+        });
+      }
     }
 
-    pane.scrollTo({ top: 0, behavior: "smooth" });
-  }, [isEditorOpen, editingProfileId]);
+    wasEditorOpenRef.current = isEditorOpen;
+  }, [isEditorOpen]);
 
   const lastBackRequestVersionRef = useRef<number>(backRequestVersion ?? 0);
 
@@ -625,23 +667,51 @@ export const KeyTriggerTab = ({
     setNewActionHighlightId(nextId);
   };
 
+  useEffect(() => {
+    if (!onFooterControlsChange) {
+      return;
+    }
+
+    const canSaveDraft =
+      editorDraft !== null &&
+      !isConfigLocked &&
+      editorDraft.name.trim().length > 0 &&
+      editorDraft.triggerKey.trim().length > 0;
+
+    onFooterControlsChange({
+      showAddProfile: !isEditorOpen,
+      addProfileDisabled: isConfigLocked,
+      onAddProfile: startNewProfileEditor,
+      showAddAction: isEditorOpen,
+      addActionDisabled: isConfigLocked,
+      onAddAction: addActionDraft,
+      showSaveCancel: isEditorOpen,
+      saveDisabled: !canSaveDraft,
+      onSave: saveDraft,
+      onCancel: cancelDraft,
+    });
+  }, [
+    onFooterControlsChange,
+    isEditorOpen,
+    isConfigLocked,
+    editorDraft,
+    startNewProfileEditor,
+    addActionDraft,
+    saveDraft,
+    cancelDraft,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      onFooterControlsChange?.(null);
+    };
+  }, [onFooterControlsChange]);
+
   return (
     <Space direction="vertical" size={12} className="fm-w-full fm-kt-pane">
       <div className="fm-kt-profiles-section">
         <div className="fm-kt-section-row">
           <Typography.Text strong>Profiles</Typography.Text>
-          {!isEditorOpen && (
-            <Tooltip title="Add profile" {...dialogTooltipProps}>
-              <Button
-                type="text"
-                size="small"
-                icon={<PlusOutlined />}
-                onClick={startNewProfileEditor}
-                disabled={isConfigLocked}
-                aria-label="Add profile"
-              />
-            </Tooltip>
-          )}
         </div>
 
         <div
@@ -1177,16 +1247,6 @@ export const KeyTriggerTab = ({
                   <div className="fm-kt-actions-section">
                     <div className="fm-kt-section-row">
                       <Typography.Text strong>Actions</Typography.Text>
-                      <Tooltip title="Add action" {...dialogTooltipProps}>
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<PlusOutlined />}
-                          onClick={addActionDraft}
-                          disabled={isConfigLocked}
-                          aria-label="Add action"
-                        />
-                      </Tooltip>
                     </div>
 
                     <div>
@@ -1215,550 +1275,545 @@ export const KeyTriggerTab = ({
                         size={6}
                         className="fm-w-full"
                       >
-                        <div
-                          className="fm-kt-action-header"
-                          style={{
-                            color: token.colorTextSecondary,
-                            fontSize: 12,
-                            fontWeight: 600,
-                            padding: "0 4px",
-                          }}
-                        >
-                          <span aria-hidden="true" />
-                          <span>Name</span>
-                          <span>Key</span>
-                          <Tooltip title="ms" {...dialogTooltipProps}>
-                            <div style={{ width: "100%" }}>
-                              <span>Delay</span>
-                            </div>
-                          </Tooltip>
-                          <span>Mode</span>
-                          <span>Times</span>
-                          <span>Enabled</span>
-                          <span>Actions</span>
-                        </div>
-
-                        {editorDraft.actions.map((action) => {
-                          const actionHighlighted =
-                            newActionHighlightId === action.id;
-                          return (
+                        <div className="fm-kt-actions-table-scroll">
+                          <div className="fm-kt-actions-table">
                             <div
-                              key={action.id}
-                              draggable={!isConfigLocked}
-                              onDragStart={() => setDragActionId(action.id)}
-                              onDragOver={(event) => {
-                                event.preventDefault();
-                              }}
-                              onDrop={() => {
-                                if (!dragActionId || isConfigLocked) {
-                                  return;
-                                }
-
-                                setEditorDraft({
-                                  ...editorDraft,
-                                  actions: moveById(
-                                    editorDraft.actions,
-                                    dragActionId,
-                                    action.id,
-                                  ),
-                                });
-                                setDragActionId(null);
-                              }}
+                              className="fm-kt-action-header"
                               style={{
-                                border: `1px solid ${token.colorBorder}`,
-                                background: actionHighlighted
-                                  ? token.colorFillTertiary
-                                  : token.colorFillQuaternary,
-                                borderRadius: 8,
-                                padding: 4,
+                                color: token.colorTextSecondary,
+                                fontSize: 12,
+                                fontWeight: 600,
+                                padding: "0 4px",
                               }}
                             >
-                              <div className="fm-kt-action-row">
-                                <span
-                                  className="fm-kt-drag-handle"
-                                  aria-hidden="true"
-                                >
-                                  <HolderOutlined />
-                                </span>
-                                <Input
-                                  value={action.name}
-                                  placeholder="Action name"
-                                  disabled={isConfigLocked}
-                                  onChange={(event) => {
+                              <span aria-hidden="true" />
+                              <span>Name</span>
+                              <span>Key</span>
+                              <Tooltip title="ms" {...dialogTooltipProps}>
+                                <div style={{ width: "100%" }}>
+                                  <span>Delay</span>
+                                </div>
+                              </Tooltip>
+                              <span>Mode</span>
+                              <span>Times</span>
+                              <span>Enabled</span>
+                              <span>Actions</span>
+                            </div>
+
+                            {editorDraft.actions.map((action) => {
+                              const actionHighlighted =
+                                newActionHighlightId === action.id;
+                              return (
+                                <div
+                                  key={action.id}
+                                  draggable={!isConfigLocked}
+                                  onDragStart={() => setDragActionId(action.id)}
+                                  onDragOver={(event) => {
+                                    event.preventDefault();
+                                  }}
+                                  onDrop={() => {
+                                    if (!dragActionId || isConfigLocked) {
+                                      return;
+                                    }
+
                                     setEditorDraft({
                                       ...editorDraft,
-                                      actions: editorDraft.actions.map(
-                                        (item) =>
-                                          item.id === action.id
-                                            ? {
-                                                ...item,
-                                                name: event.target.value,
-                                              }
-                                            : item,
+                                      actions: moveById(
+                                        editorDraft.actions,
+                                        dragActionId,
+                                        action.id,
                                       ),
                                     });
+                                    setDragActionId(null);
                                   }}
-                                />
-
-                                <div
-                                  className={`fm-shortcut-input-shell fm-kt-key-shell${action.key ? " fm-shortcut-input-has-value" : ""}`}
+                                  style={{
+                                    border: `1px solid ${token.colorBorder}`,
+                                    background: actionHighlighted
+                                      ? token.colorFillTertiary
+                                      : token.colorFillQuaternary,
+                                    borderRadius: 8,
+                                    padding: 4,
+                                  }}
                                 >
-                                  <Input
-                                    value={action.key}
-                                    readOnly
-                                    disabled={isConfigLocked}
-                                    placeholder="Click or press keys"
-                                    onKeyDown={(event) => {
-                                      if (isConfigLocked) {
-                                        return;
-                                      }
-
-                                      event.preventDefault();
-                                      event.stopPropagation();
-
-                                      if (
-                                        event.key === "Backspace" ||
-                                        event.key === "Delete"
-                                      ) {
-                                        setEditorDraft({
-                                          ...editorDraft,
-                                          actions: editorDraft.actions.map(
-                                            (item) =>
-                                              item.id === action.id
-                                                ? { ...item, key: "" }
-                                                : item,
-                                          ),
-                                        });
-                                        return;
-                                      }
-
-                                      const captured =
-                                        buildRecordedShortcut(event);
-                                      if (!captured) {
-                                        return;
-                                      }
-
-                                      setEditorDraft({
-                                        ...editorDraft,
-                                        actions: editorDraft.actions.map(
-                                          (item) =>
-                                            item.id === action.id
-                                              ? {
-                                                  ...item,
-                                                  key: captured,
-                                                }
-                                              : item,
-                                        ),
-                                      });
-                                    }}
-                                    onMouseDown={(event) => {
-                                      if (isConfigLocked) return;
-                                      if (
-                                        event.button !== 0 &&
-                                        event.button !== 2
-                                      )
-                                        return;
-                                      const input =
-                                        event.currentTarget as HTMLInputElement;
-                                      const wasFocused =
-                                        document.activeElement === input;
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      input.focus({ preventScroll: true });
-                                      if (!wasFocused) {
-                                        return;
-                                      }
-
-                                      const now = Date.now();
-                                      const prevEntry =
-                                        actionKeyLastClickRef.current.get(
-                                          action.id,
-                                        ) ?? {
-                                          button: -1,
-                                          time: 0,
-                                        };
-                                      const isDouble =
-                                        prevEntry.button === event.button &&
-                                        now - prevEntry.time < 360;
-                                      actionKeyLastClickRef.current.set(
-                                        action.id,
-                                        {
-                                          button: event.button,
-                                          time: now,
-                                        },
-                                      );
-                                      const baseLabel =
-                                        event.button === 0
-                                          ? isDouble
-                                            ? "Double Left Click"
-                                            : "Left Click"
-                                          : isDouble
-                                            ? "Double Right Click"
-                                            : "Right Click";
-                                      const captured = [
-                                        ...buildMouseModifiers(event),
-                                        baseLabel,
-                                      ].join("+");
-                                      setEditorDraft({
-                                        ...editorDraft,
-                                        actions: editorDraft.actions.map(
-                                          (item) =>
-                                            item.id === action.id
-                                              ? { ...item, key: captured }
-                                              : item,
-                                        ),
-                                      });
-                                    }}
-                                    onWheel={(event) => {
-                                      if (isConfigLocked) return;
-                                      const input =
-                                        event.currentTarget as HTMLInputElement;
-                                      const wasFocused =
-                                        document.activeElement === input;
-                                      event.stopPropagation();
-                                      if (!wasFocused) {
-                                        input.focus({ preventScroll: true });
-                                        return;
-                                      }
-
-                                      const captured =
-                                        buildWheelShortcut(event);
-                                      if (!captured) return;
-                                      setEditorDraft({
-                                        ...editorDraft,
-                                        actions: editorDraft.actions.map(
-                                          (item) =>
-                                            item.id === action.id
-                                              ? { ...item, key: captured }
-                                              : item,
-                                        ),
-                                      });
-                                    }}
-                                    onContextMenu={(event) =>
-                                      event.preventDefault()
-                                    }
-                                  />
-                                  {action.key && (
+                                  <div className="fm-kt-action-row">
                                     <span
-                                      className="fm-shortcut-input-overlay"
+                                      className="fm-kt-drag-handle"
                                       aria-hidden="true"
                                     >
-                                      <ShortcutKeys combo={action.key} />
+                                      <HolderOutlined />
                                     </span>
-                                  )}
-                                </div>
-
-                                <Tooltip title="ms" {...dialogTooltipProps}>
-                                  <div style={{ width: "100%" }}>
-                                    <InputNumber
-                                      min={0}
-                                      step={25}
-                                      value={action.delayMs}
+                                    <Input
+                                      value={action.name}
+                                      placeholder="Action name"
                                       disabled={isConfigLocked}
-                                      onChange={(value) => {
-                                        const delayMs = Math.max(
-                                          0,
-                                          Math.round(Number(value) || 0),
-                                        );
+                                      onChange={(event) => {
                                         setEditorDraft({
                                           ...editorDraft,
                                           actions: editorDraft.actions.map(
                                             (item) =>
                                               item.id === action.id
-                                                ? { ...item, delayMs }
+                                                ? {
+                                                    ...item,
+                                                    name: event.target.value,
+                                                  }
                                                 : item,
                                           ),
                                         });
                                       }}
-                                      placeholder="Delay"
-                                      style={{ width: "100%" }}
                                     />
-                                  </div>
-                                </Tooltip>
 
-                                <Segmented
-                                  size="small"
-                                  value={
-                                    action.actionTriggerType === "repeat"
-                                      ? "repeat"
-                                      : "once"
-                                  }
-                                  options={[
-                                    { label: "Once", value: "once" },
-                                    { label: "Repeat", value: "repeat" },
-                                  ]}
-                                  disabled={isConfigLocked}
-                                  onChange={(value) => {
-                                    setEditorDraft({
-                                      ...editorDraft,
-                                      actions: editorDraft.actions.map(
-                                        (item) =>
-                                          item.id === action.id
-                                            ? {
-                                                ...item,
-                                                actionTriggerType:
-                                                  value === "repeat"
-                                                    ? "repeat"
-                                                    : "once",
-                                                actionRepeatCount:
-                                                  value === "repeat"
-                                                    ? normalizeActionRepeatCount(
-                                                        item.actionRepeatCount,
-                                                        2,
-                                                      )
-                                                    : 1,
-                                              }
-                                            : item,
-                                      ),
-                                    });
-                                  }}
-                                />
+                                    <div
+                                      className={`fm-shortcut-input-shell fm-kt-key-shell${action.key ? " fm-shortcut-input-has-value" : ""}`}
+                                    >
+                                      <Input
+                                        value={action.key}
+                                        readOnly
+                                        disabled={isConfigLocked}
+                                        placeholder="Click or press keys"
+                                        onKeyDown={(event) => {
+                                          if (isConfigLocked) {
+                                            return;
+                                          }
 
-                                <InputNumber
-                                  min={1}
-                                  max={99}
-                                  step={1}
-                                  precision={0}
-                                  value={
-                                    action.actionTriggerType === "repeat"
-                                      ? normalizeActionRepeatCount(
-                                          action.actionRepeatCount,
-                                          2,
-                                        )
-                                      : 1
-                                  }
-                                  disabled={
-                                    isConfigLocked ||
-                                    action.actionTriggerType !== "repeat"
-                                  }
-                                  onChange={(value) => {
-                                    setEditorDraft({
-                                      ...editorDraft,
-                                      actions: editorDraft.actions.map(
-                                        (item) =>
-                                          item.id === action.id
-                                            ? {
-                                                ...item,
-                                                actionRepeatCount:
-                                                  item.actionTriggerType ===
-                                                  "repeat"
-                                                    ? normalizeActionRepeatCount(
-                                                        value,
-                                                        2,
-                                                      )
-                                                    : 1,
-                                              }
-                                            : item,
-                                      ),
-                                    });
-                                  }}
-                                  style={{ width: "100%" }}
-                                />
+                                          event.preventDefault();
+                                          event.stopPropagation();
 
-                                <Checkbox
-                                  checked={action.enabled !== false}
-                                  disabled={isConfigLocked}
-                                  onChange={(event) => {
-                                    setEditorDraft({
-                                      ...editorDraft,
-                                      actions: editorDraft.actions.map(
-                                        (item) =>
-                                          item.id === action.id
-                                            ? {
-                                                ...item,
-                                                enabled: event.target.checked,
-                                              }
-                                            : item,
-                                      ),
-                                    });
-                                  }}
-                                />
+                                          if (
+                                            event.key === "Backspace" ||
+                                            event.key === "Delete"
+                                          ) {
+                                            setEditorDraft({
+                                              ...editorDraft,
+                                              actions: editorDraft.actions.map(
+                                                (item) =>
+                                                  item.id === action.id
+                                                    ? { ...item, key: "" }
+                                                    : item,
+                                              ),
+                                            });
+                                            return;
+                                          }
 
-                                <Space size={4}>
-                                  <Tooltip
-                                    title="Duplicate"
-                                    {...dialogTooltipProps}
-                                  >
-                                    <Button
-                                      type="text"
-                                      icon={<CopyOutlined />}
-                                      style={{
-                                        color: isConfigLocked
-                                          ? token.colorTextDisabled
-                                          : undefined,
-                                      }}
-                                      disabled={isConfigLocked}
-                                      onClick={() => {
-                                        const nextId = createActionId();
-                                        const nextName =
-                                          buildParenthesizedDuplicateName(
-                                            action.name || "Action",
-                                            editorDraft.actions.map(
-                                              (item) => item.name,
+                                          const captured =
+                                            buildRecordedShortcut(event);
+                                          if (!captured) {
+                                            return;
+                                          }
+
+                                          setEditorDraft({
+                                            ...editorDraft,
+                                            actions: editorDraft.actions.map(
+                                              (item) =>
+                                                item.id === action.id
+                                                  ? {
+                                                      ...item,
+                                                      key: captured,
+                                                    }
+                                                  : item,
                                             ),
-                                          );
-                                        const actionIndex =
-                                          editorDraft.actions.findIndex(
-                                            (item) => item.id === action.id,
-                                          );
-                                        const nextActions = [
-                                          ...editorDraft.actions,
-                                        ];
-
-                                        if (actionIndex < 0) {
-                                          nextActions.push({
-                                            ...action,
-                                            id: nextId,
-                                            name: nextName,
                                           });
-                                        } else {
-                                          nextActions.splice(
-                                            actionIndex + 1,
-                                            0,
+                                        }}
+                                        onMouseDown={(event) => {
+                                          if (isConfigLocked) return;
+                                          if (
+                                            event.button !== 0 &&
+                                            event.button !== 2
+                                          )
+                                            return;
+                                          const input =
+                                            event.currentTarget as HTMLInputElement;
+                                          const wasFocused =
+                                            document.activeElement === input;
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          input.focus({ preventScroll: true });
+                                          if (!wasFocused) {
+                                            return;
+                                          }
+
+                                          const now = Date.now();
+                                          const prevEntry =
+                                            actionKeyLastClickRef.current.get(
+                                              action.id,
+                                            ) ?? {
+                                              button: -1,
+                                              time: 0,
+                                            };
+                                          const isDouble =
+                                            prevEntry.button === event.button &&
+                                            now - prevEntry.time < 360;
+                                          actionKeyLastClickRef.current.set(
+                                            action.id,
                                             {
-                                              ...action,
-                                              id: nextId,
-                                              name: nextName,
+                                              button: event.button,
+                                              time: now,
                                             },
                                           );
-                                        }
+                                          const baseLabel =
+                                            event.button === 0
+                                              ? isDouble
+                                                ? "Double Left Click"
+                                                : "Left Click"
+                                              : isDouble
+                                                ? "Double Right Click"
+                                                : "Right Click";
+                                          const captured = [
+                                            ...buildMouseModifiers(event),
+                                            baseLabel,
+                                          ].join("+");
+                                          setEditorDraft({
+                                            ...editorDraft,
+                                            actions: editorDraft.actions.map(
+                                              (item) =>
+                                                item.id === action.id
+                                                  ? { ...item, key: captured }
+                                                  : item,
+                                            ),
+                                          });
+                                        }}
+                                        onWheel={(event) => {
+                                          if (isConfigLocked) return;
+                                          const input =
+                                            event.currentTarget as HTMLInputElement;
+                                          const wasFocused =
+                                            document.activeElement === input;
+                                          event.stopPropagation();
+                                          if (!wasFocused) {
+                                            input.focus({
+                                              preventScroll: true,
+                                            });
+                                            return;
+                                          }
 
-                                        setEditorDraft({
-                                          ...editorDraft,
-                                          actions: nextActions,
-                                        });
-                                        setNewActionHighlightId(nextId);
-                                      }}
-                                    />
-                                  </Tooltip>
-                                  <Tooltip
-                                    title={
-                                      editorDraft.actions.length <= 1
-                                        ? "At least one action is required"
-                                        : "Delete"
-                                    }
-                                    {...dialogTooltipProps}
-                                  >
-                                    <Popconfirm
-                                      title="Delete action?"
-                                      description="This cannot be undone."
-                                      okText="Delete"
-                                      cancelText="Cancel"
-                                      okButtonProps={{ danger: true }}
-                                      disabled={
-                                        isConfigLocked ||
-                                        editorDraft.actions.length <= 1
+                                          const captured =
+                                            buildWheelShortcut(event);
+                                          if (!captured) return;
+                                          setEditorDraft({
+                                            ...editorDraft,
+                                            actions: editorDraft.actions.map(
+                                              (item) =>
+                                                item.id === action.id
+                                                  ? { ...item, key: captured }
+                                                  : item,
+                                            ),
+                                          });
+                                        }}
+                                        onContextMenu={(event) =>
+                                          event.preventDefault()
+                                        }
+                                      />
+                                      {action.key && (
+                                        <span
+                                          className="fm-shortcut-input-overlay"
+                                          aria-hidden="true"
+                                        >
+                                          <ShortcutKeys combo={action.key} />
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <Tooltip title="ms" {...dialogTooltipProps}>
+                                      <div style={{ width: "100%" }}>
+                                        <InputNumber
+                                          min={0}
+                                          step={25}
+                                          value={action.delayMs}
+                                          disabled={isConfigLocked}
+                                          onChange={(value) => {
+                                            const delayMs = Math.max(
+                                              0,
+                                              Math.round(Number(value) || 0),
+                                            );
+                                            setEditorDraft({
+                                              ...editorDraft,
+                                              actions: editorDraft.actions.map(
+                                                (item) =>
+                                                  item.id === action.id
+                                                    ? { ...item, delayMs }
+                                                    : item,
+                                              ),
+                                            });
+                                          }}
+                                          placeholder="Delay"
+                                          style={{ width: "100%" }}
+                                        />
+                                      </div>
+                                    </Tooltip>
+
+                                    <Segmented
+                                      size="small"
+                                      value={
+                                        action.actionTriggerType === "repeat"
+                                          ? "repeat"
+                                          : "once"
                                       }
-                                      onConfirm={() => {
-                                        if (editorDraft.actions.length <= 1) {
-                                          return;
-                                        }
-
+                                      options={[
+                                        { label: "Once", value: "once" },
+                                        { label: "Repeat", value: "repeat" },
+                                      ]}
+                                      disabled={isConfigLocked}
+                                      onChange={(value) => {
                                         setEditorDraft({
                                           ...editorDraft,
-                                          actions: editorDraft.actions.filter(
-                                            (item) => item.id !== action.id,
+                                          actions: editorDraft.actions.map(
+                                            (item) =>
+                                              item.id === action.id
+                                                ? {
+                                                    ...item,
+                                                    actionTriggerType:
+                                                      value === "repeat"
+                                                        ? "repeat"
+                                                        : "once",
+                                                    actionRepeatCount:
+                                                      value === "repeat"
+                                                        ? normalizeActionRepeatCount(
+                                                            item.actionRepeatCount,
+                                                            2,
+                                                          )
+                                                        : 1,
+                                                  }
+                                                : item,
                                           ),
                                         });
                                       }}
-                                      {...dialogPopconfirmProps}
-                                    >
-                                      <Button
-                                        type="text"
-                                        danger
-                                        style={{
-                                          color:
+                                    />
+
+                                    <InputNumber
+                                      min={1}
+                                      max={99}
+                                      step={1}
+                                      precision={0}
+                                      value={
+                                        action.actionTriggerType === "repeat"
+                                          ? normalizeActionRepeatCount(
+                                              action.actionRepeatCount,
+                                              2,
+                                            )
+                                          : 1
+                                      }
+                                      disabled={
+                                        isConfigLocked ||
+                                        action.actionTriggerType !== "repeat"
+                                      }
+                                      onChange={(value) => {
+                                        setEditorDraft({
+                                          ...editorDraft,
+                                          actions: editorDraft.actions.map(
+                                            (item) =>
+                                              item.id === action.id
+                                                ? {
+                                                    ...item,
+                                                    actionRepeatCount:
+                                                      item.actionTriggerType ===
+                                                      "repeat"
+                                                        ? normalizeActionRepeatCount(
+                                                            value,
+                                                            2,
+                                                          )
+                                                        : 1,
+                                                  }
+                                                : item,
+                                          ),
+                                        });
+                                      }}
+                                      style={{ width: "100%" }}
+                                    />
+
+                                    <Checkbox
+                                      checked={action.enabled !== false}
+                                      disabled={isConfigLocked}
+                                      onChange={(event) => {
+                                        setEditorDraft({
+                                          ...editorDraft,
+                                          actions: editorDraft.actions.map(
+                                            (item) =>
+                                              item.id === action.id
+                                                ? {
+                                                    ...item,
+                                                    enabled:
+                                                      event.target.checked,
+                                                  }
+                                                : item,
+                                          ),
+                                        });
+                                      }}
+                                    />
+
+                                    <Space size={4}>
+                                      <Tooltip
+                                        title="Duplicate"
+                                        {...dialogTooltipProps}
+                                      >
+                                        <Button
+                                          type="text"
+                                          icon={<CopyOutlined />}
+                                          style={{
+                                            color: isConfigLocked
+                                              ? token.colorTextDisabled
+                                              : undefined,
+                                          }}
+                                          disabled={isConfigLocked}
+                                          onClick={() => {
+                                            const nextId = createActionId();
+                                            const nextName =
+                                              buildParenthesizedDuplicateName(
+                                                action.name || "Action",
+                                                editorDraft.actions.map(
+                                                  (item) => item.name,
+                                                ),
+                                              );
+                                            const actionIndex =
+                                              editorDraft.actions.findIndex(
+                                                (item) => item.id === action.id,
+                                              );
+                                            const nextActions = [
+                                              ...editorDraft.actions,
+                                            ];
+
+                                            if (actionIndex < 0) {
+                                              nextActions.push({
+                                                ...action,
+                                                id: nextId,
+                                                name: nextName,
+                                              });
+                                            } else {
+                                              nextActions.splice(
+                                                actionIndex + 1,
+                                                0,
+                                                {
+                                                  ...action,
+                                                  id: nextId,
+                                                  name: nextName,
+                                                },
+                                              );
+                                            }
+
+                                            setEditorDraft({
+                                              ...editorDraft,
+                                              actions: nextActions,
+                                            });
+                                            setNewActionHighlightId(nextId);
+                                          }}
+                                        />
+                                      </Tooltip>
+                                      <Tooltip
+                                        title={
+                                          editorDraft.actions.length <= 1
+                                            ? "At least one action is required"
+                                            : "Delete"
+                                        }
+                                        {...dialogTooltipProps}
+                                      >
+                                        <Popconfirm
+                                          title="Delete action?"
+                                          description="This cannot be undone."
+                                          okText="Delete"
+                                          cancelText="Cancel"
+                                          okButtonProps={{ danger: true }}
+                                          disabled={
                                             isConfigLocked ||
                                             editorDraft.actions.length <= 1
-                                              ? token.colorTextDisabled
-                                              : token.colorError,
-                                        }}
-                                        icon={<DeleteOutlined />}
-                                        disabled={
-                                          isConfigLocked ||
-                                          editorDraft.actions.length <= 1
-                                        }
-                                      />
-                                    </Popconfirm>
-                                  </Tooltip>
-                                </Space>
-                              </div>
-                              <div style={{ paddingTop: 8, paddingLeft: 28 }}>
-                                <div
-                                  style={{
-                                    fontSize: "12px",
-                                    marginBottom: 8,
-                                    color: token.colorTextSecondary,
-                                  }}
-                                >
-                                  Scope:
+                                          }
+                                          onConfirm={() => {
+                                            if (
+                                              editorDraft.actions.length <= 1
+                                            ) {
+                                              return;
+                                            }
+
+                                            setEditorDraft({
+                                              ...editorDraft,
+                                              actions:
+                                                editorDraft.actions.filter(
+                                                  (item) =>
+                                                    item.id !== action.id,
+                                                ),
+                                            });
+                                          }}
+                                          {...dialogPopconfirmProps}
+                                        >
+                                          <Button
+                                            type="text"
+                                            danger
+                                            style={{
+                                              color:
+                                                isConfigLocked ||
+                                                editorDraft.actions.length <= 1
+                                                  ? token.colorTextDisabled
+                                                  : token.colorError,
+                                            }}
+                                            icon={<DeleteOutlined />}
+                                            disabled={
+                                              isConfigLocked ||
+                                              editorDraft.actions.length <= 1
+                                            }
+                                          />
+                                        </Popconfirm>
+                                      </Tooltip>
+                                    </Space>
+                                  </div>
+                                  <div
+                                    style={{ paddingTop: 8, paddingLeft: 28 }}
+                                  >
+                                    <div
+                                      style={{
+                                        fontSize: "12px",
+                                        marginBottom: 8,
+                                        color: token.colorTextSecondary,
+                                      }}
+                                    >
+                                      Scope:
+                                    </div>
+                                    <Segmented
+                                      value={
+                                        action.otherTabsOnly === true
+                                          ? "other"
+                                          : action.currentTabOnly === true
+                                            ? "current"
+                                            : "all"
+                                      }
+                                      disabled={isConfigLocked}
+                                      onChange={(value) => {
+                                        setEditorDraft({
+                                          ...editorDraft,
+                                          actions: editorDraft.actions.map(
+                                            (item) =>
+                                              item.id === action.id
+                                                ? {
+                                                    ...item,
+                                                    currentTabOnly:
+                                                      value === "current",
+                                                    otherTabsOnly:
+                                                      value === "other",
+                                                  }
+                                                : item,
+                                          ),
+                                        });
+                                      }}
+                                      options={[
+                                        {
+                                          label: "All tabs",
+                                          value: "all",
+                                        },
+                                        {
+                                          label: "Current only",
+                                          value: "current",
+                                        },
+                                        {
+                                          label: "Other only",
+                                          value: "other",
+                                        },
+                                      ]}
+                                      block
+                                    />
+                                  </div>
                                 </div>
-                                <Segmented
-                                  value={
-                                    action.otherTabsOnly === true
-                                      ? "other"
-                                      : action.currentTabOnly === true
-                                        ? "current"
-                                        : "all"
-                                  }
-                                  disabled={isConfigLocked}
-                                  onChange={(value) => {
-                                    setEditorDraft({
-                                      ...editorDraft,
-                                      actions: editorDraft.actions.map(
-                                        (item) =>
-                                          item.id === action.id
-                                            ? {
-                                                ...item,
-                                                currentTabOnly:
-                                                  value === "current",
-                                                otherTabsOnly:
-                                                  value === "other",
-                                              }
-                                            : item,
-                                      ),
-                                    });
-                                  }}
-                                  options={[
-                                    {
-                                      label: "All tabs",
-                                      value: "all",
-                                    },
-                                    {
-                                      label: "Current only",
-                                      value: "current",
-                                    },
-                                    {
-                                      label: "Other only",
-                                      value: "other",
-                                    },
-                                  ]}
-                                  block
-                                />
-                              </div>
-                            </div>
-                          );
-                        })}
+                              );
+                            })}
+                          </div>
+                        </div>
                       </Space>
                     )}
-                  </div>
-
-                  <div className="fm-kt-editor-actions">
-                    <Button
-                      type="primary"
-                      block
-                      disabled={
-                        isConfigLocked ||
-                        !editorDraft.name.trim() ||
-                        !editorDraft.triggerKey.trim()
-                      }
-                      onClick={saveDraft}
-                    >
-                      Save
-                    </Button>
-                    <Button block onClick={cancelDraft}>
-                      Cancel
-                    </Button>
                   </div>
                 </Space>
               ) : (

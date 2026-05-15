@@ -13,6 +13,8 @@ import {
   ReloadOutlined,
   SettingOutlined,
   StopOutlined,
+  CheckOutlined as SaveIcon,
+  CloseOutlined as CancelIcon,
 } from "@ant-design/icons";
 import {
   Button,
@@ -62,6 +64,7 @@ import {
 } from "../constants";
 import type { GlobalShortcutField } from "../shortcutBinding";
 import { KeyTriggerTab } from "./KeyTriggerTab";
+import type { KeyTriggerFooterControls } from "./KeyTriggerTab";
 import { AutoAwakenTab } from "../../auto-awaken/AutoAwakenTab";
 
 const AUTO_FEATURE_MODIFIER_KEYS = new Set([
@@ -246,6 +249,8 @@ export const MapperDialog = ({
   const [activeDialogPane, setActiveDialogPane] =
     useState<DialogPane>(activeUtilityTab);
   const [isKeyTriggerEditorOpen, setIsKeyTriggerEditorOpen] = useState(false);
+  const [keyTriggerFooterControls, setKeyTriggerFooterControls] =
+    useState<KeyTriggerFooterControls | null>(null);
   const [keyTriggerBackRequestVersion, setKeyTriggerBackRequestVersion] =
     useState(0);
   const [shouldFocusAutoStop, setShouldFocusAutoStop] = useState(false);
@@ -751,33 +756,104 @@ export const MapperDialog = ({
   );
 
   const dialogFooter = (
-    <div
-      className="fm-dialog-sticky-footer"
-      role="status"
-      aria-live="polite"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 8,
-      }}
-    >
-      <div className="fm-dialog-footer-left">
-        {autoStopCountdown !== null && (
-          <Button
-            type="text"
-            size="small"
-            className="fm-footer-autostop-alert fm-footer-autostop-trigger"
-            icon={<ExclamationCircleFilled />}
-            onClick={openSettingsFromAutoStop}
+    <div className="fm-dialog-sticky-footer" role="status" aria-live="polite">
+      {activeDialogPane === "key-trigger" && keyTriggerFooterControls && (
+        <div className="fm-dialog-footer-controls-top">
+          <div className="fm-dialog-footer-key-trigger-controls">
+            {(keyTriggerFooterControls.showAddProfile ||
+              keyTriggerFooterControls.showAddAction) && (
+              <div className="fm-dialog-footer-key-trigger-add-row">
+                {keyTriggerFooterControls.showAddProfile && (
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    block
+                    disabled={keyTriggerFooterControls.addProfileDisabled}
+                    onClick={keyTriggerFooterControls.onAddProfile}
+                  >
+                    Add Profile
+                  </Button>
+                )}
+                {keyTriggerFooterControls.showAddAction && (
+                  <Button
+                    type="dashed"
+                    icon={<PlusOutlined style={{ fontSize: 16 }} />}
+                    block
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 500,
+                      padding: "6px 0",
+                      color: "#2563eb",
+                      borderColor: "#2563eb",
+                    }}
+                    disabled={keyTriggerFooterControls.addActionDisabled}
+                    onClick={keyTriggerFooterControls.onAddAction}
+                  >
+                    Add Action
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {keyTriggerFooterControls.showSaveCancel && (
+              <div className="fm-dialog-footer-key-trigger-edit-row">
+                <Button
+                  type="primary"
+                  icon={<SaveIcon style={{ fontSize: 15 }} />}
+                  className="fm-footer-btn-save"
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 600,
+                    letterSpacing: 0.2,
+                    padding: "6px 0",
+                  }}
+                  disabled={keyTriggerFooterControls.saveDisabled}
+                  onClick={keyTriggerFooterControls.onSave}
+                >
+                  Save
+                </Button>
+                <Button
+                  type="default"
+                  icon={<CancelIcon style={{ fontSize: 15 }} />}
+                  className="fm-footer-btn-cancel"
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 500,
+                    padding: "6px 0",
+                  }}
+                  onClick={keyTriggerFooterControls.onCancel}
+                >
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="fm-dialog-footer-bottom">
+        <div className="fm-dialog-footer-left">
+          {autoStopCountdown !== null && (
+            <Button
+              type="text"
+              size="small"
+              className="fm-footer-autostop-alert fm-footer-autostop-trigger"
+              icon={<ExclamationCircleFilled />}
+              onClick={openSettingsFromAutoStop}
+            >
+              Auto-stop in {autoStopCountdown}s
+            </Button>
+          )}
+        </div>
+        <div className="fm-dialog-footer-right">
+          <Typography.Text
+            type="secondary"
+            className="fm-dialog-footer-version"
           >
-            Auto-stop in {autoStopCountdown}s
-          </Button>
-        )}
+            v{toolVersion}
+          </Typography.Text>
+        </div>
       </div>
-      <Typography.Text type="secondary" className="fm-dialog-footer-right">
-        v{toolVersion}
-      </Typography.Text>
     </div>
   );
 
@@ -1013,19 +1089,6 @@ export const MapperDialog = ({
                           </Tooltip>
                         </Space>
 
-                        <Tooltip
-                          {...dialogTooltipProps}
-                          title="Add a new key map"
-                        >
-                          <Button
-                            type="dashed"
-                            block
-                            onClick={addKeyMap}
-                            disabled={isLocked}
-                          >
-                            Add Key Map
-                          </Button>
-                        </Tooltip>
                         <Typography.Text type="secondary">
                           Start turns on Edit Mode to add, move, resize, and
                           configure shapes. Stop turns on trigger mode for
@@ -1035,7 +1098,6 @@ export const MapperDialog = ({
                     </Form.Item>
 
                     <Divider className="!fm-my-2" />
-                    <Typography.Text strong>Mapper Controls</Typography.Text>
 
                     <Form.Item label="Mapping Profile">
                       <Space
@@ -1141,6 +1203,17 @@ export const MapperDialog = ({
                         </Typography.Text>
                       </Space>
                     </Form.Item>
+
+                    <Tooltip {...dialogTooltipProps} title="Add a new key map">
+                      <Button
+                        type="dashed"
+                        block
+                        onClick={addKeyMap}
+                        disabled={isLocked}
+                      >
+                        Add Key Map
+                      </Button>
+                    </Tooltip>
 
                     <Form.Item label="Shape Palette">
                       <Space
@@ -1425,6 +1498,7 @@ export const MapperDialog = ({
                       onProfilesChange={onKeyTriggerProfilesChange}
                       isConfigLocked={!settings.editMode}
                       onEditorOpenChange={setIsKeyTriggerEditorOpen}
+                      onFooterControlsChange={setKeyTriggerFooterControls}
                       backRequestVersion={keyTriggerBackRequestVersion}
                       selectedProfileId={keyTriggerSelectedProfileId ?? null}
                       onSelectedProfileIdChange={

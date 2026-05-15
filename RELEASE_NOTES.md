@@ -1,5 +1,27 @@
 # Flyff Mapper Release Notes
 
+## v3.2.0 (2026-05-15)
+
+Key Mapper Footer UX and Action Placement Improvements.
+
+### Changed
+
+- Updated Key Trigger footer action button hierarchy for clearer intent:
+  - Save now uses success-oriented styling.
+  - Cancel now uses danger-oriented styling.
+- Updated footer action button typography sizing to improve readability and reduce visual crowding.
+- Updated Add Action button styling to improve affordance and visual clarity.
+- Moved the Add Key Map action button in Key Mapper to sit directly above Shape Palette for a more intuitive create-then-select workflow.
+- Improved footer action layout behavior so control rows expand consistently across available width.
+
+### Fixed
+
+- Fixed footer action visual inconsistency where oversized button text reduced scanability.
+
+### Packaging
+
+- Manifest extension version updated to 3.2.0.
+
 ## v3.1.0 (2026-05-15)
 
 Chained Profile Timing, Cross-Tab Mapper Stability, and Auto-Awaken Reliability.

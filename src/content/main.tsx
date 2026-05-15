@@ -5990,6 +5990,15 @@ function MapperApp() {
         }
 
         if (msg.type === "KEY_TRIGGER_EXECUTE_ONCE") {
+          // Guard: Only execute if currentTabId is in tabIds (if tabIds is provided)
+          const tabIds = Array.isArray((msg as any).tabIds)
+            ? (msg as any).tabIds
+            : undefined;
+          if (tabIds && tabIds.length > 0) {
+            if (currentTabId == null || !tabIds.includes(currentTabId)) {
+              return;
+            }
+          }
           const profileId = msg.profileId ?? `once-${Date.now()}`;
           clearKeyTriggerProfileTimers(profileId);
           const chainDepth = Math.max(
@@ -6104,6 +6113,15 @@ function MapperApp() {
         if (msg.type === "KEY_TRIGGER_START_TOGGLE") {
           if (!msg.profileId) {
             return;
+          }
+          // Guard: Only execute if currentTabId is in tabIds (if tabIds is provided)
+          const tabIds = Array.isArray((msg as any).tabIds)
+            ? (msg as any).tabIds
+            : undefined;
+          if (tabIds && tabIds.length > 0) {
+            if (currentTabId == null || !tabIds.includes(currentTabId)) {
+              return;
+            }
           }
 
           clearKeyTriggerProfileTimers(msg.profileId);

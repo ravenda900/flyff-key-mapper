@@ -76,6 +76,7 @@ export interface MapperSettings {
   experimentalFeaturesEnabled: boolean;
   showHandles: boolean;
   showSnapIndicators: boolean;
+  showShapeTooltips: boolean;
   syncMouseEvents: boolean;
   mouseSyncPositionMode: MouseSyncPositionMode;
   strictPassthrough: boolean;
@@ -88,6 +89,10 @@ export interface MapperSettings {
   autoStopSeconds: number | null;
   notifyOnRecaptcha: boolean;
   stopOnRecaptcha: boolean;
+  mobilePushEnabled: boolean;
+  mobilePushDiscordBotUrl: string;
+  mobilePushDiscordUserId: string;
+  mobilePushDiscordApiKey: string;
   autoHoly: AutoHolyConfig;
   autoPills: AutoPillsConfig;
   autoAwaken: AutoAwakenConfig;

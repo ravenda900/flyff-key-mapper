@@ -1,4 +1,5 @@
 import { compressToUTF16, decompressFromUTF16 } from "lz-string";
+import { idbGet, idbSet } from "./storage-idb";
 import type {
   KeyTriggerAction,
   KeyTriggerProfile,
@@ -35,9 +36,42 @@ const KEY_TRIGGER_CHARACTER_PROFILE_MAPPING_KEY =
   "flyff-mapper-key-trigger-character-profiles-v1";
 const MAPPER_CHARACTER_PROFILE_MAPPING_KEY =
   "flyff-mapper-character-profiles-v1";
+const STORAGE_IDB_MIGRATION_FLAG_KEY = "flyff-mapper-idb-migrated-v1";
+const STORAGE_BACKUP_SUFFIX = "::backup";
 const CHUNK_KEY_MARKER = "__chunked_v1__";
 const COMPRESSED_KEY_MARKER = "__lz_v1__";
 const STORAGE_CHUNK_SIZE = 240_000;
+
+const KEY_TO_IDB_STORE: Record<string, string> = {
+  [PROFILES_KEY]: "profiles",
+  [SHAPES_KEY]: "shapes",
+  [SETTINGS_KEY]: "settings",
+  [UI_STATE_KEY]: "uiState",
+  [KEY_TRIGGER_KEY]: "keyTrigger",
+  [KEY_TRIGGER_TARGET_TABS_KEY]: "keyTriggerTargetTabs",
+  [KEY_TRIGGER_TARGET_TAB_NAMES_KEY]: "keyTriggerTargetTabNames",
+  [KEY_TRIGGER_CHARACTER_PROFILE_MAPPING_KEY]: "keyTriggerCharacterProfiles",
+  [MAPPER_CHARACTER_PROFILE_MAPPING_KEY]: "mapperCharacterProfiles",
+};
+
+const MIGRATION_KEYS = Object.keys(KEY_TO_IDB_STORE);
+let idbMigrationStarted = false;
+
+const getBackupKey = (key: string) => `${key}${STORAGE_BACKUP_SUFFIX}`;
+
+const resolveStoreForKey = (key: string): string | null => {
+  const exact = KEY_TO_IDB_STORE[key];
+  if (exact) {
+    return exact;
+  }
+
+  if (!key.endsWith(STORAGE_BACKUP_SUFFIX)) {
+    return null;
+  }
+
+  const baseKey = key.slice(0, -STORAGE_BACKUP_SUFFIX.length);
+  return KEY_TO_IDB_STORE[baseKey] ?? null;
+};
 
 const getChunkMetaKey = (key: string) => `${key}::meta`;
 const getChunkValueKey = (key: string, index: number) => `${key}::${index}`;
@@ -140,18 +174,198 @@ const deserializeFromStorage = <TValue>(raw: string): TValue => {
   return JSON.parse(source) as TValue;
 };
 
-const saveStorageValue = (key: string, value: unknown) => {
-  const serialized = serializeForStorage(value);
-  writeStorageString(key, serialized);
+const mirrorValueToIndexedDb = (key: string, serialized: string) => {
+  const store = resolveStoreForKey(key);
+  if (!store) {
+    return;
+  }
+
+  void idbSet(store, key, serialized).catch(() => {
+    // Keep localStorage as source of truth if IDB write fails.
+  });
 };
 
-const loadStorageValue = <TValue>(key: string): TValue | null => {
-  const raw = readStorageString(key);
-  if (!raw) {
+const backupCurrentStorageValue = (key: string) => {
+  const current = readStorageString(key);
+  if (current === null) {
+    return;
+  }
+
+  const backupKey = getBackupKey(key);
+  writeStorageString(backupKey, current);
+  mirrorValueToIndexedDb(backupKey, current);
+};
+
+const recoverFromBackup = <TValue>(key: string): TValue | null => {
+  const backupKey = getBackupKey(key);
+  const backupRaw = readStorageString(backupKey);
+  if (!backupRaw) {
     return null;
   }
 
-  return deserializeFromStorage<TValue>(raw);
+  try {
+    const recovered = deserializeFromStorage<TValue>(backupRaw);
+    writeStorageString(key, backupRaw);
+    mirrorValueToIndexedDb(key, backupRaw);
+    return recovered;
+  } catch {
+    return null;
+  }
+};
+
+const verifyIndexedDbMigration = async (): Promise<boolean> => {
+  try {
+    for (const key of MIGRATION_KEYS) {
+      const expected = readStorageString(key);
+      if (expected === null) {
+        continue;
+      }
+
+      const store = KEY_TO_IDB_STORE[key];
+      const actual = await idbGet<string>(store, key);
+      if (actual !== expected) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const migrateLocalStorageToIndexedDb = async () => {
+  if (window.localStorage.getItem(STORAGE_IDB_MIGRATION_FLAG_KEY) === "1") {
+    return;
+  }
+
+  try {
+    for (const key of MIGRATION_KEYS) {
+      const serialized = readStorageString(key);
+      if (serialized === null) {
+        continue;
+      }
+
+      const store = KEY_TO_IDB_STORE[key];
+      await idbSet(store, key, serialized);
+    }
+
+    const verified = await verifyIndexedDbMigration();
+    if (verified) {
+      window.localStorage.setItem(STORAGE_IDB_MIGRATION_FLAG_KEY, "1");
+    }
+  } catch {
+    // Keep localStorage untouched; migration can retry later.
+  }
+};
+
+const ensureIndexedDbMigration = () => {
+  if (idbMigrationStarted) {
+    return;
+  }
+
+  idbMigrationStarted = true;
+  void migrateLocalStorageToIndexedDb();
+};
+
+const saveStorageValue = (key: string, value: unknown) => {
+  ensureIndexedDbMigration();
+  const serialized = serializeForStorage(value);
+  backupCurrentStorageValue(key);
+  writeStorageString(key, serialized);
+  mirrorValueToIndexedDb(key, serialized);
+};
+
+const loadStorageValue = <TValue>(key: string): TValue | null => {
+  ensureIndexedDbMigration();
+  const raw = readStorageString(key);
+  if (!raw) {
+    return recoverFromBackup<TValue>(key);
+  }
+
+  try {
+    return deserializeFromStorage<TValue>(raw);
+  } catch {
+    return recoverFromBackup<TValue>(key);
+  }
+};
+
+type StorageHealthReport = {
+  ok: boolean;
+  issues: string[];
+  repairs: string[];
+};
+
+const runStorageHealthCheck = async (): Promise<StorageHealthReport> => {
+  ensureIndexedDbMigration();
+
+  const issues: string[] = [];
+  const repairs: string[] = [];
+
+  for (const key of MIGRATION_KEYS) {
+    const backupKey = getBackupKey(key);
+    let primaryRaw = readStorageString(key);
+    const backupRaw = readStorageString(backupKey);
+
+    if (primaryRaw === null && backupRaw !== null) {
+      try {
+        deserializeFromStorage(backupRaw);
+        writeStorageString(key, backupRaw);
+        mirrorValueToIndexedDb(key, backupRaw);
+        primaryRaw = backupRaw;
+        repairs.push(`${key}: restored from backup`);
+      } catch {
+        issues.push(`${key}: missing primary and unreadable backup`);
+      }
+    }
+
+    if (primaryRaw !== null) {
+      try {
+        deserializeFromStorage(primaryRaw);
+      } catch {
+        if (backupRaw !== null) {
+          try {
+            deserializeFromStorage(backupRaw);
+            writeStorageString(key, backupRaw);
+            mirrorValueToIndexedDb(key, backupRaw);
+            primaryRaw = backupRaw;
+            repairs.push(`${key}: replaced corrupt primary from backup`);
+          } catch {
+            issues.push(`${key}: corrupt primary and unreadable backup`);
+          }
+        } else {
+          issues.push(`${key}: corrupt primary with no backup`);
+        }
+      }
+    }
+
+    const store = KEY_TO_IDB_STORE[key];
+    try {
+      const idbPrimary = await idbGet<string>(store, key);
+      if (primaryRaw !== null && idbPrimary !== primaryRaw) {
+        await idbSet(store, key, primaryRaw);
+        repairs.push(`${key}: repaired IndexedDB mirror`);
+      }
+
+      const idbBackup = await idbGet<string>(store, backupKey);
+      if (backupRaw !== null && idbBackup !== backupRaw) {
+        await idbSet(store, backupKey, backupRaw);
+        repairs.push(`${backupKey}: repaired IndexedDB backup mirror`);
+      }
+    } catch {
+      issues.push(`${key}: IndexedDB consistency check failed`);
+    }
+  }
+
+  const verified = await verifyIndexedDbMigration();
+  if (verified) {
+    window.localStorage.setItem(STORAGE_IDB_MIGRATION_FLAG_KEY, "1");
+  }
+
+  return {
+    ok: issues.length === 0,
+    issues,
+    repairs,
+  };
 };
 
 const DEFAULT_DIALOG_RECT: DialogRect = {
@@ -381,6 +595,7 @@ export const DEFAULT_SETTINGS: MapperSettings = {
   experimentalFeaturesEnabled: false,
   showHandles: false,
   showSnapIndicators: true,
+  showShapeTooltips: true,
   syncMouseEvents: false,
   mouseSyncPositionMode: "actual" as MouseSyncPositionMode,
   strictPassthrough: true,
@@ -393,6 +608,10 @@ export const DEFAULT_SETTINGS: MapperSettings = {
   autoStopSeconds: 30,
   notifyOnRecaptcha: true,
   stopOnRecaptcha: true,
+  mobilePushEnabled: false,
+  mobilePushDiscordBotUrl: "",
+  mobilePushDiscordUserId: "",
+  mobilePushDiscordApiKey: "",
   autoHoly: {
     enabled: false,
     debuffType: "all" as AutoHolyDebuffType,
@@ -426,6 +645,8 @@ const normalizeSettings = (
   showHandles: parsed?.showHandles ?? DEFAULT_SETTINGS.showHandles,
   showSnapIndicators:
     parsed?.showSnapIndicators ?? DEFAULT_SETTINGS.showSnapIndicators,
+  showShapeTooltips:
+    parsed?.showShapeTooltips ?? DEFAULT_SETTINGS.showShapeTooltips,
   syncMouseEvents: parsed?.syncMouseEvents ?? DEFAULT_SETTINGS.syncMouseEvents,
   mouseSyncPositionMode:
     parsed?.mouseSyncPositionMode === "ratio" ? "ratio" : "actual",
@@ -445,15 +666,28 @@ const normalizeSettings = (
     parsed?.toggleDialogShortcut ?? DEFAULT_SETTINGS.toggleDialogShortcut,
   autoStopSeconds:
     parsed?.autoStopSeconds === null
-      ? null
+      ? 0
       : typeof parsed?.autoStopSeconds === "number" &&
-          Number.isFinite(parsed.autoStopSeconds) &&
-          parsed.autoStopSeconds >= 30
-        ? parsed.autoStopSeconds
+          Number.isFinite(parsed.autoStopSeconds)
+        ? Math.max(0, parsed.autoStopSeconds)
         : DEFAULT_SETTINGS.autoStopSeconds,
   notifyOnRecaptcha:
     parsed?.notifyOnRecaptcha ?? DEFAULT_SETTINGS.notifyOnRecaptcha,
   stopOnRecaptcha: parsed?.stopOnRecaptcha ?? DEFAULT_SETTINGS.stopOnRecaptcha,
+  mobilePushEnabled:
+    parsed?.mobilePushEnabled ?? DEFAULT_SETTINGS.mobilePushEnabled,
+  mobilePushDiscordBotUrl:
+    typeof parsed?.mobilePushDiscordBotUrl === "string"
+      ? parsed.mobilePushDiscordBotUrl.trim()
+      : DEFAULT_SETTINGS.mobilePushDiscordBotUrl,
+  mobilePushDiscordUserId:
+    typeof parsed?.mobilePushDiscordUserId === "string"
+      ? parsed.mobilePushDiscordUserId.trim()
+      : DEFAULT_SETTINGS.mobilePushDiscordUserId,
+  mobilePushDiscordApiKey:
+    typeof parsed?.mobilePushDiscordApiKey === "string"
+      ? parsed.mobilePushDiscordApiKey.trim()
+      : DEFAULT_SETTINGS.mobilePushDiscordApiKey,
   autoHoly: (() => {
     const ah =
       typeof parsed?.autoHoly === "object" && parsed.autoHoly !== null
@@ -608,6 +842,8 @@ const toValidProfile = (
 };
 
 export const storage = {
+  runStorageHealthCheck,
+
   loadProfiles(): MapperProfilesState {
     try {
       const legacySettings = storage.loadSettings();

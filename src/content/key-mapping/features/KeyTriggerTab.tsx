@@ -22,6 +22,7 @@ import {
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type WheelEvent as ReactWheelEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -310,11 +311,19 @@ export const KeyTriggerTab = ({
       document.body,
     zIndex: 2147483647,
   };
+  const dialogPopoverProps = {
+    getPopupContainer: (triggerNode: HTMLElement) =>
+      (triggerNode.closest(".fm-dialog") as HTMLElement | null) ??
+      document.body,
+    zIndex: 2147483647,
+    overlayClassName: "fm-dialog-surface-popover",
+  };
   const dialogPopconfirmProps = {
     getPopupContainer: (triggerNode: HTMLElement) =>
       (triggerNode.closest(".fm-dialog") as HTMLElement | null) ??
       document.body,
     zIndex: 2147483647,
+    overlayClassName: "fm-dialog-surface-popconfirm",
   };
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(
     initialSelectedProfileId ?? null,
@@ -442,7 +451,7 @@ export const KeyTriggerTab = ({
 
   const lastBackRequestVersionRef = useRef<number>(backRequestVersion ?? 0);
 
-  const startNewProfileEditor = () => {
+  const startNewProfileEditor = useCallback(() => {
     const id = createProfileId();
     const name = getNextProfileName(profiles.map((profile) => profile.name));
 
@@ -458,7 +467,7 @@ export const KeyTriggerTab = ({
       delayMode: "sequential",
       actions: [createDefaultAction()],
     });
-  };
+  }, [profiles]);
 
   const startEditProfileEditor = (profile: KeyTriggerProfile) => {
     setSelectedProfileId(profile.id);
@@ -552,7 +561,7 @@ export const KeyTriggerTab = ({
     );
   };
 
-  const saveDraft = () => {
+  const saveDraft = useCallback(() => {
     if (!editorDraft) {
       return;
     }
@@ -617,12 +626,12 @@ export const KeyTriggerTab = ({
     setSelectedProfileId(nextProfile.id);
     setEditingProfileId(null);
     setEditorDraft(null);
-  };
+  }, [editorDraft, onProfilesChange, profiles]);
 
-  const cancelDraft = () => {
+  const cancelDraft = useCallback(() => {
     setEditingProfileId(null);
     setEditorDraft(null);
-  };
+  }, []);
 
   useEffect(() => {
     if (typeof backRequestVersion !== "number") {
@@ -639,7 +648,7 @@ export const KeyTriggerTab = ({
     }
   }, [backRequestVersion, isEditorOpen]);
 
-  const addActionDraft = () => {
+  const addActionDraft = useCallback(() => {
     if (!editorDraft) {
       return;
     }
@@ -665,7 +674,7 @@ export const KeyTriggerTab = ({
       ],
     });
     setNewActionHighlightId(nextId);
-  };
+  }, [editorDraft]);
 
   useEffect(() => {
     if (!onFooterControlsChange) {
@@ -922,10 +931,7 @@ export const KeyTriggerTab = ({
                               <Popover
                                 trigger="hover"
                                 placement="rightTop"
-                                overlayInnerStyle={{
-                                  backgroundColor: "#0f172af5",
-                                  color: token.colorText,
-                                }}
+                                {...dialogPopoverProps}
                                 content={
                                   <div className="fm-kt-actions-popover-content">
                                     <Space direction="vertical" size={4}>

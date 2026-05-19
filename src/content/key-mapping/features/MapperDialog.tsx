@@ -36,6 +36,7 @@ import {
   theme,
   Tooltip,
   Typography,
+  message,
 } from "antd";
 import type {
   Dispatch,
@@ -66,6 +67,7 @@ import type { GlobalShortcutField } from "../shortcutBinding";
 import { KeyTriggerTab } from "./KeyTriggerTab";
 import type { KeyTriggerFooterControls } from "./KeyTriggerTab";
 import { AutoAwakenTab } from "../../auto-awaken/AutoAwakenTab";
+import { storage } from "../../storage";
 
 const AUTO_FEATURE_MODIFIER_KEYS = new Set([
   "Control",
@@ -125,6 +127,7 @@ const formatScanRegionSummary = (region: NormalizedRect | null): string => {
 
 import { PaletteShapeIcon } from "../components/PaletteShapeIcon";
 import { ShortcutKeys } from "../components/ShortcutKeys";
+import { syncKeyTriggerCharacterProfileSelection } from "./profileSelectionSync";
 
 type Props = {
   overlayVisible: boolean;
@@ -169,8 +172,11 @@ type Props = {
   keyTriggerCharacters: CharacterTabInfo[];
   selectedKeyTriggerTabIds: number[];
   onSelectedKeyTriggerTabIdsChange: (ids: number[]) => void;
-  keyTriggerSelectedProfileId?: string | null;
   onKeyTriggerSelectedProfileIdChange?: (profileId: string | null) => void;
+  keyTriggerCharacterProfileMapping: Record<string, string>;
+  setKeyTriggerCharacterProfileMapping: Dispatch<
+    SetStateAction<Record<string, string>>
+  >;
   reloadKeyTriggerCharacters: () => void;
   autoStopCountdown: number | null;
   automationRegionCaptureTarget: "autoHoly" | "autoPills" | "autoAwaken" | null;
@@ -228,9 +234,10 @@ export const MapperDialog = ({
   keyTriggerCharacters,
   selectedKeyTriggerTabIds,
   onSelectedKeyTriggerTabIdsChange,
-  keyTriggerSelectedProfileId,
   onKeyTriggerSelectedProfileIdChange,
   reloadKeyTriggerCharacters,
+  keyTriggerCharacterProfileMapping,
+  setKeyTriggerCharacterProfileMapping,
   autoStopCountdown,
   automationRegionCaptureTarget,
   onStartAutomationRegionCapture,
@@ -254,6 +261,11 @@ export const MapperDialog = ({
   const [keyTriggerBackRequestVersion, setKeyTriggerBackRequestVersion] =
     useState(0);
   const [shouldFocusAutoStop, setShouldFocusAutoStop] = useState(false);
+  const [isSendingTestPush, setIsSendingTestPush] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [autoStopDraftSeconds, setAutoStopDraftSeconds] = useState(
+    Math.max(0, settings.autoStopSeconds ?? 0),
+  );
   const toolVersion =
     typeof chrome !== "undefined" && chrome.runtime?.getManifest
       ? chrome.runtime.getManifest().version
@@ -266,6 +278,7 @@ export const MapperDialog = ({
   } | null>(null);
   const lastUtilityTabRef = useRef<UtilityTab>(activeUtilityTab);
   const autoStopInputRef = useRef<any>(null);
+  const autoStopDebounceTimerRef = useRef<number | null>(null);
   const holyKeyLastClickRef = useRef<{ button: number; time: number }>({
     button: -1,
     time: 0,
@@ -287,7 +300,65 @@ export const MapperDialog = ({
     zIndex: 2147483647,
   };
 
+  const dialogPopconfirmProps = {
+    getPopupContainer: (triggerNode: HTMLElement) =>
+      getDialogPopupContainer(triggerNode),
+    zIndex: 2147483647,
+    overlayClassName: "fm-dialog-surface-popconfirm",
+  };
+
   const isLightTheme = settings.theme === "light";
+
+  useEffect(() => {
+    const normalized = Math.max(0, settings.autoStopSeconds ?? 0);
+    setAutoStopDraftSeconds((prev) =>
+      prev === normalized ? prev : normalized,
+    );
+  }, [settings.autoStopSeconds]);
+
+  const flushAutoStopDraftToSettings = () => {
+    if (autoStopDebounceTimerRef.current !== null) {
+      window.clearTimeout(autoStopDebounceTimerRef.current);
+      autoStopDebounceTimerRef.current = null;
+    }
+
+    const nextAutoStop = Math.max(0, Math.round(autoStopDraftSeconds));
+    setSettings((prev) =>
+      prev.autoStopSeconds === nextAutoStop
+        ? prev
+        : {
+            ...prev,
+            autoStopSeconds: nextAutoStop,
+          },
+    );
+  };
+
+  useEffect(() => {
+    if (autoStopDebounceTimerRef.current !== null) {
+      window.clearTimeout(autoStopDebounceTimerRef.current);
+    }
+
+    autoStopDebounceTimerRef.current = window.setTimeout(() => {
+      const nextAutoStop = Math.max(0, Math.round(autoStopDraftSeconds));
+      setSettings((prev) =>
+        prev.autoStopSeconds === nextAutoStop
+          ? prev
+          : {
+              ...prev,
+              autoStopSeconds: nextAutoStop,
+            },
+      );
+      autoStopDebounceTimerRef.current = null;
+    }, 400);
+
+    return () => {
+      if (autoStopDebounceTimerRef.current !== null) {
+        window.clearTimeout(autoStopDebounceTimerRef.current);
+        autoStopDebounceTimerRef.current = null;
+      }
+    };
+  }, [autoStopDraftSeconds, setSettings]);
+
   const toggleThemeMode = () => {
     handleThemeChange(isLightTheme ? "dark" : "light");
   };
@@ -654,6 +725,89 @@ export const MapperDialog = ({
       ? "notify-only"
       : "off";
 
+  const canSendTestPush =
+    settings.mobilePushEnabled &&
+    settings.mobilePushDiscordBotUrl.trim().length > 0 &&
+    settings.mobilePushDiscordUserId.trim().length > 0 &&
+    settings.mobilePushDiscordApiKey.trim().length > 0;
+
+  const canTestConnection =
+    settings.mobilePushEnabled &&
+    settings.mobilePushDiscordBotUrl.trim().length > 0 &&
+    settings.mobilePushDiscordApiKey.trim().length > 0;
+
+  const testMobilePushConnection = async () => {
+    if (!canTestConnection || isTestingConnection) {
+      return;
+    }
+
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      message.error("Extension runtime is unavailable.");
+      return;
+    }
+
+    setIsTestingConnection(true);
+    try {
+      const response = (await chrome.runtime.sendMessage({
+        type: "TEST_MOBILE_PUSH_CONNECTION",
+        mobilePush: {
+          enabled: settings.mobilePushEnabled,
+          provider: "discord",
+          discordBotUrl: settings.mobilePushDiscordBotUrl,
+          discordApiKey: settings.mobilePushDiscordApiKey,
+        },
+      })) as { ok?: boolean; error?: string };
+
+      if (response?.ok) {
+        message.success("Bot connection looks good.");
+      } else {
+        message.error(response?.error || "Unable to connect to Discord bot.");
+      }
+    } catch {
+      message.error("Unable to connect to Discord bot.");
+    } finally {
+      setIsTestingConnection(false);
+    }
+  };
+
+  const sendTestMobilePush = async () => {
+    if (!canSendTestPush || isSendingTestPush) {
+      return;
+    }
+
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      message.error("Extension runtime is unavailable.");
+      return;
+    }
+
+    setIsSendingTestPush(true);
+    try {
+      const response = (await chrome.runtime.sendMessage({
+        type: "SEND_TEST_MOBILE_PUSH",
+        title: "Flyff Utility - Test Push",
+        message:
+          "Test notification sent. If this reaches your Discord DMs, the bot is configured correctly.",
+        mobilePush: {
+          enabled: settings.mobilePushEnabled,
+          provider: "discord",
+          discordBotUrl: settings.mobilePushDiscordBotUrl,
+          discordUserId: settings.mobilePushDiscordUserId,
+          discordApiKey: settings.mobilePushDiscordApiKey,
+        },
+      })) as { ok?: boolean; error?: string };
+
+      if (response?.ok) {
+        message.success("Test push sent. Check your phone.");
+      } else {
+        message.error(response?.error || "Unable to send test push.");
+      }
+    } catch {
+      message.error("Unable to send test push.");
+    } finally {
+      setIsSendingTestPush(false);
+    }
+  };
+
   const activeUtilityPaneTab: UtilityTab =
     activeDialogPane === "settings"
       ? lastUtilityTabRef.current
@@ -765,9 +919,16 @@ export const MapperDialog = ({
               <div className="fm-dialog-footer-key-trigger-add-row">
                 {keyTriggerFooterControls.showAddProfile && (
                   <Button
-                    type="primary"
-                    icon={<PlusOutlined />}
+                    type="dashed"
+                    icon={<PlusOutlined style={{ fontSize: 16 }} />}
                     block
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 500,
+                      padding: "6px 0",
+                      color: "#2563eb",
+                      borderColor: "#2563eb",
+                    }}
                     disabled={keyTriggerFooterControls.addProfileDisabled}
                     onClick={keyTriggerFooterControls.onAddProfile}
                   >
@@ -999,40 +1160,28 @@ export const MapperDialog = ({
                   F
                 </Button>
               </Tooltip>
-              <Tooltip title="Reset to Default" {...dialogTooltipProps}>
+              <Tooltip title="Reset Settings Defaults" {...dialogTooltipProps}>
                 <Button
                   type="text"
                   size="small"
-                  className={isLocked ? "fm-header-action-btn-locked" : ""}
-                  aria-disabled={isLocked}
                   onClick={() => {
-                    if (isLocked) {
-                      return;
-                    }
-
                     onResetDialogConfiguration();
                   }}
                   icon={<ReloadOutlined />}
-                  aria-label="Reset mapper configuration"
+                  aria-label="Reset settings defaults"
                 />
               </Tooltip>
               <Tooltip title="Settings" {...dialogTooltipProps}>
                 <Button
                   type="text"
                   size="small"
-                  className={isLocked ? "fm-header-action-btn-locked" : ""}
                   icon={<SettingOutlined />}
                   aria-label={
                     activeDialogPane === "settings"
                       ? "Close settings"
                       : "Open settings"
                   }
-                  aria-disabled={isLocked}
                   onClick={() => {
-                    if (isLocked) {
-                      return;
-                    }
-
                     toggleSettingsPane();
                   }}
                 />
@@ -1178,8 +1327,7 @@ export const MapperDialog = ({
                               okButtonProps={{ danger: true }}
                               onConfirm={deleteSelectedProfile}
                               disabled={isLocked || !selectedProfile}
-                              getPopupContainer={getDialogPopupContainer}
-                              zIndex={2147483647}
+                              {...dialogPopconfirmProps}
                             >
                               <Button
                                 danger
@@ -1322,6 +1470,29 @@ export const MapperDialog = ({
                         <Typography.Text type="secondary">
                           Shows or hides snap alignment guide lines when snap
                           alignment is active.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item label="Shape Key Binding Tooltips">
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        className="fm-w-full"
+                      >
+                        <Switch
+                          checked={settings.showShapeTooltips}
+                          disabled={isLocked}
+                          onChange={(checked) => {
+                            setSettings((prev) => ({
+                              ...prev,
+                              showShapeTooltips: checked,
+                            }));
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          Shows or hides key binding tooltips when hovering over
+                          shapes.
                         </Typography.Text>
                       </Space>
                     </Form.Item>
@@ -1493,18 +1664,67 @@ export const MapperDialog = ({
                 <div className="fm-dialog-form-shell">
                   {renderPaneTop()}
                   <div className="fm-key-trigger-pane-shell">
-                    <KeyTriggerTab
-                      profiles={keyTriggerProfiles}
-                      onProfilesChange={onKeyTriggerProfilesChange}
-                      isConfigLocked={!settings.editMode}
-                      onEditorOpenChange={setIsKeyTriggerEditorOpen}
-                      onFooterControlsChange={setKeyTriggerFooterControls}
-                      backRequestVersion={keyTriggerBackRequestVersion}
-                      selectedProfileId={keyTriggerSelectedProfileId ?? null}
-                      onSelectedProfileIdChange={
-                        onKeyTriggerSelectedProfileIdChange
-                      }
-                    />
+                    {keyTriggerCharacters
+                      .filter((tab) =>
+                        selectedKeyTriggerTabIds.includes(tab.id),
+                      )
+                      .map((tab) => {
+                        // Restore last selected profile for this character/tab
+                        const mappedProfileId =
+                          keyTriggerCharacterProfileMapping?.[tab.name] || null;
+                        return (
+                          <KeyTriggerTab
+                            key={tab.id}
+                            profiles={keyTriggerProfiles}
+                            onProfilesChange={onKeyTriggerProfilesChange}
+                            isConfigLocked={!settings.editMode}
+                            onEditorOpenChange={setIsKeyTriggerEditorOpen}
+                            onFooterControlsChange={setKeyTriggerFooterControls}
+                            backRequestVersion={keyTriggerBackRequestVersion}
+                            selectedProfileId={mappedProfileId}
+                            onSelectedProfileIdChange={(profileId) => {
+                              const nextFromProps =
+                                syncKeyTriggerCharacterProfileSelection({
+                                  currentMapping:
+                                    keyTriggerCharacterProfileMapping,
+                                  tabName: tab.name,
+                                  nextProfileId: profileId,
+                                });
+                              if (
+                                onKeyTriggerSelectedProfileIdChange &&
+                                nextFromProps.shouldNotify
+                              ) {
+                                onKeyTriggerSelectedProfileIdChange(profileId);
+                              }
+                              setKeyTriggerCharacterProfileMapping((prev) => {
+                                const syncResult =
+                                  syncKeyTriggerCharacterProfileSelection({
+                                    currentMapping: prev,
+                                    tabName: tab.name,
+                                    nextProfileId: profileId,
+                                  });
+
+                                if (
+                                  !syncResult.shouldNotify ||
+                                  !syncResult.nextMapping
+                                ) {
+                                  return prev;
+                                }
+
+                                if (
+                                  storage &&
+                                  storage.saveKeyTriggerCharacterProfileMapping
+                                ) {
+                                  storage.saveKeyTriggerCharacterProfileMapping(
+                                    syncResult.nextMapping,
+                                  );
+                                }
+                                return syncResult.nextMapping;
+                              });
+                            }}
+                          />
+                        );
+                      })}
                   </div>
                   {dialogFooter}
                 </div>
@@ -1682,24 +1902,27 @@ export const MapperDialog = ({
                           <InputNumber
                             ref={autoStopInputRef}
                             className="fm-full-width-input-number"
-                            min={30}
-                            step={10}
-                            value={settings.autoStopSeconds ?? undefined}
+                            min={0}
+                            step={1}
+                            value={autoStopDraftSeconds}
                             placeholder="Disabled"
                             style={{ width: "100%" }}
                             onChange={(value) => {
-                              setSettings((prev) => ({
-                                ...prev,
-                                autoStopSeconds:
-                                  value !== null && value >= 30 ? value : null,
-                              }));
+                              const nextValue =
+                                typeof value === "number" &&
+                                Number.isFinite(value)
+                                  ? value
+                                  : 0;
+                              setAutoStopDraftSeconds(Math.max(0, nextValue));
                             }}
+                            onBlur={flushAutoStopDraftToSettings}
+                            onPressEnter={flushAutoStopDraftToSettings}
                             addonAfter="s"
                           />
                         </div>
                         <Typography.Text type="secondary">
                           Script automatically stops if no activity is detected
-                          for this duration. Leave empty to disable.
+                          for this duration. Set 0 to disable.
                         </Typography.Text>
                       </Space>
                     </Form.Item>
@@ -1748,6 +1971,86 @@ export const MapperDialog = ({
                         <Typography.Text type="secondary">
                           Sets what happens when a reCAPTCHA or hCaptcha element
                           is detected.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item label="Mobile Push Notifications (Discord Bot)">
+                      <Space
+                        direction="vertical"
+                        size={8}
+                        className="fm-w-full"
+                      >
+                        <Switch
+                          checked={settings.mobilePushEnabled}
+                          onChange={(checked) => {
+                            setSettings((prev) => ({
+                              ...prev,
+                              mobilePushEnabled: checked,
+                            }));
+                          }}
+                        />
+                        {settings.mobilePushEnabled && (
+                          <>
+                            <Input
+                              value={settings.mobilePushDiscordBotUrl}
+                              placeholder="Bot URL (e.g. https://your-bot.onrender.com)"
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  mobilePushDiscordBotUrl: value,
+                                }));
+                              }}
+                            />
+                            <Input
+                              value={settings.mobilePushDiscordUserId}
+                              placeholder="Your Discord User ID"
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  mobilePushDiscordUserId: value,
+                                }));
+                              }}
+                            />
+                            <Input.Password
+                              value={settings.mobilePushDiscordApiKey}
+                              placeholder="Discord Bot API Key"
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  mobilePushDiscordApiKey: value,
+                                }));
+                              }}
+                            />
+                            <Space wrap>
+                              <Button
+                                onClick={() => {
+                                  void testMobilePushConnection();
+                                }}
+                                disabled={!canTestConnection}
+                                loading={isTestingConnection}
+                              >
+                                Test Connection
+                              </Button>
+                              <Button
+                                onClick={() => {
+                                  void sendTestMobilePush();
+                                }}
+                                disabled={!canSendTestPush}
+                                loading={isSendingTestPush}
+                              >
+                                Send Test Push
+                              </Button>
+                            </Space>
+                          </>
+                        )}
+                        <Typography.Text type="secondary">
+                          Sends Discord DM alerts for auto-stop and CAPTCHA
+                          detection events. Deploy the Discord bot, then enter
+                          its URL, your Discord User ID, and Bot API key above.
                         </Typography.Text>
                       </Space>
                     </Form.Item>

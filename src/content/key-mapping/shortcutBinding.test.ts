@@ -30,6 +30,7 @@ describe("getReservedShapeShortcutUsage", () => {
     experimentalFeaturesEnabled: false,
     showHandles: false,
     showSnapIndicators: true,
+    showShapeTooltips: true,
     syncMouseEvents: false,
     mouseSyncPositionMode: "actual",
     strictPassthrough: true,
@@ -42,6 +43,10 @@ describe("getReservedShapeShortcutUsage", () => {
     autoStopSeconds: null,
     notifyOnRecaptcha: false,
     stopOnRecaptcha: false,
+    mobilePushEnabled: false,
+    mobilePushDiscordBotUrl: "",
+    mobilePushDiscordUserId: "",
+    mobilePushDiscordApiKey: "",
     autoHoly: {
       enabled: false,
       debuffType: "root",

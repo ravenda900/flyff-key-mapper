@@ -1,5 +1,33 @@
 # Flyff Mapper Release Notes
 
+## v3.3.0 (2026-05-19)
+
+Discord Mobile Push, Storage Hardening, and Cross-Tab Persistence Improvements.
+
+### Added
+
+- Added Discord bot DM mobile push integration with configurable Bot URL, Discord User ID, and API key fields.
+- Added Test Connection action for validating Discord bot health before sending notifications.
+- Added IndexedDB mirroring for persistent storage with migration verification from existing local storage values.
+- Added startup storage health checks with automatic repair for recoverable storage inconsistencies.
+
+### Changed
+
+- Updated notification delivery pipeline so auto-stop and reCAPTCHA-triggered paths consistently attempt Discord push delivery.
+- Updated settings persistence flow so mobile push configuration fields remain stable across tab/window reloads and profile transitions.
+- Updated cross-tab profile synchronization behavior for mapper state updates.
+- Updated Settings and Key Mapper configuration sync so changes propagate across tabs and persist after browser/tab restart.
+
+### Fixed
+
+- Fixed cases where mobile push settings could be lost after tab reload or profile state changes.
+- Fixed scenarios where storage payload corruption could cause profile/settings instability by adding backup restore paths.
+
+### Packaging
+
+- Package version updated to 3.3.0.
+- Manifest extension version updated to 3.3.0.
+
 ## v3.2.0 (2026-05-15)
 
 Key Mapper Footer UX and Action Placement Improvements.

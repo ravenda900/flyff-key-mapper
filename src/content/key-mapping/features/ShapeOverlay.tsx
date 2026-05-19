@@ -2169,17 +2169,20 @@ export const ShapeOverlay = ({
           </div>
         )}
 
-      {overlayVisible && shapesVisible && runningTooltip && (
-        <div
-          className="fm-running-tooltip"
-          style={{
-            left: runningTooltip.x,
-            top: runningTooltip.y,
-          }}
-        >
-          <ShortcutKeys combo={runningTooltip.keyBinding} />
-        </div>
-      )}
+      {overlayVisible &&
+        shapesVisible &&
+        runningTooltip &&
+        settings.showShapeTooltips && (
+          <div
+            className="fm-running-tooltip"
+            style={{
+              left: runningTooltip.x,
+              top: runningTooltip.y,
+            }}
+          >
+            <ShortcutKeys combo={runningTooltip.keyBinding} />
+          </div>
+        )}
     </>
   );
 };

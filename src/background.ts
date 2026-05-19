@@ -1,6 +1,21 @@
 const TOGGLE_COMMAND = "toggle-mapper";
 const FLYFF_HOST = "universe.flyff.com";
 const CHARACTER_TITLE_PATTERN = /^(.+?)\s*-\s*Flyff Universe$/i;
+const NOTIFICATION_DEDUPE_MAX_AGE_MS = 10 * 60 * 1000;
+const notificationSeenByKey = new Map<string, number>();
+
+type MobilePushPayload = {
+  enabled?: unknown;
+  provider?: unknown;
+  discordBotUrl?: unknown;
+  discordUserId?: unknown;
+  discordApiKey?: unknown;
+};
+
+type DiscordNotificationResult = {
+  ok: boolean;
+  error?: string;
+};
 
 const getCharacterNameFromTitle = (title: string): string | null => {
   const trimmed = title.trim();
@@ -34,6 +49,176 @@ const isFlyffPlayTab = (tab: chrome.tabs.Tab): boolean => {
 
   const title = tab.title ?? "";
   return getCharacterNameFromTitle(title) !== null;
+};
+
+const isFlyffPlaySenderTab = (tab?: chrome.tabs.Tab): boolean => {
+  if (!tab) {
+    return false;
+  }
+
+  const tabUrl = tab.url ?? "";
+  if (!tabUrl) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(tabUrl);
+    const isFlyffPlayUrl =
+      parsed.hostname.toLowerCase() === FLYFF_HOST &&
+      parsed.pathname.toLowerCase().startsWith("/play");
+
+    if (!isFlyffPlayUrl) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return getCharacterNameFromTitle(tab.title ?? "") !== null;
+};
+
+const pruneNotificationDedupes = (now: number) => {
+  notificationSeenByKey.forEach((seenAt, key) => {
+    if (now - seenAt > NOTIFICATION_DEDUPE_MAX_AGE_MS) {
+      notificationSeenByKey.delete(key);
+    }
+  });
+};
+
+const sendDiscordNotification = async (
+  title: string,
+  body: string,
+  mobilePush: MobilePushPayload | undefined,
+): Promise<DiscordNotificationResult> => {
+  const enabled = mobilePush?.enabled === true;
+  const provider =
+    typeof mobilePush?.provider === "string" ? mobilePush.provider : "";
+  const botUrl =
+    typeof mobilePush?.discordBotUrl === "string"
+      ? mobilePush.discordBotUrl.trim()
+      : "";
+  const userId =
+    typeof mobilePush?.discordUserId === "string"
+      ? mobilePush.discordUserId.trim()
+      : "";
+  const apiKey =
+    typeof mobilePush?.discordApiKey === "string"
+      ? mobilePush.discordApiKey.trim()
+      : "";
+
+  if (!enabled || provider !== "discord" || !botUrl || !userId || !apiKey) {
+    return {
+      ok: false,
+      error: "Missing Discord mobile push config (URL, User ID, or API key).",
+    };
+  }
+
+  const normalizedBotUrl = botUrl.replace(/\/+$/, "");
+
+  try {
+    const response = await fetch(`${normalizedBotUrl}/notify`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+      },
+      body: JSON.stringify({ userId, message: `**${title}**\n${body}` }),
+    });
+
+    if (response.ok) {
+      return { ok: true };
+    }
+
+    const responseText = await response.text().catch(() => "");
+    const trimmed = responseText.trim();
+
+    if (response.status === 401) {
+      return {
+        ok: false,
+        error: "Discord bot unauthorized (401). Check your API key.",
+      };
+    }
+
+    if (response.status === 429) {
+      return {
+        ok: false,
+        error: "Discord bot rate limited (429). Try again shortly.",
+      };
+    }
+
+    return {
+      ok: false,
+      error: trimmed
+        ? `Discord bot request failed (${response.status}): ${trimmed}`
+        : `Discord bot request failed (${response.status}).`,
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message.trim().length > 0
+        ? error.message
+        : "Unable to reach Discord bot.";
+
+    return { ok: false, error: message };
+  }
+};
+
+const testDiscordConnection = async (
+  mobilePush: MobilePushPayload | undefined,
+): Promise<DiscordNotificationResult> => {
+  const provider =
+    typeof mobilePush?.provider === "string" ? mobilePush.provider : "";
+  const botUrl =
+    typeof mobilePush?.discordBotUrl === "string"
+      ? mobilePush.discordBotUrl.trim()
+      : "";
+  const apiKey =
+    typeof mobilePush?.discordApiKey === "string"
+      ? mobilePush.discordApiKey.trim()
+      : "";
+
+  if (provider !== "discord" || !botUrl) {
+    return {
+      ok: false,
+      error: "Missing Discord bot URL.",
+    };
+  }
+
+  const normalizedBotUrl = botUrl.replace(/\/+$/, "");
+
+  try {
+    const response = await fetch(`${normalizedBotUrl}/health`, {
+      method: "GET",
+      headers: apiKey ? { "x-api-key": apiKey } : undefined,
+    });
+
+    if (response.ok) {
+      return { ok: true };
+    }
+
+    const responseText = await response.text().catch(() => "");
+    const trimmed = responseText.trim();
+
+    if (response.status === 401) {
+      return {
+        ok: false,
+        error: "Discord bot unauthorized (401). Check your API key.",
+      };
+    }
+
+    return {
+      ok: false,
+      error: trimmed
+        ? `Discord bot health check failed (${response.status}): ${trimmed}`
+        : `Discord bot health check failed (${response.status}).`,
+    };
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message.trim().length > 0
+        ? error.message
+        : "Unable to reach Discord bot.";
+
+    return { ok: false, error: message };
+  }
 };
 
 type KeyTriggerActionMessage = {
@@ -453,6 +638,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const payload = message as {
       title?: unknown;
       message?: unknown;
+      dedupeKey?: unknown;
+      dedupeWindowMs?: unknown;
+      mobilePush?: MobilePushPayload;
     };
 
     const title =
@@ -464,10 +652,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         ? payload.message
         : "";
 
+    const isEligibleSender = isFlyffPlaySenderTab(sender.tab);
+
+    if (!isEligibleSender) {
+      sendResponse({ ok: true, skipped: true });
+      return;
+    }
+
     if (!notificationMessage || !chrome.notifications?.create) {
       sendResponse({ ok: false });
       return;
     }
+
+    const now = Date.now();
+    pruneNotificationDedupes(now);
+
+    const defaultDedupeKey = `${title.toLowerCase()}::${notificationMessage.toLowerCase()}`;
+    const dedupeKey =
+      typeof payload.dedupeKey === "string" &&
+      payload.dedupeKey.trim().length > 0
+        ? payload.dedupeKey.trim()
+        : defaultDedupeKey;
+    const dedupeWindowMs =
+      typeof payload.dedupeWindowMs === "number" &&
+      Number.isFinite(payload.dedupeWindowMs) &&
+      payload.dedupeWindowMs >= 0
+        ? payload.dedupeWindowMs
+        : 3000;
+
+    const lastSeenAt = notificationSeenByKey.get(dedupeKey) ?? 0;
+    if (now - lastSeenAt < dedupeWindowMs) {
+      sendResponse({ ok: true, deduped: true });
+      return;
+    }
+
+    notificationSeenByKey.set(dedupeKey, now);
 
     const notificationId = `flyff-utility-${Date.now()}-${Math.random()
       .toString(36)
@@ -484,13 +703,104 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       },
       () => {
         if (chrome.runtime.lastError) {
+          notificationSeenByKey.delete(dedupeKey);
           sendResponse({ ok: false });
           return;
         }
 
+        void sendDiscordNotification(
+          title,
+          notificationMessage,
+          payload.mobilePush,
+        )
+          .then((result) => {
+            if (!result.ok && result.error) {
+              console.warn("Discord mobile push failed:", result.error);
+            }
+          })
+          .catch(() => undefined);
         sendResponse({ ok: true });
       },
     );
+
+    return true;
+  }
+
+  if (msg.type === "SEND_TEST_MOBILE_PUSH") {
+    const payload = message as {
+      title?: unknown;
+      message?: unknown;
+      mobilePush?: MobilePushPayload;
+    };
+
+    const isEligibleSender = isFlyffPlaySenderTab(sender.tab);
+    if (!isEligibleSender) {
+      sendResponse({ ok: false, error: "Not a Flyff play tab." });
+      return;
+    }
+
+    const title =
+      typeof payload.title === "string" && payload.title.trim().length > 0
+        ? payload.title.trim()
+        : "Flyff Utility - Test Push";
+    const notificationMessage =
+      typeof payload.message === "string" && payload.message.trim().length > 0
+        ? payload.message.trim()
+        : "Test notification from Flyff Utility.";
+
+    void sendDiscordNotification(title, notificationMessage, payload.mobilePush)
+      .then((result) => {
+        if (!result.ok) {
+          sendResponse({
+            ok: false,
+            error:
+              result.error ||
+              "Discord notification failed. Check your Bot URL, User ID, and API key.",
+          });
+          return;
+        }
+
+        sendResponse({ ok: true });
+      })
+      .catch(() => {
+        sendResponse({
+          ok: false,
+          error: "Unable to reach Discord bot.",
+        });
+      });
+
+    return true;
+  }
+
+  if (msg.type === "TEST_MOBILE_PUSH_CONNECTION") {
+    const payload = message as {
+      mobilePush?: MobilePushPayload;
+    };
+
+    const isEligibleSender = isFlyffPlaySenderTab(sender.tab);
+    if (!isEligibleSender) {
+      sendResponse({ ok: false, error: "Not a Flyff play tab." });
+      return;
+    }
+
+    void testDiscordConnection(payload.mobilePush)
+      .then((result) => {
+        if (!result.ok) {
+          sendResponse({
+            ok: false,
+            error: result.error || "Unable to connect to Discord bot.",
+          });
+          return;
+        }
+
+        sendResponse({ ok: true });
+      })
+      .catch(() => {
+        sendResponse({
+          ok: false,
+          error: "Unable to connect to Discord bot.",
+        });
+      });
 
     return true;
   }

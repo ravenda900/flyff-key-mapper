@@ -37,6 +37,28 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
   - Rename, create, and delete profiles.
 - Persistent local storage for settings and shapes.
 
+## What's new in v3.3.0
+
+### Discord push notifications and reliability
+
+- Replaced mobile push provider integration with Discord bot DM support.
+- Added configurable Discord Bot URL, Discord User ID, and Discord Bot API key.
+- Added `Test Connection` action for bot health checks before sending push messages.
+- Improved notification flow reliability so auto-stop and reCAPTCHA paths consistently attempt Discord push delivery.
+
+### Persistence and storage safety
+
+- Improved persistence behavior for mobile push configuration fields so values are retained across tab/window reloads.
+- Added IndexedDB mirroring for persistent mapper state with verification-based migration from local storage.
+- Added write-ahead backups and recovery logic to reduce risk of data corruption during storage writes.
+- Added startup storage health check with automatic repair for recoverable inconsistencies.
+
+### Cross-tab behavior and profile sync
+
+- Extended cross-tab synchronization to include profile visual state updates (shape visibility and related profile state).
+- Improved mapper/profile state propagation to reduce stale tab state after profile updates.
+- Settings and Key Mapper configuration changes now sync across open tabs and are restored after tab/window restart.
+
 ## What's new in v3.1.0
 
 ### Key Trigger chaining and execution model
@@ -90,7 +112,7 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
 - `public/background.js` – background service worker.
 - `src/content/main.tsx` – core mapper UI + interaction logic.
 - `src/content/keybinding.ts` – key matching and click dispatch logic.
-- `src/content/storage.ts` – local storage load/save.
+- `src/content/storage.ts` – persistent state load/save, migration, and recovery safeguards.
 - `src/content/types.ts` – mapper and shape types.
 
 ## Development setup

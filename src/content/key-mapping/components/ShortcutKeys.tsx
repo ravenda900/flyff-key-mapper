@@ -36,6 +36,32 @@ const parseMouseToken = (token: string): MouseTokenSpec | null => {
   return null;
 };
 
+const formatShortcutTokenLabel = (token: string): string => {
+  const normalized = token.trim().toLowerCase().replace(/\s+/g, " ");
+
+  if (normalized === "esc" || normalized === "escape") {
+    return "Escape";
+  }
+
+  if (normalized === "arrowleft") {
+    return "←";
+  }
+
+  if (normalized === "arrowright") {
+    return "→";
+  }
+
+  if (normalized === "arrowup") {
+    return "↑";
+  }
+
+  if (normalized === "arrowdown") {
+    return "↓";
+  }
+
+  return token;
+};
+
 const MouseShortcutToken = ({
   token,
   spec,
@@ -114,7 +140,9 @@ export const ShortcutKeys = ({
               return <MouseShortcutToken token={part} spec={mouseSpec} />;
             }
 
-            return <kbd className="fm-kbd">{part}</kbd>;
+            return (
+              <kbd className="fm-kbd">{formatShortcutTokenLabel(part)}</kbd>
+            );
           })()}
           {showPlus && index < parts.length - 1 && (
             <span className="fm-shortcut-plus">+</span>

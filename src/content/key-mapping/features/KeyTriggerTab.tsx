@@ -1,9 +1,19 @@
+// Extend the Window interface to include fmCurrentTabId
+declare global {
+  interface Window {
+    fmCurrentTabId?: number;
+  }
+}
 import {
+  CheckOutlined,
+  CloseOutlined,
   CopyOutlined,
   DeleteOutlined,
   EditOutlined,
   HolderOutlined,
+  PlusOutlined,
   PoweroffOutlined,
+  UploadOutlined,
 } from "@ant-design/icons";
 import {
   Button,
@@ -14,9 +24,11 @@ import {
   Popconfirm,
   Popover,
   Segmented,
+  Select,
   Space,
   Tooltip,
   Typography,
+  message,
   theme,
 } from "antd";
 import {
@@ -29,15 +41,22 @@ import {
   useState,
 } from "react";
 import type {
+  CharacterTabInfo,
   KeyTriggerAction,
   KeyTriggerProfile,
+  KeyTriggerPreset,
   TriggerType,
 } from "../../types";
 import { ShortcutKeys } from "../components/ShortcutKeys";
 
 type Props = {
-  profiles: KeyTriggerProfile[];
-  onProfilesChange: (profiles: KeyTriggerProfile[]) => void;
+  presets: KeyTriggerPreset[];
+  selectedPresetId: string;
+  onPresetsChange: (presets: KeyTriggerPreset[]) => void;
+  onSelectedPresetIdChange: (presetId: string) => void;
+  availableTargetTabs: CharacterTabInfo[];
+  activeMapperProfileName?: string | null;
+  activeMapperProfileBindings?: string[];
   isConfigLocked: boolean;
   onEditorOpenChange?: (isOpen: boolean) => void;
   onFooterControlsChange?: (controls: KeyTriggerFooterControls | null) => void;
@@ -55,6 +74,7 @@ export type KeyTriggerFooterControls = {
   onAddAction: () => void;
   showSaveCancel: boolean;
   saveDisabled: boolean;
+  saveDisabledReason?: string;
   onSave: () => void;
   onCancel: () => void;
 };
@@ -67,10 +87,16 @@ type ProfileEditorDraft = {
   triggerType: TriggerType;
   repeatCount: number;
   triggerKey: string;
+  executionScope: "all" | "current" | "other" | "specific";
   currentTabOnly?: boolean;
   otherTabsOnly?: boolean;
+  specificTargetTabId?: number | null;
+  specificTargetTabName?: string | null;
+  specificTargetTabIds?: number[];
+  specificTargetTabNames?: string[];
   delayMode: "sequential" | "synchronous";
   actions: KeyTriggerAction[];
+  lockToTab?: boolean;
 };
 
 const normalizeRepeatCount = (value: unknown, fallback = 2): number => {
@@ -294,9 +320,84 @@ const createDefaultAction = (
   };
 };
 
+const isProfileLike = (value: unknown): value is Partial<KeyTriggerProfile> =>
+  typeof value === "object" && value !== null;
+
+const extractProfilesFromImportPayload = (
+  payload: unknown,
+): Partial<KeyTriggerProfile>[] => {
+  if (Array.isArray(payload)) {
+    return payload.filter(isProfileLike);
+  }
+
+  if (
+    payload &&
+    typeof payload === "object" &&
+    Array.isArray((payload as { profiles?: unknown }).profiles)
+  ) {
+    return (payload as { profiles: unknown[] }).profiles.filter(isProfileLike);
+  }
+
+  return [];
+};
+
+const normalizeShortcutForConflictCheck = (binding: string): string => {
+  const parts = binding
+    .split("+")
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (parts.length === 0) {
+    return "";
+  }
+
+  const modifiers = new Set<string>();
+  const steps: string[] = [];
+
+  parts.forEach((part) => {
+    if (part === "ctrl" || part === "control") {
+      modifiers.add("ctrl");
+      return;
+    }
+
+    if (part === "alt") {
+      modifiers.add("alt");
+      return;
+    }
+
+    if (part === "shift") {
+      modifiers.add("shift");
+      return;
+    }
+
+    if (part === "meta" || part === "cmd" || part === "command") {
+      modifiers.add("meta");
+      return;
+    }
+
+    if (part === "escape") {
+      steps.push("esc");
+      return;
+    }
+
+    steps.push(part);
+  });
+
+  const orderedModifiers = ["ctrl", "alt", "shift", "meta"].filter((modifier) =>
+    modifiers.has(modifier),
+  );
+
+  return [...orderedModifiers, ...steps].join("+");
+};
+
 export const KeyTriggerTab = ({
-  profiles,
-  onProfilesChange,
+  presets,
+  selectedPresetId,
+  onPresetsChange,
+  onSelectedPresetIdChange,
+  availableTargetTabs,
+  activeMapperProfileName,
+  activeMapperProfileBindings,
   isConfigLocked,
   onEditorOpenChange,
   onFooterControlsChange,
@@ -304,30 +405,90 @@ export const KeyTriggerTab = ({
   selectedProfileId: initialSelectedProfileId,
   onSelectedProfileIdChange,
 }: Props) => {
+  const selectedPreset =
+    presets.find((p) => p.id === selectedPresetId) || presets[0];
+  const profiles = selectedPreset?.profiles || [];
+  const activePresetId = selectedPreset?.id ?? selectedPresetId;
+  const selectedPresetSwitchShortcut = selectedPreset?.switchShortcut ?? "";
+  const presetSwitchShortcutUsage = (() => {
+    const normalizedTarget = normalizeShortcutForConflictCheck(
+      selectedPresetSwitchShortcut,
+    );
+
+    if (!normalizedTarget) {
+      return {
+        mapperUsage: null as string | null,
+        keyTriggerUsage: null as string | null,
+      };
+    }
+
+    const mapperUsage =
+      activeMapperProfileBindings?.some(
+        (binding) =>
+          normalizeShortcutForConflictCheck(binding) === normalizedTarget,
+      ) ?? false;
+
+    const keyTriggerMatch = profiles.find(
+      (profile) =>
+        profile.triggerKey &&
+        normalizeShortcutForConflictCheck(profile.triggerKey) ===
+          normalizedTarget,
+    );
+
+    const conflictingPreset = presets.find(
+      (preset) =>
+        preset.id !== activePresetId &&
+        normalizeShortcutForConflictCheck(preset.switchShortcut ?? "") ===
+          normalizedTarget,
+    );
+
+    return {
+      mapperUsage: mapperUsage
+        ? `Active profile key mapper${activeMapperProfileName ? ` (${activeMapperProfileName})` : ""}`
+        : null,
+      keyTriggerUsage: keyTriggerMatch
+        ? `Key trigger profile: ${keyTriggerMatch.name}`
+        : conflictingPreset
+          ? `Preset shortcut conflict: ${conflictingPreset.name}`
+          : null,
+    };
+  })();
+  const onProfilesChange = useCallback(
+    (nextProfiles: KeyTriggerProfile[]) => {
+      const nextPresets = presets.map((preset) =>
+        preset.id === activePresetId
+          ? { ...preset, profiles: nextProfiles }
+          : preset,
+      );
+      onPresetsChange(nextPresets);
+    },
+    [activePresetId, onPresetsChange, presets],
+  );
   const { token } = theme.useToken();
+  const getDialogPopupContainer = (triggerNode?: HTMLElement) =>
+    (triggerNode?.closest(".fm-dialog") as HTMLElement | null) ?? document.body;
   const dialogTooltipProps = {
-    getPopupContainer: (triggerNode: HTMLElement) =>
-      (triggerNode.closest(".fm-dialog") as HTMLElement | null) ??
-      document.body,
+    getPopupContainer: getDialogPopupContainer,
     zIndex: 2147483647,
+    overlayClassName: "fm-dialog-surface-tooltip",
   };
   const dialogPopoverProps = {
-    getPopupContainer: (triggerNode: HTMLElement) =>
-      (triggerNode.closest(".fm-dialog") as HTMLElement | null) ??
-      document.body,
+    getPopupContainer: getDialogPopupContainer,
     zIndex: 2147483647,
     overlayClassName: "fm-dialog-surface-popover",
   };
   const dialogPopconfirmProps = {
-    getPopupContainer: (triggerNode: HTMLElement) =>
-      (triggerNode.closest(".fm-dialog") as HTMLElement | null) ??
-      document.body,
+    getPopupContainer: getDialogPopupContainer,
     zIndex: 2147483647,
     overlayClassName: "fm-dialog-surface-popconfirm",
   };
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(
     initialSelectedProfileId ?? null,
   );
+  const [selectedProfileIds, setSelectedProfileIds] = useState<string[]>([]);
+  const [hasPasteableClipboardProfiles, setHasPasteableClipboardProfiles] =
+    useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editorDraft, setEditorDraft] = useState<ProfileEditorDraft | null>(
     null,
@@ -340,6 +501,65 @@ export const KeyTriggerTab = ({
   >(null);
   const [dragProfileId, setDragProfileId] = useState<string | null>(null);
   const [dragActionId, setDragActionId] = useState<string | null>(null);
+
+  const resolveExecutionScope = (
+    draft: Pick<
+      ProfileEditorDraft,
+      | "executionScope"
+      | "currentTabOnly"
+      | "otherTabsOnly"
+      | "specificTargetTabId"
+      | "specificTargetTabIds"
+    >,
+  ): ProfileEditorDraft["executionScope"] => {
+    if (draft.executionScope === "specific") {
+      return "specific";
+    }
+
+    if (draft.executionScope === "current") {
+      return "current";
+    }
+
+    if (draft.executionScope === "other") {
+      return "other";
+    }
+
+    if (draft.currentTabOnly) {
+      return "current";
+    }
+
+    if (draft.otherTabsOnly) {
+      return "other";
+    }
+
+    if (
+      Array.isArray(draft.specificTargetTabIds) &&
+      draft.specificTargetTabIds.length > 0
+    ) {
+      return "specific";
+    }
+
+    if (
+      draft.specificTargetTabId !== undefined &&
+      draft.specificTargetTabId !== null
+    ) {
+      return "specific";
+    }
+
+    return "all";
+  };
+
+  // Preset management state
+  const [presetCreateName, setPresetCreateName] = useState("");
+  const [presetCreateOpen, setPresetCreateOpen] = useState(false);
+  const [presetRenameName, setPresetRenameName] = useState("");
+  const [presetRenameOpen, setPresetRenameOpen] = useState(false);
+  const presetCreateInputRef = useRef<import("antd").InputRef | null>(null);
+  const presetRenameInputRef = useRef<import("antd").InputRef | null>(null);
+  const onSelectedProfileIdChangeRef = useRef(onSelectedProfileIdChange);
+  const lastNotifiedProfileIdRef = useRef<string | null | undefined>(undefined);
+  const lastNotifiedEditorOpenRef = useRef<boolean | undefined>(undefined);
+
   const profilesPaneContentRef = useRef<HTMLDivElement | null>(null);
   const editorPaneContentRef = useRef<HTMLDivElement | null>(null);
   const profilesPaneScrollTopRef = useRef(0);
@@ -357,23 +577,57 @@ export const KeyTriggerTab = ({
   const isEditorOpen = editorDraft !== null;
 
   useEffect(() => {
-    onEditorOpenChange?.(isEditorOpen);
+    if (!onEditorOpenChange) {
+      return;
+    }
+
+    if (lastNotifiedEditorOpenRef.current === isEditorOpen) {
+      return;
+    }
+
+    lastNotifiedEditorOpenRef.current = isEditorOpen;
+    onEditorOpenChange(isEditorOpen);
   }, [isEditorOpen, onEditorOpenChange]);
 
   useEffect(() => {
-    if (
-      initialSelectedProfileId !== undefined &&
-      initialSelectedProfileId !== selectedProfileId
-    ) {
-      setSelectedProfileId(initialSelectedProfileId);
+    if (initialSelectedProfileId === undefined) {
+      return;
     }
+
+    setSelectedProfileId((prev) =>
+      prev === initialSelectedProfileId ? prev : initialSelectedProfileId,
+    );
   }, [initialSelectedProfileId]);
 
   useEffect(() => {
-    if (onSelectedProfileIdChange) {
-      onSelectedProfileIdChange(selectedProfileId);
+    onSelectedProfileIdChangeRef.current = onSelectedProfileIdChange;
+  }, [onSelectedProfileIdChange]);
+
+  useEffect(() => {
+    if (onSelectedProfileIdChangeRef.current) {
+      if (lastNotifiedProfileIdRef.current === selectedProfileId) {
+        return;
+      }
+
+      lastNotifiedProfileIdRef.current = selectedProfileId;
+      onSelectedProfileIdChangeRef.current(selectedProfileId);
     }
-  }, [selectedProfileId, onSelectedProfileIdChange]);
+  }, [selectedProfileId]);
+
+  useEffect(() => {
+    if (selectedProfileIds.length === 0) {
+      return;
+    }
+
+    const profileIdSet = new Set(profiles.map((profile) => profile.id));
+    setSelectedProfileIds((prev) => {
+      const next = prev.filter((profileId) => profileIdSet.has(profileId));
+      return next.length === prev.length &&
+        next.every((id, i) => id === prev[i])
+        ? prev
+        : next;
+    });
+  }, [profiles, selectedProfileIds]);
 
   useLayoutEffect(() => {
     const measureHeight = () => {
@@ -464,10 +718,21 @@ export const KeyTriggerTab = ({
       triggerType: "once",
       repeatCount: 2,
       triggerKey: "",
+      executionScope: "all",
+      specificTargetTabIds:
+        availableTargetTabs[0]?.id !== undefined
+          ? [availableTargetTabs[0].id]
+          : [],
+      specificTargetTabNames:
+        availableTargetTabs[0]?.name !== undefined
+          ? [availableTargetTabs[0].name]
+          : [],
+      specificTargetTabId: availableTargetTabs[0]?.id ?? null,
+      specificTargetTabName: availableTargetTabs[0]?.name ?? null,
       delayMode: "sequential",
       actions: [createDefaultAction()],
     });
-  }, [profiles]);
+  }, [availableTargetTabs, profiles]);
 
   const startEditProfileEditor = (profile: KeyTriggerProfile) => {
     setSelectedProfileId(profile.id);
@@ -480,8 +745,34 @@ export const KeyTriggerTab = ({
       triggerType: profile.triggerType,
       repeatCount: normalizeRepeatCount(profile.repeatCount, 2),
       triggerKey: profile.triggerKey,
+      executionScope:
+        profile.executionScope ??
+        (profile.otherTabsOnly === true
+          ? "other"
+          : profile.currentTabOnly === true
+            ? "current"
+            : profile.specificTargetTabId !== undefined &&
+                profile.specificTargetTabId !== null
+              ? "specific"
+              : "all"),
       currentTabOnly: profile.currentTabOnly,
       otherTabsOnly: profile.otherTabsOnly,
+      specificTargetTabId: profile.specificTargetTabId ?? null,
+      specificTargetTabName: profile.specificTargetTabName ?? null,
+      specificTargetTabIds:
+        profile.specificTargetTabIds && profile.specificTargetTabIds.length > 0
+          ? [...profile.specificTargetTabIds]
+          : profile.specificTargetTabId !== undefined &&
+              profile.specificTargetTabId !== null
+            ? [profile.specificTargetTabId]
+            : [],
+      specificTargetTabNames:
+        profile.specificTargetTabNames &&
+        profile.specificTargetTabNames.length > 0
+          ? [...profile.specificTargetTabNames]
+          : profile.specificTargetTabName
+            ? [profile.specificTargetTabName]
+            : [],
       delayMode: profile.delayMode || "sequential",
       actions:
         profile.actions.length > 0
@@ -493,6 +784,29 @@ export const KeyTriggerTab = ({
                 action.actionTriggerType === "repeat"
                   ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
                   : 1,
+              executionScope:
+                action.executionScope === "current" ||
+                action.executionScope === "other" ||
+                action.executionScope === "specific"
+                  ? action.executionScope
+                  : action.otherTabsOnly === true
+                    ? "other"
+                    : action.currentTabOnly === true
+                      ? "current"
+                      : "all",
+              specificTargetTabIds: Array.isArray(action.specificTargetTabIds)
+                ? action.specificTargetTabIds.filter((id) =>
+                    Number.isFinite(id),
+                  )
+                : [],
+              specificTargetTabNames: Array.isArray(
+                action.specificTargetTabNames,
+              )
+                ? action.specificTargetTabNames.filter(
+                    (name): name is string =>
+                      typeof name === "string" && name.trim().length > 0,
+                  )
+                : [],
             }))
           : [createDefaultAction()],
     });
@@ -512,6 +826,25 @@ export const KeyTriggerTab = ({
       name: duplicatedName,
       enabled: profile.enabled !== false,
       repeatCount: normalizeRepeatCount(profile.repeatCount, 2),
+      executionScope: profile.executionScope,
+      currentTabOnly: profile.currentTabOnly,
+      otherTabsOnly: profile.otherTabsOnly,
+      specificTargetTabId: profile.specificTargetTabId ?? null,
+      specificTargetTabName: profile.specificTargetTabName ?? null,
+      specificTargetTabIds:
+        profile.specificTargetTabIds && profile.specificTargetTabIds.length > 0
+          ? [...profile.specificTargetTabIds]
+          : profile.specificTargetTabId !== undefined &&
+              profile.specificTargetTabId !== null
+            ? [profile.specificTargetTabId]
+            : [],
+      specificTargetTabNames:
+        profile.specificTargetTabNames &&
+        profile.specificTargetTabNames.length > 0
+          ? [...profile.specificTargetTabNames]
+          : profile.specificTargetTabName
+            ? [profile.specificTargetTabName]
+            : [],
       delayMode: profile.delayMode || "sequential",
       actions: profile.actions.map((action) => ({
         ...action,
@@ -522,6 +855,25 @@ export const KeyTriggerTab = ({
           action.actionTriggerType === "repeat"
             ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
             : 1,
+        executionScope:
+          action.executionScope === "current" ||
+          action.executionScope === "other" ||
+          action.executionScope === "specific"
+            ? action.executionScope
+            : action.otherTabsOnly === true
+              ? "other"
+              : action.currentTabOnly === true
+                ? "current"
+                : "all",
+        specificTargetTabIds: Array.isArray(action.specificTargetTabIds)
+          ? action.specificTargetTabIds.filter((id) => Number.isFinite(id))
+          : [],
+        specificTargetTabNames: Array.isArray(action.specificTargetTabNames)
+          ? action.specificTargetTabNames.filter(
+              (name): name is string =>
+                typeof name === "string" && name.trim().length > 0,
+            )
+          : [],
       })),
     };
 
@@ -551,13 +903,49 @@ export const KeyTriggerTab = ({
     }
   };
 
+  // Track the current tab ID for lockToTab enforcement
+  const [currentTabId, setCurrentTabId] = useState<number | null>(null);
+  useEffect(() => {
+    // Try to get the tab ID from window.name or a global injected value
+    if (window && typeof window.fmCurrentTabId === "number") {
+      setCurrentTabId(window.fmCurrentTabId ?? null);
+    } else if (!isNaN(Number(window.name))) {
+      setCurrentTabId(Number(window.name));
+    }
+  }, []);
+
   const toggleProfileEnabled = (profileId: string) => {
     onProfilesChange(
-      profiles.map((profile) =>
-        profile.id === profileId
-          ? { ...profile, enabled: profile.enabled === false }
-          : profile,
-      ),
+      profiles.map((profile) => {
+        if (profile.id !== profileId) return profile;
+        // If enabling, set toggleOwnerTabId if lockToTab is set
+        if (profile.triggerType === "toggle" && profile.lockToTab) {
+          if (profile.enabled === false || profile.enabled === undefined) {
+            // Enabling: record owner tab
+            return {
+              ...profile,
+              enabled: true,
+              toggleOwnerTabId: currentTabId ?? undefined,
+            };
+          } else {
+            // Disabling: only allow from owner tab
+            if (
+              typeof profile.toggleOwnerTabId === "number" &&
+              currentTabId !== profile.toggleOwnerTabId
+            ) {
+              // Not allowed to disable from another tab
+              return profile;
+            }
+            return {
+              ...profile,
+              enabled: false,
+              toggleOwnerTabId: undefined,
+            };
+          }
+        }
+        // Default toggle logic for non-locked profiles
+        return { ...profile, enabled: profile.enabled === false };
+      }),
     );
   };
 
@@ -579,19 +967,68 @@ export const KeyTriggerTab = ({
         : [createDefaultAction()];
 
     const normalizedActions: KeyTriggerAction[] = sourceActions.map(
-      (action, index) => ({
-        ...action,
-        name: action.name.trim() || `Action ${index + 1}`,
-        key: action.key.trim(),
-        delayMs: Math.max(0, Math.round(action.delayMs || 0)),
-        enabled: action.enabled !== false,
-        actionTriggerType:
-          action.actionTriggerType === "repeat" ? "repeat" : "once",
-        actionRepeatCount:
-          action.actionTriggerType === "repeat"
-            ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
-            : 1,
-      }),
+      (action, index) => {
+        const executionScope =
+          action.executionScope === "current" ||
+          action.executionScope === "other" ||
+          action.executionScope === "specific"
+            ? action.executionScope
+            : action.otherTabsOnly === true
+              ? "other"
+              : action.currentTabOnly === true
+                ? "current"
+                : "all";
+        const specificTargetTabIds = Array.from(
+          new Set(
+            (action.specificTargetTabIds ?? []).filter((id) =>
+              Number.isFinite(id),
+            ),
+          ),
+        );
+        const specificTargetTabNames = Array.from(
+          new Set(
+            (action.specificTargetTabNames ?? []).filter(
+              (name): name is string =>
+                typeof name === "string" && name.trim().length > 0,
+            ),
+          ),
+        );
+
+        return {
+          ...action,
+          name: action.name.trim() || `Action ${index + 1}`,
+          key: action.key.trim(),
+          delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+          enabled: action.enabled !== false,
+          executionScope,
+          currentTabOnly: executionScope === "current",
+          otherTabsOnly: executionScope === "other",
+          specificTargetTabIds,
+          specificTargetTabNames,
+          actionTriggerType:
+            action.actionTriggerType === "repeat" ? "repeat" : "once",
+          actionRepeatCount:
+            action.actionTriggerType === "repeat"
+              ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
+              : 1,
+        };
+      },
+    );
+    const executionScope = resolveExecutionScope(editorDraft);
+    const specificTargetTabIds = Array.from(
+      new Set(
+        (editorDraft.specificTargetTabIds ?? []).filter((id) =>
+          Number.isFinite(id),
+        ),
+      ),
+    );
+    const specificTargetTabNames = Array.from(
+      new Set(
+        (editorDraft.specificTargetTabNames ?? []).filter(
+          (name): name is string =>
+            typeof name === "string" && name.trim().length > 0,
+        ),
+      ),
     );
 
     const nextProfile: KeyTriggerProfile = {
@@ -605,8 +1042,15 @@ export const KeyTriggerTab = ({
           ? normalizeRepeatCount(editorDraft.repeatCount, 2)
           : 1,
       triggerKey: normalizedTriggerKey,
-      ...(editorDraft.currentTabOnly && { currentTabOnly: true }),
-      ...(editorDraft.otherTabsOnly && { otherTabsOnly: true }),
+      executionScope,
+      currentTabOnly: executionScope === "current",
+      otherTabsOnly: executionScope === "other",
+      specificTargetTabIds,
+      specificTargetTabNames,
+      specificTargetTabId:
+        specificTargetTabIds[0] ?? editorDraft.specificTargetTabId ?? null,
+      specificTargetTabName:
+        specificTargetTabNames[0] ?? editorDraft.specificTargetTabName ?? null,
       delayMode: editorDraft.delayMode,
       actions: normalizedActions,
     };
@@ -622,7 +1066,6 @@ export const KeyTriggerTab = ({
       onProfilesChange([nextProfile, ...profiles]);
       setNewProfileHighlightId(nextProfile.id);
     }
-
     setSelectedProfileId(nextProfile.id);
     setEditingProfileId(null);
     setEditorDraft(null);
@@ -676,16 +1119,22 @@ export const KeyTriggerTab = ({
     setNewActionHighlightId(nextId);
   }, [editorDraft]);
 
+  const saveDisabledReason = isConfigLocked
+    ? "Enable Edit Mode to save changes."
+    : editorDraft === null
+      ? undefined
+      : editorDraft.name.trim().length === 0
+        ? "Profile name is required."
+        : editorDraft.triggerKey.trim().length === 0
+          ? "Trigger key is required."
+          : undefined;
+
+  const canSaveDraft = editorDraft !== null && saveDisabledReason === undefined;
+
   useEffect(() => {
     if (!onFooterControlsChange) {
       return;
     }
-
-    const canSaveDraft =
-      editorDraft !== null &&
-      !isConfigLocked &&
-      editorDraft.name.trim().length > 0 &&
-      editorDraft.triggerKey.trim().length > 0;
 
     onFooterControlsChange({
       showAddProfile: !isEditorOpen,
@@ -696,6 +1145,7 @@ export const KeyTriggerTab = ({
       onAddAction: addActionDraft,
       showSaveCancel: isEditorOpen,
       saveDisabled: !canSaveDraft,
+      saveDisabledReason,
       onSave: saveDraft,
       onCancel: cancelDraft,
     });
@@ -716,11 +1166,642 @@ export const KeyTriggerTab = ({
     };
   }, [onFooterControlsChange]);
 
+  // Filter profiles by search term
+  const filteredProfiles = profiles.filter((profile) => {
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return true;
+    const actionText = profile.actions
+      .map((action) => `${action.name} ${action.key}`)
+      .join(" ")
+      .toLowerCase();
+    return (
+      profile.name.toLowerCase().includes(term) ||
+      profile.triggerKey?.toLowerCase().includes(term) ||
+      actionText.includes(term)
+    );
+  });
+
+  const reusableSourceProfiles =
+    selectedProfileIds.length > 0
+      ? profiles.filter((profile) => selectedProfileIds.includes(profile.id))
+      : selectedProfileId
+        ? profiles.filter((profile) => profile.id === selectedProfileId)
+        : [];
+
+  const cloneProfilesForPreset = (
+    sourceProfiles: Partial<KeyTriggerProfile>[],
+    targetPreset: KeyTriggerPreset,
+  ): KeyTriggerProfile[] => {
+    const usedNames = targetPreset.profiles.map((profile) => profile.name);
+
+    return sourceProfiles
+      .filter(
+        (profile): profile is Partial<KeyTriggerProfile> & { name: string } =>
+          typeof profile.name === "string" && profile.name.trim().length > 0,
+      )
+      .map((profile) => {
+        const baseName = profile.name.trim();
+        const nextName = usedNames.includes(baseName)
+          ? buildParenthesizedDuplicateName(baseName, usedNames)
+          : baseName;
+        usedNames.push(nextName);
+
+        const sourceActions = Array.isArray(profile.actions)
+          ? profile.actions
+          : [];
+        const nextActions: KeyTriggerAction[] =
+          sourceActions.length > 0
+            ? sourceActions.map((action, actionIndex) => ({
+                ...action,
+                id: createActionId(),
+                name:
+                  typeof action.name === "string" && action.name.trim().length
+                    ? action.name.trim()
+                    : `Action ${actionIndex + 1}`,
+                key: typeof action.key === "string" ? action.key.trim() : "",
+                delayMs: Math.max(0, Math.round(Number(action.delayMs) || 0)),
+                enabled: action.enabled !== false,
+                actionTriggerType:
+                  action.actionTriggerType === "repeat" ? "repeat" : "once",
+                actionRepeatCount:
+                  action.actionTriggerType === "repeat"
+                    ? normalizeActionRepeatCount(action.actionRepeatCount, 2)
+                    : 1,
+                executionScope:
+                  action.executionScope === "current" ||
+                  action.executionScope === "other" ||
+                  action.executionScope === "specific"
+                    ? action.executionScope
+                    : action.otherTabsOnly === true
+                      ? "other"
+                      : action.currentTabOnly === true
+                        ? "current"
+                        : "all",
+                currentTabOnly: action.currentTabOnly,
+                otherTabsOnly: action.otherTabsOnly,
+                specificTargetTabIds: Array.isArray(action.specificTargetTabIds)
+                  ? action.specificTargetTabIds.filter((id) =>
+                      Number.isFinite(id),
+                    )
+                  : [],
+                specificTargetTabNames: Array.isArray(
+                  action.specificTargetTabNames,
+                )
+                  ? action.specificTargetTabNames.filter(
+                      (name): name is string =>
+                        typeof name === "string" && name.trim().length > 0,
+                    )
+                  : [],
+              }))
+            : [createDefaultAction([])];
+
+        const normalizedTriggerType =
+          profile.triggerType === "repeat" || profile.triggerType === "toggle"
+            ? profile.triggerType
+            : "once";
+
+        return {
+          ...(profile as KeyTriggerProfile),
+          id: createProfileId(),
+          profileIdentifier: createProfileIdentifier(),
+          name: nextName,
+          enabled: profile.enabled !== false,
+          triggerType: normalizedTriggerType,
+          repeatCount:
+            normalizedTriggerType === "repeat"
+              ? normalizeRepeatCount(profile.repeatCount, 2)
+              : 1,
+          triggerKey:
+            typeof profile.triggerKey === "string" ? profile.triggerKey : "",
+          executionScope:
+            profile.executionScope === "current" ||
+            profile.executionScope === "other" ||
+            profile.executionScope === "specific"
+              ? profile.executionScope
+              : profile.otherTabsOnly === true
+                ? "other"
+                : profile.currentTabOnly === true
+                  ? "current"
+                  : "all",
+          currentTabOnly: profile.currentTabOnly,
+          otherTabsOnly: profile.otherTabsOnly,
+          specificTargetTabIds: Array.isArray(profile.specificTargetTabIds)
+            ? profile.specificTargetTabIds.filter((id) => Number.isFinite(id))
+            : profile.specificTargetTabId !== undefined &&
+                profile.specificTargetTabId !== null
+              ? [profile.specificTargetTabId]
+              : [],
+          specificTargetTabNames: Array.isArray(profile.specificTargetTabNames)
+            ? profile.specificTargetTabNames.filter(
+                (name): name is string =>
+                  typeof name === "string" && name.trim().length > 0,
+              )
+            : typeof profile.specificTargetTabName === "string" &&
+                profile.specificTargetTabName.trim().length > 0
+              ? [profile.specificTargetTabName.trim()]
+              : [],
+          specificTargetTabId:
+            Array.isArray(profile.specificTargetTabIds) &&
+            profile.specificTargetTabIds.length > 0
+              ? profile.specificTargetTabIds[0]
+              : (profile.specificTargetTabId ?? null),
+          specificTargetTabName:
+            Array.isArray(profile.specificTargetTabNames) &&
+            profile.specificTargetTabNames.length > 0
+              ? profile.specificTargetTabNames[0]
+              : (profile.specificTargetTabName ?? null),
+          delayMode:
+            profile.delayMode === "synchronous" ? "synchronous" : "sequential",
+          actions: nextActions,
+          lockToTab: profile.lockToTab === true,
+          toggleOwnerTabId: undefined,
+        } satisfies KeyTriggerProfile;
+      });
+  };
+
+  const appendProfilesToPreset = (
+    sourceProfiles: Partial<KeyTriggerProfile>[],
+    targetPresetId: string,
+    sourceLabel: string,
+  ) => {
+    const targetPreset = presets.find((preset) => preset.id === targetPresetId);
+    if (!targetPreset) {
+      return;
+    }
+
+    const clonedProfiles = cloneProfilesForPreset(sourceProfiles, targetPreset);
+    if (clonedProfiles.length === 0) {
+      message.warning("No valid profiles found to import.");
+      return;
+    }
+
+    onPresetsChange(
+      presets.map((preset) =>
+        preset.id === targetPresetId
+          ? { ...preset, profiles: [...preset.profiles, ...clonedProfiles] }
+          : preset,
+      ),
+    );
+
+    message.success(
+      `${sourceLabel}: added ${clonedProfiles.length} profile${clonedProfiles.length === 1 ? "" : "s"} to "${targetPreset.name}".`,
+    );
+  };
+
+  const handleCopyProfilesToClipboard = async () => {
+    if (reusableSourceProfiles.length === 0) {
+      message.warning("Select at least one profile first.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify({
+          type: "flyff-key-trigger-profiles",
+          profiles: reusableSourceProfiles,
+        }),
+      );
+      setHasPasteableClipboardProfiles(true);
+      message.success(
+        `Copied ${reusableSourceProfiles.length} profile${reusableSourceProfiles.length === 1 ? "" : "s"} to clipboard.`,
+      );
+    } catch {
+      message.error("Clipboard copy failed.");
+    }
+  };
+
+  const handlePasteProfilesFromClipboard = async (targetPresetId: string) => {
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      const payload = JSON.parse(clipboardText);
+      const nextProfiles = extractProfilesFromImportPayload(payload);
+      setHasPasteableClipboardProfiles(nextProfiles.length > 0);
+      appendProfilesToPreset(nextProfiles, targetPresetId, "Clipboard paste");
+    } catch {
+      setHasPasteableClipboardProfiles(false);
+      message.error("Clipboard does not contain valid profile JSON.");
+    }
+  };
+
+  const switchSelectedPreset = useCallback(
+    (nextPresetId: string) => {
+      if (nextPresetId === selectedPresetId) {
+        return;
+      }
+
+      if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+        void chrome.runtime.sendMessage({ type: "KEY_TRIGGER_STOP_ALL" });
+      }
+
+      onSelectedPresetIdChange(nextPresetId);
+    },
+    [onSelectedPresetIdChange, selectedPresetId],
+  );
+
+  const refreshClipboardAvailability = useCallback(async () => {
+    try {
+      const clipboardText = await navigator.clipboard.readText();
+      const payload = JSON.parse(clipboardText);
+      const nextProfiles = extractProfilesFromImportPayload(payload);
+      setHasPasteableClipboardProfiles(nextProfiles.length > 0);
+    } catch {
+      setHasPasteableClipboardProfiles(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshClipboardAvailability();
+
+    const onWindowFocus = () => {
+      void refreshClipboardAvailability();
+    };
+
+    window.addEventListener("focus", onWindowFocus);
+    return () => {
+      window.removeEventListener("focus", onWindowFocus);
+    };
+  }, [refreshClipboardAvailability]);
+
+  const handleCreatePreset = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const id = `kt-preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    onPresetsChange([
+      ...presets,
+      { id, name: trimmed, switchShortcut: "", profiles: [] },
+    ]);
+    switchSelectedPreset(id);
+    setPresetCreateName("");
+    setPresetCreateOpen(false);
+  };
+
+  const handleRenamePreset = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || !selectedPresetId) return;
+    onPresetsChange(
+      presets.map((p) =>
+        p.id === selectedPresetId ? { ...p, name: trimmed } : p,
+      ),
+    );
+    setPresetRenameName("");
+    setPresetRenameOpen(false);
+  };
+
+  const handleDuplicatePreset = () => {
+    if (!selectedPreset) return;
+    const id = `kt-preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const newName = buildParenthesizedDuplicateName(
+      selectedPreset.name,
+      presets.map((p) => p.name),
+    );
+    const duplicated: KeyTriggerPreset = {
+      id,
+      name: newName,
+      switchShortcut: "",
+      profiles: selectedPreset.profiles.map((profile) => ({
+        ...profile,
+        id: `kt-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        profileIdentifier: `kt-pid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      })),
+    };
+    onPresetsChange([...presets, duplicated]);
+    switchSelectedPreset(id);
+  };
+
+  const handleDeletePreset = () => {
+    if (presets.length <= 1) return;
+    const remaining = presets.filter((p) => p.id !== selectedPresetId);
+    onPresetsChange(remaining);
+    switchSelectedPreset(remaining[0].id);
+  };
+
   return (
     <Space direction="vertical" size={12} className="fm-w-full fm-kt-pane">
+      <div className="fm-kt-presets-section" style={{ marginBottom: 12 }}>
+        <div
+          className="fm-kt-section-row"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <Space style={{ flex: "1 1 auto" }}>
+            <Typography.Text strong style={{ flexShrink: 0 }}>
+              Preset
+            </Typography.Text>
+            <Select
+              value={selectedPresetId}
+              onChange={switchSelectedPreset}
+              options={presets.map((p) => ({ label: p.name, value: p.id }))}
+              size="small"
+              style={{ minWidth: 140, flex: "1 1 140px", maxWidth: 240 }}
+              getPopupContainer={getDialogPopupContainer}
+            />
+          </Space>
+          <Space size={4} style={{ flexShrink: 0 }}>
+            {/* Create */}
+            <Popover
+              open={presetCreateOpen}
+              onOpenChange={(open) => {
+                setPresetCreateOpen(open);
+                if (open) {
+                  setPresetCreateName("");
+                  setTimeout(() => {
+                    presetCreateInputRef.current?.focus();
+                  }, 50);
+                }
+              }}
+              trigger="click"
+              placement="bottomLeft"
+              getPopupContainer={getDialogPopupContainer}
+              zIndex={2147483647}
+              overlayClassName="fm-dialog-surface-popover"
+              content={
+                <Space size={4}>
+                  <Input
+                    ref={presetCreateInputRef}
+                    placeholder="Preset name"
+                    size="small"
+                    value={presetCreateName}
+                    style={{ width: 160 }}
+                    onChange={(e) => setPresetCreateName(e.target.value)}
+                    onPressEnter={() => handleCreatePreset(presetCreateName)}
+                  />
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<CheckOutlined />}
+                    disabled={!presetCreateName.trim()}
+                    onClick={() => handleCreatePreset(presetCreateName)}
+                  />
+                  <Button
+                    size="small"
+                    icon={<CloseOutlined />}
+                    onClick={() => setPresetCreateOpen(false)}
+                  />
+                </Space>
+              }
+            >
+              <Tooltip title="Create preset" {...dialogTooltipProps}>
+                <Button size="small" icon={<PlusOutlined />} />
+              </Tooltip>
+            </Popover>
+
+            {/* Rename */}
+            <Popover
+              open={presetRenameOpen}
+              onOpenChange={(open) => {
+                setPresetRenameOpen(open);
+                if (open) {
+                  setPresetRenameName(selectedPreset?.name ?? "");
+                  setTimeout(() => {
+                    presetRenameInputRef.current?.focus();
+                    presetRenameInputRef.current?.select();
+                  }, 50);
+                }
+              }}
+              trigger="click"
+              placement="bottomLeft"
+              getPopupContainer={getDialogPopupContainer}
+              zIndex={2147483647}
+              overlayClassName="fm-dialog-surface-popover"
+              content={
+                <Space size={4}>
+                  <Input
+                    ref={presetRenameInputRef}
+                    placeholder="New name"
+                    size="small"
+                    value={presetRenameName}
+                    style={{ width: 160 }}
+                    onChange={(e) => setPresetRenameName(e.target.value)}
+                    onPressEnter={() => handleRenamePreset(presetRenameName)}
+                  />
+                  <Button
+                    size="small"
+                    type="primary"
+                    icon={<CheckOutlined />}
+                    disabled={!presetRenameName.trim()}
+                    onClick={() => handleRenamePreset(presetRenameName)}
+                  />
+                  <Button
+                    size="small"
+                    icon={<CloseOutlined />}
+                    onClick={() => setPresetRenameOpen(false)}
+                  />
+                </Space>
+              }
+            >
+              <Tooltip title="Rename preset" {...dialogTooltipProps}>
+                <Button
+                  size="small"
+                  icon={<EditOutlined />}
+                  disabled={isConfigLocked}
+                />
+              </Tooltip>
+            </Popover>
+
+            {/* Duplicate */}
+            <Tooltip title="Duplicate preset" {...dialogTooltipProps}>
+              <Button
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={handleDuplicatePreset}
+              />
+            </Tooltip>
+
+            {/* Delete */}
+            <Tooltip
+              title={
+                presets.length <= 1
+                  ? "Cannot delete the last preset"
+                  : "Delete preset"
+              }
+              {...dialogTooltipProps}
+            >
+              <Popconfirm
+                title="Delete preset?"
+                description="All profiles in this preset will be deleted. This cannot be undone."
+                okText="Delete"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true }}
+                disabled={isConfigLocked || presets.length <= 1}
+                onConfirm={handleDeletePreset}
+                {...dialogPopconfirmProps}
+              >
+                <Button
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  disabled={isConfigLocked || presets.length <= 1}
+                />
+              </Popconfirm>
+            </Tooltip>
+          </Space>
+        </div>
+        <div className="fm-kt-section-row" style={{ marginTop: 8 }}>
+          <Space direction="vertical" size={4} style={{ width: "100%" }}>
+            <Typography.Text type="secondary">
+              Switch To This Preset Shortcut
+            </Typography.Text>
+            <div
+              className={`fm-shortcut-input-shell${selectedPresetSwitchShortcut ? " fm-shortcut-input-has-value" : ""}`}
+            >
+              <Input
+                className="fm-global-shortcut-input"
+                value={selectedPresetSwitchShortcut}
+                placeholder="Press keys"
+                disabled={isConfigLocked || !selectedPreset}
+                onKeyDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+
+                  let nextValue = "";
+                  if (event.key === "Backspace" || event.key === "Delete") {
+                    nextValue = "";
+                  } else {
+                    const captured = buildRecordedShortcut(event);
+                    if (!captured) {
+                      return;
+                    }
+                    nextValue = captured;
+                  }
+
+                  onPresetsChange(
+                    presets.map((preset) =>
+                      preset.id === activePresetId
+                        ? {
+                            ...preset,
+                            switchShortcut: nextValue,
+                          }
+                        : preset,
+                    ),
+                  );
+                }}
+                onContextMenu={(event) => event.preventDefault()}
+              />
+              {selectedPresetSwitchShortcut && (
+                <span className="fm-shortcut-input-overlay" aria-hidden="true">
+                  <ShortcutKeys combo={selectedPresetSwitchShortcut} />
+                </span>
+              )}
+            </div>
+            <Typography.Text type="secondary">
+              Switches directly to this preset and stops active preset toggles
+              before switching.
+            </Typography.Text>
+            {presetSwitchShortcutUsage.mapperUsage && (
+              <Typography.Text type="warning">
+                {presetSwitchShortcutUsage.mapperUsage}
+              </Typography.Text>
+            )}
+            {presetSwitchShortcutUsage.keyTriggerUsage && (
+              <Typography.Text type="warning">
+                {presetSwitchShortcutUsage.keyTriggerUsage}
+              </Typography.Text>
+            )}
+          </Space>
+        </div>
+      </div>
       <div className="fm-kt-profiles-section">
-        <div className="fm-kt-section-row">
+        <div
+          className="fm-kt-section-row"
+          style={{ display: "flex", alignItems: "center", gap: 8 }}
+        >
           <Typography.Text strong>Profiles</Typography.Text>
+          <Input.Search
+            allowClear
+            placeholder="Search profiles..."
+            style={{ maxWidth: 220, marginLeft: "auto" }}
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            size="small"
+          />
+        </div>
+
+        <div
+          className="fm-kt-section-row"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <Checkbox
+            checked={
+              filteredProfiles.length > 0 &&
+              filteredProfiles.every((profile) =>
+                selectedProfileIds.includes(profile.id),
+              )
+            }
+            indeterminate={
+              filteredProfiles.some((profile) =>
+                selectedProfileIds.includes(profile.id),
+              ) &&
+              !filteredProfiles.every((profile) =>
+                selectedProfileIds.includes(profile.id),
+              )
+            }
+            onChange={(event) => {
+              if (event.target.checked) {
+                setSelectedProfileIds((prev) => {
+                  const next = new Set(prev);
+                  for (const profile of filteredProfiles) {
+                    next.add(profile.id);
+                  }
+                  return Array.from(next);
+                });
+              } else {
+                setSelectedProfileIds((prev) =>
+                  prev.filter(
+                    (profileId) =>
+                      !filteredProfiles.some(
+                        (profile) => profile.id === profileId,
+                      ),
+                  ),
+                );
+              }
+            }}
+          >
+            Select All
+          </Checkbox>
+
+          <Space size={4} style={{ marginLeft: "auto" }} wrap>
+            {selectedProfileIds.length > 0 && (
+              <Tooltip
+                title="Copy selected profiles to clipboard"
+                {...dialogTooltipProps}
+              >
+                <Button
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={() => {
+                    void handleCopyProfilesToClipboard();
+                  }}
+                >
+                  Copy Profiles
+                </Button>
+              </Tooltip>
+            )}
+
+            {hasPasteableClipboardProfiles && (
+              <Button
+                size="small"
+                icon={<UploadOutlined />}
+                disabled={isConfigLocked || !selectedPresetId}
+                onClick={() => {
+                  if (!selectedPresetId) {
+                    return;
+                  }
+                  void handlePasteProfilesFromClipboard(selectedPresetId);
+                }}
+              >
+                Paste to Preset
+              </Button>
+            )}
+          </Space>
         </div>
 
         <div
@@ -747,19 +1828,53 @@ export const KeyTriggerTab = ({
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                     description="No key trigger profiles"
                   />
+                ) : filteredProfiles.length === 0 ? (
+                  <Empty
+                    image={Empty.PRESENTED_IMAGE_SIMPLE}
+                    description="No profiles match the search"
+                  />
                 ) : (
                   <>
-                    {profiles.map((profile) => {
+                    {filteredProfiles.map((profile) => {
                       const isSelected = selectedProfileId === profile.id;
+                      const isMultiSelected = selectedProfileIds.includes(
+                        profile.id,
+                      );
                       const isHighlighted =
                         newProfileHighlightId === profile.id;
-                      const profileItemClassName = `fm-kt-profile-item${isSelected ? " fm-kt-profile-item-selected" : ""}${isHighlighted ? " fm-kt-profile-item-highlighted" : ""}${profile.enabled === false ? " fm-kt-profile-item-disabled" : ""}`;
+                      const profileItemClassName = `fm-kt-profile-item${isSelected || isMultiSelected ? " fm-kt-profile-item-selected" : ""}${isHighlighted ? " fm-kt-profile-item-highlighted" : ""}${profile.enabled === false ? " fm-kt-profile-item-disabled" : ""}`;
 
                       return (
                         <div
                           key={profile.id}
                           className={profileItemClassName}
+                          role="button"
+                          tabIndex={0}
                           draggable={!isConfigLocked}
+                          onClick={() => {
+                            setSelectedProfileId(profile.id);
+                            setSelectedProfileIds((prev) =>
+                              prev.includes(profile.id)
+                                ? prev.filter(
+                                    (profileId) => profileId !== profile.id,
+                                  )
+                                : [...prev, profile.id],
+                            );
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== "Enter" && event.key !== " ") {
+                              return;
+                            }
+                            event.preventDefault();
+                            setSelectedProfileId(profile.id);
+                            setSelectedProfileIds((prev) =>
+                              prev.includes(profile.id)
+                                ? prev.filter(
+                                    (profileId) => profileId !== profile.id,
+                                  )
+                                : [...prev, profile.id],
+                            );
+                          }}
                           onDragStart={() => setDragProfileId(profile.id)}
                           onDragEnd={() => setDragProfileId(null)}
                           onDragOver={(event) => {
@@ -787,15 +1902,20 @@ export const KeyTriggerTab = ({
                               >
                                 <HolderOutlined />
                               </span>
-                              <Typography.Text
-                                strong
+                              <span
                                 className="fm-kt-profile-name-text"
+                                style={{ fontWeight: 600 }}
                               >
                                 {profile.name}
-                              </Typography.Text>
+                              </span>
                             </Space>
 
-                            <Space size={4}>
+                            <Space
+                              size={4}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                              }}
+                            >
                               <Tooltip
                                 title={
                                   profile.enabled === false
@@ -1210,45 +2330,173 @@ export const KeyTriggerTab = ({
                         </span>
                       )}
                     </div>
+
+                    {saveDisabledReason && (
+                      <Typography.Text
+                        type={isConfigLocked ? "warning" : "danger"}
+                      >
+                        {saveDisabledReason}
+                      </Typography.Text>
+                    )}
                   </div>
 
                   <div>
                     <Typography.Text type="secondary">
                       Execution Scope
                     </Typography.Text>
-                    <Segmented
-                      value={
-                        editorDraft.otherTabsOnly === true
-                          ? "other"
-                          : editorDraft.currentTabOnly === true
-                            ? "current"
-                            : "all"
-                      }
-                      disabled={isConfigLocked}
-                      onChange={(value) => {
-                        setEditorDraft({
-                          ...editorDraft,
-                          currentTabOnly: value === "current",
-                          otherTabsOnly: value === "other",
-                        });
-                      }}
-                      options={[
-                        {
-                          label: "All tabs",
-                          value: "all",
+                    {(() => {
+                      const scope = resolveExecutionScope(editorDraft);
+                      const specificOptions = availableTargetTabs.map(
+                        (tab) => ({
+                          label: tab.name,
+                          value: tab.id,
+                        }),
+                      );
+
+                      (editorDraft.specificTargetTabIds ?? []).forEach(
+                        (id, index) => {
+                          if (
+                            !availableTargetTabs.some((tab) => tab.id === id)
+                          ) {
+                            specificOptions.unshift({
+                              label: editorDraft.specificTargetTabNames?.[index]
+                                ? `${editorDraft.specificTargetTabNames[index]} (saved)`
+                                : `Tab ${id} (saved)`,
+                              value: id,
+                            });
+                          }
                         },
-                        {
-                          label: "Current only",
-                          value: "current",
-                        },
-                        {
-                          label: "Other only",
-                          value: "other",
-                        },
-                      ]}
-                      block
-                    />
+                      );
+
+                      return (
+                        <>
+                          <Segmented
+                            block
+                            value={scope}
+                            disabled={isConfigLocked}
+                            onChange={(value) => {
+                              const nextScope =
+                                value === "current" ||
+                                value === "other" ||
+                                value === "specific"
+                                  ? value
+                                  : "all";
+
+                              const nextSpecificTargetTabId =
+                                nextScope === "specific"
+                                  ? (editorDraft.specificTargetTabIds?.[0] ??
+                                    editorDraft.specificTargetTabId ??
+                                    availableTargetTabs[0]?.id ??
+                                    null)
+                                  : (editorDraft.specificTargetTabId ?? null);
+
+                              const nextSpecificTargetTabName =
+                                nextScope === "specific"
+                                  ? (editorDraft.specificTargetTabNames?.[0] ??
+                                    editorDraft.specificTargetTabName ??
+                                    availableTargetTabs.find(
+                                      (tab) =>
+                                        tab.id === nextSpecificTargetTabId,
+                                    )?.name ??
+                                    null)
+                                  : (editorDraft.specificTargetTabName ?? null);
+
+                              const nextSpecificTargetTabIds =
+                                nextScope === "specific"
+                                  ? nextSpecificTargetTabId !== null
+                                    ? [nextSpecificTargetTabId]
+                                    : []
+                                  : (editorDraft.specificTargetTabIds ?? []);
+
+                              const nextSpecificTargetTabNames =
+                                nextScope === "specific"
+                                  ? nextSpecificTargetTabName
+                                    ? [nextSpecificTargetTabName]
+                                    : []
+                                  : (editorDraft.specificTargetTabNames ?? []);
+
+                              setEditorDraft({
+                                ...editorDraft,
+                                executionScope: nextScope,
+                                currentTabOnly: nextScope === "current",
+                                otherTabsOnly: nextScope === "other",
+                                specificTargetTabIds: nextSpecificTargetTabIds,
+                                specificTargetTabNames:
+                                  nextSpecificTargetTabNames,
+                                specificTargetTabId: nextSpecificTargetTabId,
+                                specificTargetTabName:
+                                  nextSpecificTargetTabName,
+                              });
+                            }}
+                            options={[
+                              { label: "All tabs", value: "all" },
+                              { label: "Current only", value: "current" },
+                              { label: "Other only", value: "other" },
+                              { label: "Specific tab", value: "specific" },
+                            ]}
+                          />
+
+                          {scope === "specific" && (
+                            <div style={{ marginTop: 8 }}>
+                              <Select
+                                className="fm-w-full"
+                                mode="multiple"
+                                value={editorDraft.specificTargetTabIds ?? []}
+                                options={specificOptions}
+                                placeholder="Select specific tabs"
+                                disabled={isConfigLocked}
+                                onChange={(values) => {
+                                  const normalizedValues = Array.from(
+                                    new Set(
+                                      values.filter((id) =>
+                                        Number.isFinite(id),
+                                      ),
+                                    ),
+                                  );
+                                  const selectedTabNames = normalizedValues.map(
+                                    (id) =>
+                                      availableTargetTabs.find(
+                                        (tab) => tab.id === id,
+                                      )?.name ?? `Tab ${id}`,
+                                  );
+                                  setEditorDraft({
+                                    ...editorDraft,
+                                    executionScope: "specific",
+                                    specificTargetTabIds: normalizedValues,
+                                    specificTargetTabNames: selectedTabNames,
+                                    specificTargetTabId:
+                                      normalizedValues[0] ?? null,
+                                    specificTargetTabName:
+                                      selectedTabNames[0] ?? null,
+                                    currentTabOnly: false,
+                                    otherTabsOnly: false,
+                                  });
+                                }}
+                              />
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
+
+                  {editorDraft.triggerType === "toggle" && (
+                    <div style={{ margin: "8px 0" }}>
+                      <Checkbox
+                        checked={!!editorDraft.lockToTab}
+                        disabled={isConfigLocked}
+                        onChange={(event) => {
+                          setEditorDraft({
+                            ...editorDraft,
+                            lockToTab: event.target.checked,
+                          });
+                        }}
+                      >
+                        Lock toggle to this tab (can only be turned off from the
+                        tab where it was enabled)
+                      </Checkbox>
+                    </div>
+                  )}
 
                   <div className="fm-kt-actions-section">
                     <div className="fm-kt-section-row">
@@ -1772,14 +3020,44 @@ export const KeyTriggerTab = ({
                                     </div>
                                     <Segmented
                                       value={
-                                        action.otherTabsOnly === true
-                                          ? "other"
-                                          : action.currentTabOnly === true
-                                            ? "current"
-                                            : "all"
+                                        action.executionScope === "specific"
+                                          ? "specific"
+                                          : action.otherTabsOnly === true
+                                            ? "other"
+                                            : action.currentTabOnly === true
+                                              ? "current"
+                                              : "all"
                                       }
                                       disabled={isConfigLocked}
                                       onChange={(value) => {
+                                        const nextScope =
+                                          value === "current" ||
+                                          value === "other" ||
+                                          value === "specific"
+                                            ? value
+                                            : "all";
+                                        const nextSpecificTargetTabIds =
+                                          nextScope === "specific"
+                                            ? action.specificTargetTabIds &&
+                                              action.specificTargetTabIds
+                                                .length > 0
+                                              ? action.specificTargetTabIds
+                                              : availableTargetTabs[0]?.id !==
+                                                  undefined
+                                                ? [availableTargetTabs[0].id]
+                                                : []
+                                            : (action.specificTargetTabIds ??
+                                              []);
+                                        const nextSpecificTargetTabNames =
+                                          nextScope === "specific"
+                                            ? nextSpecificTargetTabIds.map(
+                                                (id) =>
+                                                  availableTargetTabs.find(
+                                                    (tab) => tab.id === id,
+                                                  )?.name ?? `Tab ${id}`,
+                                              )
+                                            : (action.specificTargetTabNames ??
+                                              []);
                                         setEditorDraft({
                                           ...editorDraft,
                                           actions: editorDraft.actions.map(
@@ -1787,10 +3065,15 @@ export const KeyTriggerTab = ({
                                               item.id === action.id
                                                 ? {
                                                     ...item,
+                                                    executionScope: nextScope,
                                                     currentTabOnly:
-                                                      value === "current",
+                                                      nextScope === "current",
                                                     otherTabsOnly:
-                                                      value === "other",
+                                                      nextScope === "other",
+                                                    specificTargetTabIds:
+                                                      nextSpecificTargetTabIds,
+                                                    specificTargetTabNames:
+                                                      nextSpecificTargetTabNames,
                                                   }
                                                 : item,
                                           ),
@@ -1809,9 +3092,72 @@ export const KeyTriggerTab = ({
                                           label: "Other only",
                                           value: "other",
                                         },
+                                        {
+                                          label: "Specific tabs",
+                                          value: "specific",
+                                        },
                                       ]}
                                       block
                                     />
+                                    {(action.executionScope === "specific" ||
+                                      ((action.specificTargetTabIds?.length ??
+                                        0) > 0 &&
+                                        action.currentTabOnly !== true &&
+                                        action.otherTabsOnly !== true)) && (
+                                      <div style={{ marginTop: 8 }}>
+                                        <Select
+                                          mode="multiple"
+                                          className="fm-w-full"
+                                          value={
+                                            action.specificTargetTabIds ?? []
+                                          }
+                                          options={availableTargetTabs.map(
+                                            (tab) => ({
+                                              label: tab.name,
+                                              value: tab.id,
+                                            }),
+                                          )}
+                                          placeholder="Select specific tabs"
+                                          disabled={isConfigLocked}
+                                          onChange={(values) => {
+                                            const normalizedValues = Array.from(
+                                              new Set(
+                                                values.filter((id) =>
+                                                  Number.isFinite(id),
+                                                ),
+                                              ),
+                                            );
+                                            const selectedTabNames =
+                                              normalizedValues.map(
+                                                (id) =>
+                                                  availableTargetTabs.find(
+                                                    (tab) => tab.id === id,
+                                                  )?.name ?? `Tab ${id}`,
+                                              );
+
+                                            setEditorDraft({
+                                              ...editorDraft,
+                                              actions: editorDraft.actions.map(
+                                                (item) =>
+                                                  item.id === action.id
+                                                    ? {
+                                                        ...item,
+                                                        executionScope:
+                                                          "specific",
+                                                        currentTabOnly: false,
+                                                        otherTabsOnly: false,
+                                                        specificTargetTabIds:
+                                                          normalizedValues,
+                                                        specificTargetTabNames:
+                                                          selectedTabNames,
+                                                      }
+                                                    : item,
+                                              ),
+                                            });
+                                          }}
+                                        />
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               );
@@ -1823,14 +3169,7 @@ export const KeyTriggerTab = ({
                   </div>
                 </Space>
               ) : (
-                <div style={{ paddingTop: 8 }}>
-                  {profiles.length === 0 && (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description="No key trigger profiles"
-                    />
-                  )}
-                </div>
+                <div ref={editorPaneContentRef} />
               )}
             </div>
           </div>

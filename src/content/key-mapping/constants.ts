@@ -92,7 +92,7 @@ export const normalizeShape = (shape: ShapeMapping): ShapeMapping => ({
   y: Math.max(0, Math.round(shape.y)),
   width: Math.max(5, Math.round(shape.width)),
   height: Math.max(5, Math.round(shape.height)),
-  opacity: Math.min(1, Math.max(0.05, Number(shape.opacity))),
+  opacity: Math.min(1, Math.max(0, Number(shape.opacity))),
   rotation: Math.round(shape.rotation),
   delayMs: Math.max(0, Math.round(Number(shape.delayMs) || 0)),
   triggerType: shape.triggerType === "toggle" ? "toggle" : "once",
@@ -317,6 +317,7 @@ export const buildShortcutFromEvent = (event: {
 
   let key = event.key;
   if (key === " ") key = "Space";
+  else if (key === "Escape") key = "Esc";
   else if (SHIFTED_SYMBOL_TO_BASE_KEY[key]) {
     key = SHIFTED_SYMBOL_TO_BASE_KEY[key];
   } else if (key.length === 1) key = key.toUpperCase();

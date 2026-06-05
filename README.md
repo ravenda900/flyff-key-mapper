@@ -37,6 +37,26 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
   - Rename, create, and delete profiles.
 - Persistent local storage for settings and shapes.
 
+## What's new in v4.0.0
+
+### Key Trigger running-mode updates
+
+- Key Trigger character/tab checkboxes are now editable while the script is running.
+- Checked tabs are included in dispatch; unchecked tabs are excluded immediately.
+- Active toggle profiles now stop on unchecked tabs and start on newly checked tabs without requiring a full restart.
+- Hold-trigger shortcuts now behave like a sustained press until the actual key release.
+
+### Key Mapper settings relocation
+
+- Moved Key Mapper runtime settings into the Settings pane for clearer separation from canvas editing.
+- The Opacity slider now updates the actual overlay opacity used by the renderer.
+
+### Access and token UX
+
+- Added clearer subscription-token switching guidance and expiry visibility.
+- Added a last-access-check timestamp so users can see when access was last refreshed.
+- Updated the access flow so stale backend changes are surfaced more quickly.
+
 ## What's new in v3.3.0
 
 ### Discord push notifications and reliability
@@ -144,6 +164,20 @@ npm run lint
 npm run test
 npm run dev
 ```
+
+## Firebase access control
+
+The app supports Firebase-backed:
+
+- IP whitelist checks
+- plan-based feature activation (`free`, `pro`, `elite`)
+- role-based management (`user`, `admin`, `superadmin`)
+
+Setup guide: [docs/firebase-access-control.md](docs/firebase-access-control.md)
+
+Firestore rules template: [firestore.rules](firestore.rules)
+
+Firebase CLI config: [firebase.json](firebase.json)
 
 ## Load unpacked extension
 
@@ -345,7 +379,7 @@ Declared in manifest:
 
 ## Versioning
 
-Current release version is `3.1.0`.
+Current release version is `4.0.0`.
 
 Extension manifest format remains **Manifest V3**.
 

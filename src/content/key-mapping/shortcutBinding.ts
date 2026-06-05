@@ -46,6 +46,11 @@ const normalizeShortcutForCompare = (binding: string): string => {
       return;
     }
 
+    if (part === "escape") {
+      steps.push("esc");
+      return;
+    }
+
     steps.push(part);
   });
 
@@ -119,6 +124,11 @@ export const getGlobalShortcutConflict = (
       binding: settings.setZeroOpacityShortcut,
       usedBy: "Opacity 0/100",
       field: "setZeroOpacityShortcut",
+    },
+    {
+      binding: settings.toggleDialogShortcut,
+      usedBy: "Toggle Dialog",
+      field: "toggleDialogShortcut",
     },
   ];
 

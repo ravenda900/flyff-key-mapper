@@ -232,16 +232,33 @@ type KeyTriggerActionMessage = {
   otherTabsOnly?: boolean;
 };
 
-const activeToggleTargets = new Map<string, number[]>();
+type ActiveToggleTarget = {
+  tabIds: number[];
+  ownerTabId: number | null;
+  actions: KeyTriggerActionMessage[];
+  chainDepth?: number;
+  delayMode?: "sequential" | "synchronous";
+};
+
+const activeToggleTargets = new Map<string, ActiveToggleTarget>();
+
+const normalizeTabIds = (ids: unknown): number[] =>
+  Array.from(
+    new Set(
+      Array.isArray(ids)
+        ? ids.filter((id): id is number => Number.isFinite(id))
+        : [],
+    ),
+  );
 
 const stopProfileToggle = (profileId: string): boolean => {
   const currentTargets = activeToggleTargets.get(profileId);
-  if (!currentTargets || currentTargets.length === 0) {
+  if (!currentTargets || currentTargets.tabIds.length === 0) {
     activeToggleTargets.delete(profileId);
     return false;
   }
 
-  currentTargets.forEach((tabId) => {
+  currentTargets.tabIds.forEach((tabId) => {
     chrome.tabs
       .sendMessage(tabId, {
         type: "KEY_TRIGGER_STOP_TOGGLE",
@@ -258,14 +275,27 @@ const startProfileToggle = (
   profileId: string,
   tabIds: number[],
   actions: KeyTriggerActionMessage[],
+  options?: {
+    ownerTabId?: number | null;
+    chainDepth?: number;
+    delayMode?: "sequential" | "synchronous";
+  },
 ) => {
-  activeToggleTargets.set(profileId, tabIds);
+  activeToggleTargets.set(profileId, {
+    tabIds,
+    ownerTabId: options?.ownerTabId ?? null,
+    actions,
+    chainDepth: options?.chainDepth,
+    delayMode: options?.delayMode,
+  });
   tabIds.forEach((tabId) => {
     chrome.tabs
       .sendMessage(tabId, {
         type: "KEY_TRIGGER_START_TOGGLE",
         profileId,
         actions,
+        chainDepth: options?.chainDepth,
+        delayMode: options?.delayMode,
       })
       .catch(() => undefined);
   });
@@ -419,7 +449,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       profileId?: string;
       chainDepth?: number;
       delayMode?: "sequential" | "synchronous";
+      lockToTab?: boolean;
     };
+    const senderTabId =
+      typeof sender?.tab?.id === "number" ? sender.tab.id : null;
 
     if (!payload.profileId) {
       sendResponse({ ok: false });
@@ -427,8 +460,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     const currentTargets = activeToggleTargets.get(payload.profileId);
-    if (currentTargets && currentTargets.length > 0) {
-      currentTargets.forEach((tabId) => {
+    if (currentTargets && currentTargets.tabIds.length > 0) {
+      if (
+        currentTargets.ownerTabId !== null &&
+        currentTargets.ownerTabId !== senderTabId
+      ) {
+        sendResponse({ ok: true, active: true });
+        return;
+      }
+
+      currentTargets.tabIds.forEach((tabId) => {
         chrome.tabs
           .sendMessage(tabId, {
             type: "KEY_TRIGGER_STOP_TOGGLE",
@@ -441,29 +482,71 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    const tabIds = Array.isArray(payload.tabIds)
-      ? payload.tabIds.filter((id): id is number => Number.isFinite(id))
-      : [];
+    const tabIds = normalizeTabIds(payload.tabIds);
     const actions = Array.isArray(payload.actions)
       ? payload.actions.filter(
           (action) => typeof action === "object" && action !== null,
         )
       : [];
 
-    activeToggleTargets.set(payload.profileId, tabIds);
-    tabIds.forEach((tabId) => {
-      chrome.tabs
-        .sendMessage(tabId, {
-          type: "KEY_TRIGGER_START_TOGGLE",
-          profileId: payload.profileId,
-          actions,
-          chainDepth: payload.chainDepth,
-          delayMode: payload.delayMode,
-        })
-        .catch(() => undefined);
+    startProfileToggle(payload.profileId, tabIds, actions, {
+      ownerTabId: payload.lockToTab === true ? senderTabId : null,
+      chainDepth: payload.chainDepth,
+      delayMode: payload.delayMode,
     });
 
     sendResponse({ ok: true, active: true });
+    return;
+  }
+
+  if (msg.type === "KEY_TRIGGER_SYNC_TOGGLE_TABS") {
+    const payload = message as {
+      tabIds?: number[];
+    };
+
+    const tabIds = normalizeTabIds(payload.tabIds);
+    const nextTabSet = new Set(tabIds);
+
+    activeToggleTargets.forEach((target, profileId) => {
+      const previousTabSet = new Set(target.tabIds);
+      const tabsToStop = target.tabIds.filter(
+        (tabId) => !nextTabSet.has(tabId),
+      );
+      const tabsToStart = tabIds.filter((tabId) => !previousTabSet.has(tabId));
+
+      tabsToStop.forEach((tabId) => {
+        chrome.tabs
+          .sendMessage(tabId, {
+            type: "KEY_TRIGGER_STOP_TOGGLE",
+            profileId,
+          })
+          .catch(() => undefined);
+      });
+
+      tabsToStart.forEach((tabId) => {
+        chrome.tabs
+          .sendMessage(tabId, {
+            type: "KEY_TRIGGER_START_TOGGLE",
+            profileId,
+            actions: target.actions,
+            chainDepth: target.chainDepth,
+            delayMode: target.delayMode,
+          })
+          .catch(() => undefined);
+      });
+
+      if (tabIds.length === 0) {
+        activeToggleTargets.delete(profileId);
+        return;
+      }
+
+      activeToggleTargets.set(profileId, {
+        ...target,
+        tabIds,
+      });
+    });
+
+    sendResponse({ ok: true });
     return;
   }
 
@@ -505,16 +588,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    const tabIds = Array.isArray(payload.tabIds)
-      ? payload.tabIds.filter((id): id is number => Number.isFinite(id))
-      : [];
+    const tabIds = normalizeTabIds(payload.tabIds);
 
     let hasActiveProfile = false;
     let hasStartedProfile = false;
 
     profiles.forEach((profile) => {
       const targets = activeToggleTargets.get(profile.profileId);
-      const isActive = Array.isArray(targets) && targets.length > 0;
+      const isActive = !!targets && targets.tabIds.length > 0;
 
       if (isActive) {
         hasActiveProfile =

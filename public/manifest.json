@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Flyff Utility",
   "description": "Unified Flyff utilities for key mapping and key trigger workflows.",
-  "version": "3.3.0",
+  "version": "4.0.0",
   "permissions": ["activeTab", "storage", "scripting", "tabs", "notifications"],
   "host_permissions": ["https://universe.flyff.com/*", "<all_urls>"],
   "background": {
@@ -18,6 +18,12 @@
   "web_accessible_resources": [
     {
       "resources": [
+        "curbase.cur",
+        "edit.cur",
+        "resize_h.cur",
+        "hori.cur",
+        "cur00001.cur",
+        "cur00002.cur",
         "root.png",
         "stun.png",
         "full-hp-character-window-no-text-hp-bar.png",

@@ -34,7 +34,7 @@ export const ImportMappingsModal = ({
   onClose,
 }: Props) => (
   <Modal
-    title="Import shared mappings"
+    title="Import Tool Config"
     rootClassName="fm-ltr-modal fm-import-mappings-modal"
     open={overlayVisible && importOpen && !isTransformingShape}
     zIndex={2147483647}
@@ -44,7 +44,8 @@ export const ImportMappingsModal = ({
     onCancel={onClose}
     okText="Import"
     cancelText="Close"
-    okButtonProps={{ disabled: !canImportNow }}
+    okButtonProps={{ disabled: !canImportNow, type: "primary" }}
+    cancelButtonProps={{ type: "default" }}
     footer={(_, { OkBtn, CancelBtn }) => (
       <Space style={{ width: "100%", justifyContent: "flex-end" }}>
         <OkBtn />
@@ -68,9 +69,13 @@ export const ImportMappingsModal = ({
                   `${importAnalysis.keyTriggerProfileCount} key-trigger profile${importAnalysis.keyTriggerProfileCount > 1 ? "s" : ""}`,
               ]
                 .filter(Boolean)
-                .join(" and ") + " detected in import JSON."
-            : "No importable data found in JSON."
+                .join(" and ") + " detected in config JSON."
+            : "No importable config data found in JSON."
           : importAnalysis.parseError}
+      </Typography.Text>
+      <Typography.Text type="secondary">
+        Import supports key-mapper profiles, key-trigger profiles, selected
+        tabs, profile mappings, settings, and dialog UI state when present.
       </Typography.Text>
       {importAnalysis.isValidJson &&
         (importAnalysis.mapperDuplicateCount > 0 ||
@@ -83,7 +88,8 @@ export const ImportMappingsModal = ({
                 `${importAnalysis.keyTriggerDuplicateCount} duplicate key-trigger profile${importAnalysis.keyTriggerDuplicateCount > 1 ? "s" : ""}`,
             ]
               .filter(Boolean)
-              .join(" and ") + " will be skipped on import."}
+              .join(" and ") +
+              " will be imported with a numeric suffix when names collide."}
           </Typography.Text>
         )}
       <Input.TextArea
@@ -91,7 +97,6 @@ export const ImportMappingsModal = ({
         rows={14}
         value={importText}
         onChange={(event) => setImportText(event.target.value)}
-        placeholder="Paste JSON copied from Copy Share JSON"
         style={{ minHeight: 260, width: "100%", display: "block" }}
       />
     </div>

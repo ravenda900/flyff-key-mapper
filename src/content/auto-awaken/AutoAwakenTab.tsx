@@ -56,10 +56,12 @@ const SELECT_DROPDOWN_STYLE = { zIndex: 2147483647 };
 const TOOLTIP_PROPS = {
   getPopupContainer: getSelectPopupContainer,
   zIndex: 2147483647,
+  overlayClassName: "fm-dialog-surface-tooltip",
 };
 const POPCONFIRM_PROPS = {
   getPopupContainer: getSelectPopupContainer,
   zIndex: 2147483647,
+  overlayClassName: "fm-dialog-surface-popconfirm",
 };
 
 const StatCriteriaSection = ({

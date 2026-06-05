@@ -12,7 +12,7 @@ export type ShapeType =
   | "arrow"
   | "trapezoid";
 
-export type ThemeMode = "light" | "dark" | "system";
+export type ThemeMode = import("./themePresets").ThemeMode;
 export type TriggerType = "once" | "toggle" | "repeat";
 export type UtilityTab = "key-mapper" | "key-trigger" | "auto-awaken";
 export type AutoHolyDebuffType = "all" | "root" | "stun";
@@ -77,6 +77,7 @@ export interface MapperSettings {
   showHandles: boolean;
   showSnapIndicators: boolean;
   showShapeTooltips: boolean;
+  shapeOpacity: number;
   syncMouseEvents: boolean;
   mouseSyncPositionMode: MouseSyncPositionMode;
   strictPassthrough: boolean;
@@ -86,6 +87,7 @@ export interface MapperSettings {
   toggleShapesShortcut: string;
   setZeroOpacityShortcut: string;
   toggleDialogShortcut: string;
+  keyTriggerPresetSwitchShortcut: string;
   autoStopSeconds: number | null;
   notifyOnRecaptcha: boolean;
   stopOnRecaptcha: boolean;
@@ -93,6 +95,7 @@ export interface MapperSettings {
   mobilePushDiscordBotUrl: string;
   mobilePushDiscordUserId: string;
   mobilePushDiscordApiKey: string;
+  subscriptionAccessToken: string;
   autoHoly: AutoHolyConfig;
   autoPills: AutoPillsConfig;
   autoAwaken: AutoAwakenConfig;
@@ -102,7 +105,6 @@ export interface MappingProfile {
   id: string;
   name: string;
   shapes: ShapeMapping[];
-  settings: MapperSettings;
 }
 
 export interface MapperProfilesState {
@@ -131,8 +133,18 @@ export interface KeyTriggerAction {
   enabled?: boolean;
   actionTriggerType?: "once" | "repeat";
   actionRepeatCount?: number;
+  executionScope?: "all" | "current" | "other" | "specific";
   currentTabOnly?: boolean;
   otherTabsOnly?: boolean;
+  specificTargetTabIds?: number[];
+  specificTargetTabNames?: string[];
+}
+
+export interface KeyTriggerPreset {
+  id: string;
+  name: string;
+  switchShortcut?: string;
+  profiles: KeyTriggerProfile[];
 }
 
 export interface KeyTriggerProfile {
@@ -143,14 +155,23 @@ export interface KeyTriggerProfile {
   triggerType: TriggerType;
   repeatCount?: number;
   triggerKey: string;
+  executionScope?: "all" | "current" | "other" | "specific";
   currentTabOnly?: boolean;
   otherTabsOnly?: boolean;
+  specificTargetTabId?: number | null;
+  specificTargetTabName?: string | null;
+  specificTargetTabIds?: number[];
+  specificTargetTabNames?: string[];
   delayMode: "sequential" | "synchronous";
   actions: KeyTriggerAction[];
+  lockToTab?: boolean;
+  toggleOwnerTabId?: number;
 }
 
 export interface KeyTriggerState {
-  profiles: KeyTriggerProfile[];
+  selectedPresetId: string;
+  presets: KeyTriggerPreset[];
+  characterPresetMapping: Record<string, string>;
 }
 
 export interface CharacterTabInfo {

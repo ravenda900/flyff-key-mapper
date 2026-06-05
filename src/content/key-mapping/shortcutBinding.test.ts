@@ -31,6 +31,7 @@ describe("getReservedShapeShortcutUsage", () => {
     showHandles: false,
     showSnapIndicators: true,
     showShapeTooltips: true,
+    shapeOpacity: 1,
     syncMouseEvents: false,
     mouseSyncPositionMode: "actual",
     strictPassthrough: true,
@@ -40,6 +41,7 @@ describe("getReservedShapeShortcutUsage", () => {
     toggleShapesShortcut: "Alt+Shift+H",
     setZeroOpacityShortcut: "Alt+Shift+0",
     toggleDialogShortcut: "Alt+Shift+M",
+    keyTriggerPresetSwitchShortcut: "Alt+Shift+P",
     autoStopSeconds: null,
     notifyOnRecaptcha: false,
     stopOnRecaptcha: false,
@@ -47,6 +49,7 @@ describe("getReservedShapeShortcutUsage", () => {
     mobilePushDiscordBotUrl: "",
     mobilePushDiscordUserId: "",
     mobilePushDiscordApiKey: "",
+    subscriptionAccessToken: "",
     autoHoly: {
       enabled: false,
       debuffType: "root",

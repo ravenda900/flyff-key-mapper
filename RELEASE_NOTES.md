@@ -1,5 +1,36 @@
 # Flyff Mapper Release Notes
 
+## v4.0.0 (2026-06-06)
+
+Key Trigger runtime stability, running-mode tab selection, and Key Mapper settings relocation.
+
+### Added
+
+- Added live running-mode Character / Tab selection updates for Key Trigger so checked tabs can be changed without stopping the script.
+- Added live toggle retargeting so newly checked tabs start active toggle profiles and unchecked tabs stop them immediately.
+- Added a Key Trigger guidance banner explaining that checked tabs are included and unchecked tabs are excluded while running.
+- Added a settings-pane home for Key Mapper runtime settings so visual/runtime controls are grouped separately from the canvas-editing tab.
+
+### Changed
+
+- Moved Key Mapper runtime settings into the Settings pane.
+- Updated the Opacity slider so it now drives the global Key Mapper shape opacity setting used by the overlay renderer.
+- Updated held Key Trigger behavior so the canvas now receives a true sustained key press until the real key release occurs.
+- Updated release-facing access/token UX to show token expiry, refresh timestamps, and clearer switching guidance.
+- Updated Key Trigger specific-scope dispatch so it respects the currently selected tab set.
+
+### Fixed
+
+- Fixed hold-to-trigger shortcuts from appearing to stop after the initial press because the simulated canvas keyup was ending the hold too early.
+- Fixed the Key Mapper Opacity slider not updating the visible overlay opacity.
+- Fixed running-mode tab selection being blocked by edit-mode locking.
+- Fixed stale toggle activation when a checked tab is removed while a toggle profile is active.
+
+### Packaging
+
+- Package version updated to 4.0.0.
+- Manifest extension version updated to 4.0.0.
+
 ## v3.3.0 (2026-05-19)
 
 Discord Mobile Push, Storage Hardening, and Cross-Tab Persistence Improvements.

@@ -1,0 +1,52 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Requires a custom auth claim named role with value: user|admin|superadmin
+    function hasRole(role) {
+      return isSignedIn() && request.auth.token.role == role;
+    }
+
+    function isAdminOrSuperadmin() {
+      return hasRole('admin') || hasRole('superadmin');
+    }
+
+    function isSuperadmin() {
+      return hasRole('superadmin');
+    }
+
+    // Optional strict self-access by IP claim.
+    function isOwnIpDoc(ip) {
+      return isSignedIn() && request.auth.token.ip == ip;
+    }
+
+    match /whitelist/{ip} {
+      allow read: if isOwnIpDoc(ip) || isAdminOrSuperadmin();
+      allow create, update: if isAdminOrSuperadmin()
+        && (
+          !('role' in request.resource.data)
+          || request.resource.data.role in ['user', 'admin']
+          || isSuperadmin()
+        );
+      allow delete: if isSuperadmin();
+    }
+
+    match /subscriptions/{ip} {
+      allow read: if isOwnIpDoc(ip) || isAdminOrSuperadmin();
+      allow create, update: if isAdminOrSuperadmin();
+      allow delete: if isSuperadmin();
+    }
+
+    // Tokens are managed through backend callables in Blaze profile.
+    match /subscriptionTokens/{tokenHash} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

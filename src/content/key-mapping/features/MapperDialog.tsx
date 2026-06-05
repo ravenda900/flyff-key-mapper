@@ -1,5 +1,6 @@
 import {
   LeftOutlined,
+  LockOutlined,
   ExclamationCircleFilled,
   BulbFilled,
   BulbOutlined,
@@ -11,6 +12,7 @@ import {
   PlusOutlined,
   QuestionOutlined,
   ReloadOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined,
   StopOutlined,
   CheckOutlined as SaveIcon,
@@ -27,11 +29,13 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popover,
   Popconfirm,
   Select,
   Slider,
   Space,
   Switch,
+  Tag,
   Tabs,
   theme,
   Tooltip,
@@ -39,6 +43,7 @@ import {
   message,
 } from "antd";
 import type {
+  CSSProperties,
   Dispatch,
   KeyboardEvent as ReactKeyboardEvent,
   SetStateAction,
@@ -48,7 +53,7 @@ import { useEffect, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
 import type {
   CharacterTabInfo,
-  KeyTriggerProfile,
+  KeyTriggerPreset,
   MapperSettings,
   MappingProfile,
   NormalizedRect,
@@ -57,6 +62,13 @@ import type {
   UtilityTab,
 } from "../../types";
 import type { AutoHolyDebuffType } from "../../types";
+import type {
+  AccessControlState,
+  AccessRole,
+  SubscriptionPlan,
+  SubscriptionTokenRecord,
+  WhitelistUserRecord,
+} from "../../accessControl";
 import {
   BASIC_PALETTE_SHAPES,
   OVERLAY_SHORTCUT,
@@ -68,6 +80,11 @@ import { KeyTriggerTab } from "./KeyTriggerTab";
 import type { KeyTriggerFooterControls } from "./KeyTriggerTab";
 import { AutoAwakenTab } from "../../auto-awaken/AutoAwakenTab";
 import { storage } from "../../storage";
+import {
+  THEME_SELECT_OPTIONS,
+  getResolvedThemePreset,
+  type ThemeMode,
+} from "../../themePresets";
 
 const AUTO_FEATURE_MODIFIER_KEYS = new Set([
   "Control",
@@ -84,7 +101,6 @@ const buildAutoFeatureShortcut = (
 ): string => {
   event.preventDefault();
   event.stopPropagation();
-  if (event.key === "Escape") return "";
   if (AUTO_FEATURE_MODIFIER_KEYS.has(event.key)) return "";
   const parts: string[] = [];
   if (event.ctrlKey) parts.push("Ctrl");
@@ -140,23 +156,25 @@ type Props = {
   activeProfileName: string;
   focusGameCanvas: () => void;
   onResetDialogConfiguration: () => void;
+  onFactoryResetConfiguration: () => void;
+  onRestoreDialogConfiguration?: () => void;
   settings: MapperSettings;
   toggleMode: () => void;
   addKeyMap: () => void;
   profiles: MappingProfile[];
   selectedProfile: MappingProfile | null;
   onSelectProfileChange: (value: string) => void;
-  onOpenCreateProfile: () => void;
+  onCreateProfileWithName: (name: string) => string | null;
   duplicateSelectedProfile: () => void;
-  onOpenRenameProfile: () => void;
+  onRenameProfileWithName: (name: string) => string | null;
   deleteSelectedProfile: () => void;
   activeUtilityTab: UtilityTab;
   onActiveUtilityTabChange: (value: UtilityTab) => void;
   selectedPaletteShape: ShapeType;
   setSelectedPaletteShape: (shape: ShapeType) => void;
-  handleThemeChange: (value: string | number) => void;
-  draftShape: ShapeMapping;
-  setDraftShape: Dispatch<SetStateAction<ShapeMapping>>;
+  handleThemeChange: (value: ThemeMode) => void;
+  draftShape?: ShapeMapping;
+  setDraftShape?: Dispatch<SetStateAction<ShapeMapping>>;
   setShapes: Dispatch<SetStateAction<ShapeMapping[]>>;
   normalizeShape: (shape: ShapeMapping) => ShapeMapping;
   setSettings: Dispatch<SetStateAction<MapperSettings>>;
@@ -167,12 +185,17 @@ type Props = {
     field: GlobalShortcutField,
   ) => void;
   globalShortcutErrors: Partial<Record<GlobalShortcutField, string>>;
-  keyTriggerProfiles: KeyTriggerProfile[];
-  onKeyTriggerProfilesChange: (profiles: KeyTriggerProfile[]) => void;
+  keyTriggerPresets: KeyTriggerPreset[];
+  selectedKeyTriggerPresetId: string;
+  setKeyTriggerPresets: Dispatch<SetStateAction<KeyTriggerPreset[]>>;
+  setSelectedKeyTriggerPresetId: Dispatch<SetStateAction<string>>;
   keyTriggerCharacters: CharacterTabInfo[];
   selectedKeyTriggerTabIds: number[];
   onSelectedKeyTriggerTabIdsChange: (ids: number[]) => void;
-  onKeyTriggerSelectedProfileIdChange?: (profileId: string | null) => void;
+  keyTriggerCharacterPresetMapping?: Record<string, string>;
+  setKeyTriggerCharacterPresetMapping?: Dispatch<
+    SetStateAction<Record<string, string>>
+  >;
   keyTriggerCharacterProfileMapping: Record<string, string>;
   setKeyTriggerCharacterProfileMapping: Dispatch<
     SetStateAction<Record<string, string>>
@@ -192,9 +215,57 @@ type Props = {
   autoAwakenLogs: string[];
   onStartAutoAwaken: (mode?: "reawaken") => void;
   onStopAutoAwaken: () => void;
+
+  accessLoading?: boolean;
+  subscriptionPlan?: SubscriptionPlan;
+  accessRole?: AccessRole;
+  canManageAccess?: boolean;
+  canManageAdmins?: boolean;
+  canGenerateTokens?: boolean;
+  hasToolAccess?: boolean;
+  whitelisted?: boolean;
+  accessReason?: string | null;
+  tokenExpiresAtIso?: string | null;
+  accessLastCheckedAtIso?: string | null;
+  accessSource?: "none" | "whitelist" | "token";
+
+  onAdminUpsertAccess?: (payload: {
+    targetIp: string;
+    whitelisted: boolean;
+    plan: SubscriptionPlan;
+    expiresAtIso?: string | null;
+  }) => Promise<void>;
+  onSuperAdminSetRole?: (payload: {
+    targetIp: string;
+    role: AccessRole;
+  }) => Promise<void>;
+  onListWhitelistUsers?: () => Promise<WhitelistUserRecord[]>;
+  onUpsertWhitelistUser?: (payload: {
+    targetIp: string;
+    previousIp?: string | null;
+    name?: string | null;
+    role: AccessRole;
+  }) => Promise<void>;
+  onDeleteWhitelistUser?: (targetIp: string) => Promise<void>;
+  onGenerateSubscriptionToken?: (payload: {
+    plan: SubscriptionPlan;
+  }) => Promise<{ token: string; expiresAtIso: string }>;
+  onListSubscriptionTokens?: () => Promise<SubscriptionTokenRecord[]>;
+  onRevokeSubscriptionToken?: (tokenHash: string) => Promise<void>;
+  onDeleteSubscriptionToken?: (tokenHash: string) => Promise<void>;
+  onRefreshAccessControl?: (
+    subscriptionToken?: string,
+  ) => Promise<AccessControlState>;
+  featureAccess?: {
+    keyTrigger?: boolean;
+    autoHoly?: boolean;
+    autoPills?: boolean;
+    autoAwaken?: boolean;
+    syncMouse?: boolean;
+  };
 };
 
-type DialogPane = UtilityTab | "settings";
+type DialogPane = UtilityTab | "settings" | "admin";
 
 export const MapperDialog = ({
   overlayVisible,
@@ -205,36 +276,38 @@ export const MapperDialog = ({
   activeProfileName,
   focusGameCanvas,
   onResetDialogConfiguration,
+  onFactoryResetConfiguration,
   settings,
   toggleMode,
   addKeyMap,
   profiles,
   selectedProfile,
   onSelectProfileChange,
-  onOpenCreateProfile,
+  onCreateProfileWithName,
   duplicateSelectedProfile,
-  onOpenRenameProfile,
+  onRenameProfileWithName,
   deleteSelectedProfile,
   activeUtilityTab,
   onActiveUtilityTabChange,
   selectedPaletteShape,
   setSelectedPaletteShape,
   handleThemeChange,
-  draftShape,
-  setDraftShape,
-  setShapes,
-  normalizeShape,
+  draftShape: _draftShape,
+  setDraftShape: _setDraftShape,
+  setShapes: _setShapes,
+  normalizeShape: _normalizeShape,
   setSettings,
   exportMappings,
   setImportOpen,
   captureGlobalShortcut,
   globalShortcutErrors,
-  keyTriggerProfiles,
-  onKeyTriggerProfilesChange,
+  keyTriggerPresets,
+  selectedKeyTriggerPresetId,
+  setKeyTriggerPresets,
+  setSelectedKeyTriggerPresetId,
   keyTriggerCharacters,
   selectedKeyTriggerTabIds,
   onSelectedKeyTriggerTabIdsChange,
-  onKeyTriggerSelectedProfileIdChange,
   reloadKeyTriggerCharacters,
   keyTriggerCharacterProfileMapping,
   setKeyTriggerCharacterProfileMapping,
@@ -248,6 +321,26 @@ export const MapperDialog = ({
   autoAwakenLogs,
   onStartAutoAwaken,
   onStopAutoAwaken,
+  accessLoading,
+  subscriptionPlan,
+  accessRole,
+  canManageAccess,
+  canManageAdmins,
+  canGenerateTokens,
+  hasToolAccess,
+  whitelisted,
+  accessReason,
+  tokenExpiresAtIso,
+  accessLastCheckedAtIso,
+  accessSource,
+  onListWhitelistUsers,
+  onUpsertWhitelistUser,
+  onDeleteWhitelistUser,
+  onGenerateSubscriptionToken,
+  onListSubscriptionTokens,
+  onRevokeSubscriptionToken,
+  onDeleteSubscriptionToken,
+  onRefreshAccessControl,
 }: Props) => {
   const { token } = theme.useToken();
   const isLocked = !settings.editMode;
@@ -263,6 +356,11 @@ export const MapperDialog = ({
   const [shouldFocusAutoStop, setShouldFocusAutoStop] = useState(false);
   const [isSendingTestPush, setIsSendingTestPush] = useState(false);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [profileCreateName, setProfileCreateName] = useState("");
+  const [profileCreateOpen, setProfileCreateOpen] = useState(false);
+  const [profileRenameName, setProfileRenameName] = useState("");
+  const [profileRenameOpen, setProfileRenameOpen] = useState(false);
+  const [profileInlineNameError, setProfileInlineNameError] = useState("");
   const [autoStopDraftSeconds, setAutoStopDraftSeconds] = useState(
     Math.max(0, settings.autoStopSeconds ?? 0),
   );
@@ -278,6 +376,8 @@ export const MapperDialog = ({
   } | null>(null);
   const lastUtilityTabRef = useRef<UtilityTab>(activeUtilityTab);
   const autoStopInputRef = useRef<any>(null);
+  const profileCreateInputRef = useRef<import("antd").InputRef | null>(null);
+  const profileRenameInputRef = useRef<import("antd").InputRef | null>(null);
   const autoStopDebounceTimerRef = useRef<number | null>(null);
   const holyKeyLastClickRef = useRef<{ button: number; time: number }>({
     button: -1,
@@ -291,13 +391,30 @@ export const MapperDialog = ({
   const MIN_DIALOG_WIDTH = 360;
   const MIN_DIALOG_HEIGHT = 430;
 
-  const getDialogPopupContainer = (triggerNode?: HTMLElement) =>
-    (triggerNode?.closest(".fm-dialog") as HTMLElement | null) ?? document.body;
+  const getDialogPopupContainer = (triggerNode?: HTMLElement) => {
+    const closestDialog = triggerNode?.closest(
+      ".fm-dialog",
+    ) as HTMLElement | null;
+    if (closestDialog) {
+      return closestDialog;
+    }
+
+    const existingDialog = document.querySelector(
+      ".fm-dialog",
+    ) as HTMLElement | null;
+    if (existingDialog) {
+      return existingDialog;
+    }
+
+    const root = document.getElementById("flyff-mapper-root");
+    return root ?? document.body;
+  };
 
   const dialogTooltipProps = {
     getPopupContainer: (triggerNode: HTMLElement) =>
       getDialogPopupContainer(triggerNode),
     zIndex: 2147483647,
+    overlayClassName: "fm-dialog-surface-tooltip",
   };
 
   const dialogPopconfirmProps = {
@@ -307,7 +424,70 @@ export const MapperDialog = ({
     overlayClassName: "fm-dialog-surface-popconfirm",
   };
 
-  const isLightTheme = settings.theme === "light";
+  const dialogPopoverProps = {
+    getPopupContainer: (triggerNode?: HTMLElement) =>
+      getDialogPopupContainer(triggerNode),
+    zIndex: 2147483647,
+    overlayClassName: "fm-dialog-surface-popover",
+  };
+
+  const getSystemDark = () => {
+    if (typeof window === "undefined" || !window.matchMedia) {
+      return false;
+    }
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  };
+
+  const resolvedThemePreset = getResolvedThemePreset(
+    settings.theme,
+    getSystemDark(),
+  );
+  const effectivePlan: SubscriptionPlan = subscriptionPlan ?? "free";
+  const effectiveRole: AccessRole = accessRole ?? "user";
+  const effectiveHasToolAccess = hasToolAccess ?? false;
+  const effectiveWhitelisted = whitelisted ?? false;
+  const isAccessGated = !effectiveHasToolAccess && !accessLoading;
+  const effectiveAccessSource = accessSource ?? "none";
+  const canOpenAdminPane =
+    effectiveRole === "admin" || effectiveRole === "superadmin";
+  const canManageAdminsEffective =
+    canManageAdmins ?? effectiveRole === "superadmin";
+  const canGenerateTokensEffective =
+    canGenerateTokens ??
+    (effectiveRole === "admin" || effectiveRole === "superadmin");
+  const canManageAccessEffective = canManageAccess ?? canManageAdminsEffective;
+
+  const isLightTheme = resolvedThemePreset.appearance === "light";
+
+  const dialogThemeVars: CSSProperties = {
+    "--fm-theme-bg-base": resolvedThemePreset.token.colorBgBase,
+    "--fm-theme-bg-container":
+      resolvedThemePreset.token.colorBgContainer ??
+      resolvedThemePreset.token.colorBgBase,
+    "--fm-theme-bg-elevated":
+      resolvedThemePreset.token.colorBgElevated ??
+      resolvedThemePreset.token.colorBgContainer,
+    "--fm-theme-bg-layout":
+      resolvedThemePreset.token.colorBgLayout ??
+      resolvedThemePreset.token.colorBgBase,
+    "--fm-theme-text": resolvedThemePreset.token.colorTextBase,
+    "--fm-theme-text-secondary": resolvedThemePreset.token.colorTextSecondary,
+    "--fm-theme-border": resolvedThemePreset.token.colorBorder,
+    "--fm-theme-border-secondary":
+      resolvedThemePreset.token.colorBorderSecondary,
+    "--fm-theme-fill": resolvedThemePreset.token.colorFillSecondary,
+    "--fm-theme-fill-strong": resolvedThemePreset.token.colorFillTertiary,
+    "--fm-theme-fill-soft": resolvedThemePreset.token.colorFillQuaternary,
+    "--fm-theme-primary-bg": resolvedThemePreset.token.colorPrimaryBg,
+    "--fm-theme-success-bg": resolvedThemePreset.token.colorSuccessBg,
+    "--fm-theme-warning-bg": resolvedThemePreset.token.colorWarningBg,
+    "--fm-theme-error-bg": resolvedThemePreset.token.colorErrorBg,
+    "--fm-theme-info-bg": resolvedThemePreset.token.colorInfoBg,
+    backgroundColor:
+      resolvedThemePreset.token.colorBgContainer ??
+      resolvedThemePreset.token.colorBgBase,
+    color: resolvedThemePreset.token.colorTextBase,
+  } as CSSProperties;
 
   useEffect(() => {
     const normalized = Math.max(0, settings.autoStopSeconds ?? 0);
@@ -361,6 +541,27 @@ export const MapperDialog = ({
 
   const toggleThemeMode = () => {
     handleThemeChange(isLightTheme ? "dark" : "light");
+  };
+
+  const submitCreateProfile = () => {
+    const error = onCreateProfileWithName(profileCreateName);
+    if (error) {
+      setProfileInlineNameError(error);
+      return;
+    }
+    setProfileCreateOpen(false);
+    setProfileCreateName("");
+    setProfileInlineNameError("");
+  };
+
+  const submitRenameProfile = () => {
+    const error = onRenameProfileWithName(profileRenameName);
+    if (error) {
+      setProfileInlineNameError(error);
+      return;
+    }
+    setProfileRenameOpen(false);
+    setProfileInlineNameError("");
   };
 
   const helpDialogContent = (
@@ -674,28 +875,45 @@ export const MapperDialog = ({
     setActiveDialogPane("settings");
   };
 
+  const toggleAdminPane = () => {
+    if (!canOpenAdminPane) {
+      return;
+    }
+
+    if (activeDialogPane === "admin") {
+      setActiveDialogPane(lastUtilityTabRef.current);
+      return;
+    }
+
+    lastUtilityTabRef.current = activeUtilityTab;
+    setActiveDialogPane("admin");
+  };
+
   const activePaneIndex =
     activeDialogPane === "key-trigger"
       ? 1
-      : activeDialogPane === "auto-awaken"
-        ? 3
-        : activeDialogPane === "settings"
-          ? 2
-          : 0;
+      : activeDialogPane === "settings"
+        ? 2
+        : activeDialogPane === "auto-awaken"
+          ? 3
+          : activeDialogPane === "admin"
+            ? 4
+            : 0;
 
   const showMergedBackButton =
     activeDialogPane === "settings" ||
+    activeDialogPane === "admin" ||
     (activeDialogPane === "key-trigger" && isKeyTriggerEditorOpen);
 
   const mergedBackLabel =
-    activeDialogPane === "settings"
+    activeDialogPane === "settings" || activeDialogPane === "admin"
       ? "Back to previous tab"
       : activeDialogPane === "key-trigger" && isKeyTriggerEditorOpen
         ? "Back to profiles"
         : "Back";
 
   const handleMergedBack = () => {
-    if (activeDialogPane === "settings") {
+    if (activeDialogPane === "settings" || activeDialogPane === "admin") {
       setActiveDialogPane(lastUtilityTabRef.current);
       return;
     }
@@ -716,6 +934,12 @@ export const MapperDialog = ({
     setShouldFocusAutoStop(true);
     setActiveDialogPane("settings");
   };
+
+  useEffect(() => {
+    if (!canOpenAdminPane && activeDialogPane === "admin") {
+      setActiveDialogPane(lastUtilityTabRef.current);
+    }
+  }, [activeDialogPane, canOpenAdminPane]);
 
   const recaptchaActionMode = settings.stopOnRecaptcha
     ? settings.notifyOnRecaptcha
@@ -808,8 +1032,455 @@ export const MapperDialog = ({
     }
   };
 
+  const [adminPreviousIp, setAdminPreviousIp] = useState<string | null>(null);
+  const [adminTargetIp, setAdminTargetIp] = useState("");
+  const [adminName, setAdminName] = useState("");
+  const [adminRole, setAdminRole] = useState<AccessRole>("user");
+  const [whitelistUsers, setWhitelistUsers] = useState<WhitelistUserRecord[]>(
+    [],
+  );
+  const [whitelistLoading, setWhitelistLoading] = useState(false);
+  const [whitelistSaving, setWhitelistSaving] = useState(false);
+  const [deletingWhitelistIp, setDeletingWhitelistIp] = useState<string | null>(
+    null,
+  );
+  const [shapeOpacityDraft, setShapeOpacityDraft] = useState<number>(
+    settings.shapeOpacity ?? 1,
+  );
+
+  const [tokenIssuePlan, setTokenIssuePlan] =
+    useState<SubscriptionPlan>("free");
+  const [generatedToken, setGeneratedToken] = useState<string | null>(null);
+  const [generatedTokenExpiresAtIso, setGeneratedTokenExpiresAtIso] = useState<
+    string | null
+  >(null);
+  const [issuedTokens, setIssuedTokens] = useState<SubscriptionTokenRecord[]>(
+    [],
+  );
+  const [tokenIssueLoading, setTokenIssueLoading] = useState(false);
+  const [tokenListLoading, setTokenListLoading] = useState(false);
+  const [revokingTokenHash, setRevokingTokenHash] = useState<string | null>(
+    null,
+  );
+  const [deletingTokenHash, setDeletingTokenHash] = useState<string | null>(
+    null,
+  );
+  const [tokenStatusFilter, setTokenStatusFilter] = useState<
+    "all" | "active" | "expired"
+  >("all");
+  const [tokenPlanFilter, setTokenPlanFilter] = useState<
+    "all" | SubscriptionPlan
+  >("all");
+
+  const buildPlanExpiryIso = (plan: SubscriptionPlan) => {
+    const now = new Date();
+    const days = plan === "elite" ? 90 : plan === "pro" ? 30 : 7;
+    now.setDate(now.getDate() + days);
+    return now.toISOString();
+  };
+
+  useEffect(() => {
+    setShapeOpacityDraft(settings.shapeOpacity ?? 1);
+  }, [settings.shapeOpacity]);
+
+  const formatTokenDate = (value: string | null) => {
+    if (!value) {
+      return "-";
+    }
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return value;
+    }
+    return date.toLocaleString();
+  };
+
+  const getRemainingDurationLabel = (value: string | null) => {
+    if (!value) {
+      return null;
+    }
+
+    const targetMs = Date.parse(value);
+    if (!Number.isFinite(targetMs)) {
+      return null;
+    }
+
+    const diffMs = targetMs - Date.now();
+    const absMs = Math.abs(diffMs);
+    const totalMinutes = Math.floor(absMs / 60000);
+    const days = Math.floor(totalMinutes / (60 * 24));
+    const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+    const minutes = totalMinutes % 60;
+
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (hours > 0 || days > 0) parts.push(`${hours}h`);
+    parts.push(`${minutes}m`);
+
+    return diffMs >= 0
+      ? `${parts.join(" ")} remaining`
+      : `expired ${parts.join(" ")} ago`;
+  };
+
+  const renderDateWithRemainingTooltip = (value: string | null) => {
+    const formatted = formatTokenDate(value);
+    if (formatted === "-") {
+      return "-";
+    }
+
+    const remaining = getRemainingDurationLabel(value);
+    const tooltipText = remaining ? `${formatted} (${remaining})` : formatted;
+
+    return (
+      <Tooltip title={tooltipText} {...dialogTooltipProps}>
+        <span>{formatted}</span>
+      </Tooltip>
+    );
+  };
+
+  const getTokenStatus = (item: SubscriptionTokenRecord) => {
+    return item.isExpired ? "expired" : "active";
+  };
+
+  const maskedToken = (tokenHash: string) => {
+    if (tokenHash.length <= 12) {
+      return tokenHash;
+    }
+    return `${tokenHash.slice(0, 6)}...${tokenHash.slice(-6)}`;
+  };
+
+  const filteredIssuedTokens = issuedTokens.filter((item) => {
+    const statusOk =
+      tokenStatusFilter === "all" || getTokenStatus(item) === tokenStatusFilter;
+    const planOk = tokenPlanFilter === "all" || item.plan === tokenPlanFilter;
+    return statusOk && planOk;
+  });
+
+  const filteredWhitelistUsers = whitelistUsers.filter(
+    (item) => item.role !== "superadmin",
+  );
+
+  const adminTableShellStyle: CSSProperties = {
+    overflowX: "auto",
+    border: `1px solid ${token.colorBorderSecondary}`,
+    borderRadius: 10,
+    background: token.colorBgContainer,
+  };
+
+  const adminTableStyle: CSSProperties = {
+    width: "100%",
+    borderCollapse: "separate",
+    borderSpacing: 0,
+    minWidth: 760,
+  };
+
+  const adminHeaderCellStyle: CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: token.colorTextSecondary,
+    padding: "10px 12px",
+    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+    background: token.colorFillAlter,
+    whiteSpace: "nowrap",
+  };
+
+  const adminBodyCellStyle: CSSProperties = {
+    fontSize: 12,
+    color: token.colorText,
+    padding: "10px 12px",
+    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+    verticalAlign: "top",
+  };
+
+  const renderStateTag = (
+    value: string,
+    tone: "success" | "warning" | "error" | "default" = "default",
+  ) => {
+    const color =
+      tone === "success"
+        ? "success"
+        : tone === "warning"
+          ? "warning"
+          : tone === "error"
+            ? "error"
+            : "default";
+    return (
+      <Tag color={color} style={{ marginInlineEnd: 0, fontSize: 11 }}>
+        {value.toUpperCase()}
+      </Tag>
+    );
+  };
+
+  const resetWhitelistEditor = () => {
+    setAdminPreviousIp(null);
+    setAdminTargetIp("");
+    setAdminName("");
+    setAdminRole("user");
+  };
+
+  const canSubmitWhitelistUpdate =
+    canManageAdminsEffective && adminTargetIp.trim().length > 0;
+
+  const refreshWhitelistUsers = async () => {
+    if (
+      !canManageAdminsEffective ||
+      !onListWhitelistUsers ||
+      whitelistLoading
+    ) {
+      return;
+    }
+    setWhitelistLoading(true);
+    try {
+      const records = await onListWhitelistUsers();
+      setWhitelistUsers(records);
+    } catch (error) {
+      const messageText =
+        error instanceof Error ? error.message : "Unable to load whitelist.";
+      message.error(messageText);
+    } finally {
+      setWhitelistLoading(false);
+    }
+  };
+
+  const submitWhitelistUpdate = async () => {
+    if (
+      !canSubmitWhitelistUpdate ||
+      !onUpsertWhitelistUser ||
+      whitelistSaving
+    ) {
+      return;
+    }
+    setWhitelistSaving(true);
+    try {
+      await onUpsertWhitelistUser({
+        targetIp: adminTargetIp.trim(),
+        previousIp: adminPreviousIp,
+        name: adminName.trim() || null,
+        role: adminRole,
+      });
+      await refreshWhitelistUsers();
+      await onRefreshAccessControl?.();
+      message.success("Whitelist user saved.");
+      resetWhitelistEditor();
+    } catch (error) {
+      const messageText =
+        error instanceof Error
+          ? error.message
+          : "Unable to save whitelist user.";
+      message.error(messageText);
+    } finally {
+      setWhitelistSaving(false);
+    }
+  };
+
+  const editWhitelistUser = (item: WhitelistUserRecord) => {
+    setAdminPreviousIp(item.ip);
+    setAdminTargetIp(item.ip);
+    setAdminName(item.name ?? "");
+    setAdminRole(item.role);
+  };
+
+  const removeWhitelistUser = async (targetIp: string) => {
+    if (
+      !canManageAdminsEffective ||
+      !onDeleteWhitelistUser ||
+      deletingWhitelistIp
+    ) {
+      return;
+    }
+    setDeletingWhitelistIp(targetIp);
+    try {
+      await onDeleteWhitelistUser(targetIp);
+      await refreshWhitelistUsers();
+      await onRefreshAccessControl?.();
+      if (adminPreviousIp === targetIp) {
+        resetWhitelistEditor();
+      }
+      message.success("Whitelist user deleted.");
+    } catch (error) {
+      const messageText =
+        error instanceof Error
+          ? error.message
+          : "Unable to delete whitelist user.";
+      message.error(messageText);
+    } finally {
+      setDeletingWhitelistIp(null);
+    }
+  };
+
+  const issueSubscriptionToken = async () => {
+    if (
+      !canGenerateTokensEffective ||
+      !onGenerateSubscriptionToken ||
+      tokenIssueLoading
+    ) {
+      return;
+    }
+    setTokenIssueLoading(true);
+    try {
+      const result = await onGenerateSubscriptionToken({
+        plan: tokenIssuePlan,
+      });
+      setGeneratedToken(result.token);
+      setGeneratedTokenExpiresAtIso(result.expiresAtIso);
+      if (onListSubscriptionTokens) {
+        const refreshedTokens = await onListSubscriptionTokens();
+        setIssuedTokens(refreshedTokens);
+      }
+      message.success("Subscription token generated.");
+    } catch (error) {
+      const messageText =
+        error instanceof Error
+          ? error.message
+          : "Unable to generate subscription token.";
+      message.error(messageText);
+    } finally {
+      setTokenIssueLoading(false);
+    }
+  };
+
+  const refreshIssuedTokens = async () => {
+    if (
+      !canGenerateTokensEffective ||
+      !onListSubscriptionTokens ||
+      tokenListLoading
+    ) {
+      return;
+    }
+    setTokenListLoading(true);
+    try {
+      const tokens = await onListSubscriptionTokens();
+      setIssuedTokens(tokens);
+    } catch (error) {
+      const messageText =
+        error instanceof Error ? error.message : "Unable to load token list.";
+      message.error(messageText);
+    } finally {
+      setTokenListLoading(false);
+    }
+  };
+
+  const revokeIssuedToken = async (tokenHash: string) => {
+    if (
+      !canGenerateTokensEffective ||
+      !onRevokeSubscriptionToken ||
+      !tokenHash
+    ) {
+      return;
+    }
+    if (revokingTokenHash) {
+      return;
+    }
+    setRevokingTokenHash(tokenHash);
+    try {
+      await onRevokeSubscriptionToken(tokenHash);
+      setIssuedTokens((prev) =>
+        prev.map((token) =>
+          token.tokenHash === tokenHash
+            ? {
+                ...token,
+                expiresAt: new Date().toISOString(),
+                isExpired: true,
+              }
+            : token,
+        ),
+      );
+      message.success("Subscription token revoked.");
+    } catch (error) {
+      const messageText =
+        error instanceof Error ? error.message : "Unable to revoke token.";
+      message.error(messageText);
+    } finally {
+      setRevokingTokenHash(null);
+    }
+  };
+
+  const deleteIssuedToken = async (tokenHash: string) => {
+    if (
+      !canGenerateTokensEffective ||
+      !onDeleteSubscriptionToken ||
+      !tokenHash
+    ) {
+      return;
+    }
+    if (deletingTokenHash) {
+      return;
+    }
+    setDeletingTokenHash(tokenHash);
+    try {
+      await onDeleteSubscriptionToken(tokenHash);
+      setIssuedTokens((prev) =>
+        prev.filter((token) => token.tokenHash !== tokenHash),
+      );
+      message.success("Subscription token deleted.");
+    } catch (error) {
+      const messageText =
+        error instanceof Error ? error.message : "Unable to delete token.";
+      message.error(messageText);
+    } finally {
+      setDeletingTokenHash(null);
+    }
+  };
+
+  const applySubscriptionToken = async () => {
+    const tokenInput = settings.subscriptionAccessToken.trim();
+    if (!tokenInput) {
+      message.warning("Enter a subscription token first.");
+      return;
+    }
+
+    const nextState = await onRefreshAccessControl?.(
+      tokenInput.length > 0 ? tokenInput : undefined,
+    );
+
+    if (!nextState) {
+      return;
+    }
+
+    if (nextState.hasToolAccess && nextState.accessSource === "token") {
+      const remaining = getRemainingDurationLabel(nextState.tokenExpiresAtIso);
+      message.success(
+        remaining
+          ? `Subscription token validated (${remaining}).`
+          : "Subscription token validated.",
+      );
+      return;
+    }
+
+    if (nextState.hasToolAccess && nextState.accessSource === "whitelist") {
+      message.success("Access granted via whitelist.");
+      return;
+    }
+
+    message.error(nextState.reason ?? "Invalid or expired subscription token.");
+  };
+
+  const clearSavedToken = async () => {
+    setSettings((prev) => ({
+      ...prev,
+      subscriptionAccessToken: "",
+    }));
+    const nextState = await onRefreshAccessControl?.("");
+    if (nextState?.hasToolAccess) {
+      message.info("Saved token cleared.");
+      return;
+    }
+    message.info("Saved token cleared. Access is now locked.");
+  };
+
+  useEffect(() => {
+    if (activeDialogPane !== "admin") {
+      return;
+    }
+    if (canManageAdminsEffective) {
+      void refreshWhitelistUsers();
+    }
+    if (canGenerateTokensEffective) {
+      void refreshIssuedTokens();
+    }
+  }, [activeDialogPane, canManageAdminsEffective, canGenerateTokensEffective]);
+
   const activeUtilityPaneTab: UtilityTab =
-    activeDialogPane === "settings"
+    activeDialogPane === "settings" || activeDialogPane === "admin"
       ? lastUtilityTabRef.current
       : activeDialogPane;
 
@@ -846,14 +1517,15 @@ export const MapperDialog = ({
             <div
               style={{
                 padding: "8px 16px 8px 16px",
-                borderBottom: `1px solid ${token.colorBorderSecondary}`,
               }}
             >
               <Space
                 align="center"
                 style={{ width: "100%", justifyContent: "space-between" }}
               >
-                <Typography.Text strong>Characters / Tabs</Typography.Text>
+                <Space align="center" size={8} wrap>
+                  <Typography.Text strong>Characters / Tabs</Typography.Text>
+                </Space>
                 <Tooltip title="Reload characters" {...dialogTooltipProps}>
                   <Button
                     type="text"
@@ -870,36 +1542,41 @@ export const MapperDialog = ({
                 className="fm-w-full"
                 style={{ marginTop: 8 }}
               >
+                <Typography.Text type="secondary">
+                  Selection updates apply immediately while running. Checked
+                  tabs are included, unchecked tabs are excluded.
+                </Typography.Text>
                 {keyTriggerCharacters.length === 0 ? (
                   <Empty
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                     description="No Flyff tabs found"
                   />
                 ) : (
-                  keyTriggerCharacters.map((tab) => (
-                    <Checkbox
-                      key={tab.id}
-                      checked={selectedKeyTriggerTabIds.includes(tab.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          onSelectedKeyTriggerTabIdsChange([
-                            ...selectedKeyTriggerTabIds,
-                            tab.id,
-                          ]);
-                          return;
-                        }
+                  <div className="fm-kt-character-grid">
+                    {keyTriggerCharacters.map((tab) => (
+                      <Checkbox
+                        key={tab.id}
+                        checked={selectedKeyTriggerTabIds.includes(tab.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            onSelectedKeyTriggerTabIdsChange([
+                              ...selectedKeyTriggerTabIds,
+                              tab.id,
+                            ]);
+                            return;
+                          }
 
-                        onSelectedKeyTriggerTabIdsChange(
-                          selectedKeyTriggerTabIds.filter(
-                            (id) => id !== tab.id,
-                          ),
-                        );
-                      }}
-                      disabled={!settings.editMode}
-                    >
-                      {tab.name}
-                    </Checkbox>
-                  ))
+                          onSelectedKeyTriggerTabIdsChange(
+                            selectedKeyTriggerTabIds.filter(
+                              (id) => id !== tab.id,
+                            ),
+                          );
+                        }}
+                      >
+                        {tab.name}
+                      </Checkbox>
+                    ))}
+                  </div>
                 )}
               </Space>
             </div>
@@ -919,15 +1596,13 @@ export const MapperDialog = ({
               <div className="fm-dialog-footer-key-trigger-add-row">
                 {keyTriggerFooterControls.showAddProfile && (
                   <Button
-                    type="dashed"
                     icon={<PlusOutlined style={{ fontSize: 16 }} />}
+                    className="fm-footer-btn-add"
                     block
                     style={{
                       fontSize: 14,
                       fontWeight: 500,
                       padding: "6px 0",
-                      color: "#2563eb",
-                      borderColor: "#2563eb",
                     }}
                     disabled={keyTriggerFooterControls.addProfileDisabled}
                     onClick={keyTriggerFooterControls.onAddProfile}
@@ -937,15 +1612,13 @@ export const MapperDialog = ({
                 )}
                 {keyTriggerFooterControls.showAddAction && (
                   <Button
-                    type="dashed"
                     icon={<PlusOutlined style={{ fontSize: 16 }} />}
+                    className="fm-footer-btn-add"
                     block
                     style={{
                       fontSize: 14,
                       fontWeight: 500,
                       padding: "6px 0",
-                      color: "#2563eb",
-                      borderColor: "#2563eb",
                     }}
                     disabled={keyTriggerFooterControls.addActionDisabled}
                     onClick={keyTriggerFooterControls.onAddAction}
@@ -958,21 +1631,33 @@ export const MapperDialog = ({
 
             {keyTriggerFooterControls.showSaveCancel && (
               <div className="fm-dialog-footer-key-trigger-edit-row">
-                <Button
-                  type="primary"
-                  icon={<SaveIcon style={{ fontSize: 15 }} />}
-                  className="fm-footer-btn-save"
-                  style={{
-                    fontSize: 14,
-                    fontWeight: 600,
-                    letterSpacing: 0.2,
-                    padding: "6px 0",
-                  }}
-                  disabled={keyTriggerFooterControls.saveDisabled}
-                  onClick={keyTriggerFooterControls.onSave}
+                <Tooltip
+                  title={
+                    keyTriggerFooterControls.saveDisabled
+                      ? (keyTriggerFooterControls.saveDisabledReason ??
+                        "Complete required fields to save.")
+                      : undefined
+                  }
+                  {...dialogTooltipProps}
                 >
-                  Save
-                </Button>
+                  <span className="fm-footer-save-wrap">
+                    <Button
+                      type="primary"
+                      icon={<SaveIcon style={{ fontSize: 15 }} />}
+                      className="fm-footer-btn-save"
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 600,
+                        letterSpacing: 0.2,
+                        padding: "6px 0",
+                      }}
+                      disabled={keyTriggerFooterControls.saveDisabled}
+                      onClick={keyTriggerFooterControls.onSave}
+                    >
+                      Save
+                    </Button>
+                  </span>
+                </Tooltip>
                 <Button
                   type="default"
                   icon={<CancelIcon style={{ fontSize: 15 }} />}
@@ -1018,7 +1703,10 @@ export const MapperDialog = ({
     </div>
   );
 
-  if (!overlayVisible || !dialogVisible || isTransformingShape) {
+  if (!dialogVisible || isTransformingShape) {
+    return null;
+  }
+  if (!overlayVisible && (effectiveHasToolAccess || accessLoading)) {
     return null;
   }
 
@@ -1027,12 +1715,14 @@ export const MapperDialog = ({
       getPopupContainer={getDialogPopupContainer}
       theme={{
         token: {
+          ...resolvedThemePreset.token,
           zIndexPopupBase: 2147483647,
         },
       }}
     >
       <Rnd
         className="fm-dialog fm-z-[2147483645]"
+        style={dialogThemeVars}
         size={{ width: dialogRect.width, height: dialogRect.height }}
         position={{ x: dialogRect.x, y: dialogRect.y }}
         minWidth={360}
@@ -1056,11 +1746,23 @@ export const MapperDialog = ({
             height: "calc(100% - 46px)",
             overflow: "hidden",
             padding: 0,
+            position: "relative",
+            backgroundColor:
+              resolvedThemePreset.token.colorBgContainer ??
+              resolvedThemePreset.token.colorBgBase,
+            color: resolvedThemePreset.token.colorTextBase,
+          }}
+          style={{
+            backgroundColor:
+              resolvedThemePreset.token.colorBgContainer ??
+              resolvedThemePreset.token.colorBgBase,
+            color: resolvedThemePreset.token.colorTextBase,
+            borderColor: token.colorBorderSecondary,
           }}
           className="fm-panel fm-h-full"
           extra={
             <Space size={8} align="center">
-              {showMergedBackButton && (
+              {showMergedBackButton && !isAccessGated && (
                 <Tooltip title={mergedBackLabel} {...dialogTooltipProps}>
                   <Button
                     type="text"
@@ -1101,52 +1803,60 @@ export const MapperDialog = ({
                   {isLightTheme ? <BulbFilled /> : <BulbOutlined />}
                 </span>
               </Tooltip>
-              <Button
-                type="text"
-                size="small"
-                className="fm-header-mode-icon-btn"
-                icon={
-                  <span
-                    className={`fm-header-mode-icon ${settings.editMode ? "fm-header-mode-icon-start" : "fm-header-mode-icon-stop"}`}
-                  >
-                    {settings.editMode ? (
-                      <CaretRightOutlined />
-                    ) : (
-                      <StopOutlined />
-                    )}
-                  </span>
-                }
-                aria-disabled={false}
-                onClick={toggleMode}
-                title={settings.editMode ? "Start Script" : "Stop Script"}
-                aria-label={settings.editMode ? "Start Script" : "Stop Script"}
-              />
-              <Tooltip title="Copy JSON" {...dialogTooltipProps}>
+              {!isAccessGated && (
                 <Button
                   type="text"
                   size="small"
-                  icon={<CopyOutlined />}
-                  aria-label="Copy JSON"
-                  onClick={exportMappings}
+                  className="fm-header-mode-icon-btn"
+                  icon={
+                    <span
+                      className={`fm-header-mode-icon ${settings.editMode ? "fm-header-mode-icon-start" : "fm-header-mode-icon-stop"}`}
+                    >
+                      {settings.editMode ? (
+                        <CaretRightOutlined />
+                      ) : (
+                        <StopOutlined />
+                      )}
+                    </span>
+                  }
+                  aria-disabled={false}
+                  onClick={toggleMode}
+                  title={settings.editMode ? "Start Script" : "Stop Script"}
+                  aria-label={
+                    settings.editMode ? "Start Script" : "Stop Script"
+                  }
                 />
-              </Tooltip>
-              <Tooltip title="Import JSON" {...dialogTooltipProps}>
-                <Button
-                  type="text"
-                  size="small"
-                  className={isLocked ? "fm-header-action-btn-locked" : ""}
-                  icon={<DownloadOutlined />}
-                  aria-label="Import JSON"
-                  aria-disabled={isLocked}
-                  onClick={() => {
-                    if (isLocked) {
-                      return;
-                    }
+              )}
+              {!isAccessGated && (
+                <Tooltip title="Copy Tool Config" {...dialogTooltipProps}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CopyOutlined />}
+                    aria-label="Copy tool config"
+                    onClick={exportMappings}
+                  />
+                </Tooltip>
+              )}
+              {!isAccessGated && (
+                <Tooltip title="Import Tool Config" {...dialogTooltipProps}>
+                  <Button
+                    type="text"
+                    size="small"
+                    className={isLocked ? "fm-header-action-btn-locked" : ""}
+                    icon={<DownloadOutlined />}
+                    aria-label="Import tool config"
+                    aria-disabled={isLocked}
+                    onClick={() => {
+                      if (isLocked) {
+                        return;
+                      }
 
-                    setImportOpen(true);
-                  }}
-                />
-              </Tooltip>
+                      setImportOpen(true);
+                    }}
+                  />
+                </Tooltip>
+              )}
               <Tooltip
                 title="Focus game canvas for immediate keyboard gameplay input"
                 {...dialogTooltipProps}
@@ -1160,40 +1870,191 @@ export const MapperDialog = ({
                   F
                 </Button>
               </Tooltip>
-              <Tooltip title="Reset Settings Defaults" {...dialogTooltipProps}>
+              {!isAccessGated && (
+                <Tooltip
+                  title="Reset Settings Defaults"
+                  {...dialogTooltipProps}
+                >
+                  <Button
+                    type="text"
+                    size="small"
+                    onClick={() => {
+                      onResetDialogConfiguration();
+                    }}
+                    icon={<ReloadOutlined />}
+                    aria-label="Reset settings defaults"
+                  />
+                </Tooltip>
+              )}
+              {!isAccessGated && (
+                <Tooltip title="Settings" {...dialogTooltipProps}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<SettingOutlined />}
+                    aria-label={
+                      activeDialogPane === "settings"
+                        ? "Close settings"
+                        : "Open settings"
+                    }
+                    onClick={() => {
+                      toggleSettingsPane();
+                    }}
+                  />
+                </Tooltip>
+              )}
+              <Tooltip title="User Manual" {...dialogTooltipProps}>
                 <Button
                   type="text"
                   size="small"
-                  onClick={() => {
-                    onResetDialogConfiguration();
-                  }}
-                  icon={<ReloadOutlined />}
-                  aria-label="Reset settings defaults"
+                  icon={<QuestionOutlined />}
+                  aria-label="Open user manual"
+                  onClick={() => setIsHelpDialogOpen(true)}
                 />
               </Tooltip>
-              <Tooltip title="Settings" {...dialogTooltipProps}>
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<SettingOutlined />}
-                  aria-label={
-                    activeDialogPane === "settings"
-                      ? "Close settings"
-                      : "Open settings"
-                  }
-                  onClick={() => {
-                    toggleSettingsPane();
-                  }}
-                />
-              </Tooltip>
+              {!isAccessGated && canOpenAdminPane && (
+                <Tooltip title="Admin Panel" {...dialogTooltipProps}>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<SafetyCertificateOutlined />}
+                    aria-label={
+                      activeDialogPane === "admin"
+                        ? "Close admin panel"
+                        : "Open admin panel"
+                    }
+                    onClick={() => {
+                      toggleAdminPane();
+                    }}
+                  />
+                </Tooltip>
+              )}
             </Space>
           }
         >
+          {isAccessGated && (
+            <div
+              style={{
+                position: "absolute",
+                inset: 0,
+                zIndex: 10,
+                display: "flex",
+                flexDirection: "column",
+                padding: "24px 28px 0",
+                background: "var(--fm-theme-bg-container)",
+              }}
+            >
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 20,
+                }}
+              >
+                <Space
+                  direction="vertical"
+                  size={8}
+                  align="center"
+                  style={{ width: "100%", maxWidth: 320 }}
+                >
+                  <LockOutlined style={{ fontSize: 36, opacity: 0.55 }} />
+                  <Typography.Text strong style={{ fontSize: 15 }}>
+                    Access Required
+                  </Typography.Text>
+                  {accessReason && (
+                    <Typography.Text
+                      type="secondary"
+                      style={{ textAlign: "center", display: "block" }}
+                    >
+                      {accessReason}
+                    </Typography.Text>
+                  )}
+                </Space>
+                <Form
+                  layout="vertical"
+                  style={{ width: "100%", maxWidth: 320 }}
+                >
+                  <Form.Item
+                    label="Subscription Access Token"
+                    style={{ marginBottom: 8 }}
+                  >
+                    <Input
+                      value={settings.subscriptionAccessToken}
+                      placeholder="Enter subscription token"
+                      onChange={(event) => {
+                        setSettings((prev) => ({
+                          ...prev,
+                          subscriptionAccessToken: event.target.value,
+                        }));
+                      }}
+                      onPressEnter={() => {
+                        void applySubscriptionToken();
+                      }}
+                    />
+                  </Form.Item>
+                  <Button
+                    type="primary"
+                    block
+                    loading={Boolean(accessLoading)}
+                    onClick={() => {
+                      void applySubscriptionToken();
+                    }}
+                  >
+                    Validate Token
+                  </Button>
+                  <Button
+                    block
+                    style={{ marginTop: 8 }}
+                    onClick={() => {
+                      void clearSavedToken();
+                    }}
+                  >
+                    Clear Saved Token
+                  </Button>
+                  <Typography.Text
+                    type="secondary"
+                    style={{ display: "block", marginTop: 8 }}
+                  >
+                    Paste a different token and click Validate Token to switch
+                    subscriptions.
+                  </Typography.Text>
+                  {accessLastCheckedAtIso && (
+                    <Typography.Text
+                      type="secondary"
+                      style={{ display: "block", marginTop: 6 }}
+                    >
+                      Last access check:{" "}
+                      {formatTokenDate(accessLastCheckedAtIso)}
+                    </Typography.Text>
+                  )}
+                </Form>
+              </div>
+              <div
+                className="fm-dialog-sticky-footer"
+                style={{ marginLeft: -28, marginRight: -28 }}
+              >
+                <div className="fm-dialog-footer-bottom">
+                  <div className="fm-dialog-footer-right">
+                    <Typography.Text
+                      type="secondary"
+                      className="fm-dialog-footer-version"
+                    >
+                      v{toolVersion}
+                    </Typography.Text>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="fm-dialog-slider-viewport">
             <div
               className="fm-dialog-slider-track"
               style={{
-                transform: `translateX(-${activePaneIndex * (100 / 4)}%)`,
+                transform: `translateX(-${activePaneIndex * (100 / 5)}%)`,
               }}
             >
               <div className="fm-dialog-slider-pane">
@@ -1210,33 +2071,12 @@ export const MapperDialog = ({
                         size={8}
                         className="fm-w-full"
                       >
-                        <Space
-                          align="center"
-                          style={{
-                            width: "100%",
-                            justifyContent: "space-between",
-                          }}
-                        >
-                          <div>
-                            Active Profile:{" "}
-                            <Typography.Text>
-                              {activeProfileName || "No Active Profile"}
-                            </Typography.Text>
-                          </div>
-
-                          <Tooltip
-                            title="Open mapper shortcuts and features help"
-                            {...dialogTooltipProps}
-                          >
-                            <Button
-                              type="text"
-                              size="small"
-                              icon={<QuestionOutlined />}
-                              aria-label="Show all mapper shortcuts"
-                              onClick={() => setIsHelpDialogOpen(true)}
-                            />
-                          </Tooltip>
-                        </Space>
+                        <div>
+                          Active Profile:{" "}
+                          <Typography.Text>
+                            {activeProfileName || "No Active Profile"}
+                          </Typography.Text>
+                        </div>
 
                         <Typography.Text type="secondary">
                           Start turns on Edit Mode to add, move, resize, and
@@ -1268,21 +2108,85 @@ export const MapperDialog = ({
                           />
                         )}
                         <div className="fm-profile-actions-grid">
-                          <Tooltip
-                            title="Create"
-                            {...dialogTooltipProps}
-                            placement="top"
-                            arrow={{ pointAtCenter: true }}
+                          <Popover
+                            open={profileCreateOpen}
+                            onOpenChange={(open) => {
+                              if (isLocked) {
+                                setProfileCreateOpen(false);
+                                return;
+                              }
+                              setProfileCreateOpen(open);
+                              if (open) {
+                                setProfileRenameOpen(false);
+                              }
+                              if (open) {
+                                setProfileInlineNameError("");
+                                setProfileCreateName("");
+                                window.setTimeout(() => {
+                                  profileCreateInputRef.current?.focus();
+                                }, 50);
+                              }
+                            }}
+                            trigger="click"
+                            placement="bottomLeft"
+                            {...dialogPopoverProps}
+                            content={
+                              <Space direction="vertical" size={6}>
+                                <Space size={4}>
+                                  <Input
+                                    ref={profileCreateInputRef}
+                                    size="small"
+                                    placeholder="Profile name"
+                                    value={profileCreateName}
+                                    style={{ width: 180 }}
+                                    onChange={(event) => {
+                                      setProfileCreateName(event.target.value);
+                                      if (profileInlineNameError) {
+                                        setProfileInlineNameError("");
+                                      }
+                                    }}
+                                    onPressEnter={submitCreateProfile}
+                                  />
+                                  <Button
+                                    size="small"
+                                    type="primary"
+                                    icon={<SaveIcon />}
+                                    onClick={submitCreateProfile}
+                                    disabled={isLocked}
+                                  />
+                                  <Button
+                                    size="small"
+                                    type="default"
+                                    icon={<CancelIcon />}
+                                    onClick={() => {
+                                      setProfileCreateOpen(false);
+                                      setProfileInlineNameError("");
+                                    }}
+                                  />
+                                </Space>
+                                {profileInlineNameError && (
+                                  <Typography.Text type="danger">
+                                    {profileInlineNameError}
+                                  </Typography.Text>
+                                )}
+                              </Space>
+                            }
                           >
-                            <Button
-                              block
-                              className="fm-profile-action-btn"
-                              icon={<PlusOutlined />}
-                              onClick={onOpenCreateProfile}
-                              disabled={isLocked}
-                              aria-label="Create profile"
-                            />
-                          </Tooltip>
+                            <Tooltip
+                              title="Create"
+                              {...dialogTooltipProps}
+                              placement="top"
+                              arrow={{ pointAtCenter: true }}
+                            >
+                              <Button
+                                block
+                                className="fm-profile-action-btn"
+                                icon={<PlusOutlined />}
+                                disabled={isLocked}
+                                aria-label="Create profile"
+                              />
+                            </Tooltip>
+                          </Popover>
                           <Tooltip
                             title="Duplicate"
                             {...dialogTooltipProps}
@@ -1298,21 +2202,88 @@ export const MapperDialog = ({
                               aria-label="Duplicate selected profile"
                             />
                           </Tooltip>
-                          <Tooltip
-                            title="Rename"
-                            {...dialogTooltipProps}
-                            placement="top"
-                            arrow={{ pointAtCenter: true }}
+                          <Popover
+                            open={profileRenameOpen}
+                            onOpenChange={(open) => {
+                              if (isLocked || !selectedProfile) {
+                                setProfileRenameOpen(false);
+                                return;
+                              }
+                              setProfileRenameOpen(open);
+                              if (open) {
+                                setProfileCreateOpen(false);
+                              }
+                              if (open) {
+                                setProfileInlineNameError("");
+                                setProfileRenameName(
+                                  selectedProfile?.name ?? "",
+                                );
+                                window.setTimeout(() => {
+                                  profileRenameInputRef.current?.focus();
+                                  profileRenameInputRef.current?.select();
+                                }, 50);
+                              }
+                            }}
+                            trigger="click"
+                            placement="bottomLeft"
+                            {...dialogPopoverProps}
+                            content={
+                              <Space direction="vertical" size={6}>
+                                <Space size={4}>
+                                  <Input
+                                    ref={profileRenameInputRef}
+                                    size="small"
+                                    placeholder="Profile name"
+                                    value={profileRenameName}
+                                    style={{ width: 180 }}
+                                    onChange={(event) => {
+                                      setProfileRenameName(event.target.value);
+                                      if (profileInlineNameError) {
+                                        setProfileInlineNameError("");
+                                      }
+                                    }}
+                                    onPressEnter={submitRenameProfile}
+                                  />
+                                  <Button
+                                    size="small"
+                                    type="primary"
+                                    icon={<SaveIcon />}
+                                    onClick={submitRenameProfile}
+                                    disabled={isLocked || !selectedProfile}
+                                  />
+                                  <Button
+                                    size="small"
+                                    type="default"
+                                    icon={<CancelIcon />}
+                                    onClick={() => {
+                                      setProfileRenameOpen(false);
+                                      setProfileInlineNameError("");
+                                    }}
+                                  />
+                                </Space>
+                                {profileInlineNameError && (
+                                  <Typography.Text type="danger">
+                                    {profileInlineNameError}
+                                  </Typography.Text>
+                                )}
+                              </Space>
+                            }
                           >
-                            <Button
-                              block
-                              className="fm-profile-action-btn"
-                              icon={<EditOutlined />}
-                              onClick={onOpenRenameProfile}
-                              disabled={isLocked || !selectedProfile}
-                              aria-label="Rename selected profile"
-                            />
-                          </Tooltip>
+                            <Tooltip
+                              title="Rename"
+                              {...dialogTooltipProps}
+                              placement="top"
+                              arrow={{ pointAtCenter: true }}
+                            >
+                              <Button
+                                block
+                                className="fm-profile-action-btn"
+                                icon={<EditOutlined />}
+                                disabled={isLocked || !selectedProfile}
+                                aria-label="Rename selected profile"
+                              />
+                            </Tooltip>
+                          </Popover>
                           <Tooltip
                             title="Delete"
                             {...dialogTooltipProps}
@@ -1426,104 +2397,6 @@ export const MapperDialog = ({
                           it on the canvas.
                         </Typography.Text>
                       </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Strict Input Passthrough">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.strictPassthrough}
-                          disabled={isLocked}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              strictPassthrough: checked,
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          In Stop mode, gameplay input passes through unless it
-                          matches a mapper shortcut or mapped shape binding.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Snap Line Indicators">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.showSnapIndicators}
-                          disabled={isLocked}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              showSnapIndicators: checked,
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          Shows or hides snap alignment guide lines when snap
-                          alignment is active.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Shape Key Binding Tooltips">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.showShapeTooltips}
-                          disabled={isLocked}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              showShapeTooltips: checked,
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          Shows or hides key binding tooltips when hovering over
-                          shapes.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Opacity">
-                      <Slider
-                        min={0.05}
-                        max={1}
-                        step={0.05}
-                        value={draftShape.opacity}
-                        disabled={isLocked}
-                        onChange={(value) => {
-                          const nextOpacity = Number(value);
-                          setDraftShape((prev) => ({
-                            ...prev,
-                            opacity: nextOpacity,
-                          }));
-                          setShapes((prev) =>
-                            prev.map((shape) =>
-                              normalizeShape({
-                                ...shape,
-                                opacity: nextOpacity,
-                              }),
-                            ),
-                          );
-                        }}
-                      />
-                      <Typography.Text type="secondary">
-                        Controls visibility intensity for all shapes in the
-                        active profile.
-                      </Typography.Text>
                     </Form.Item>
 
                     <Divider className="!fm-my-2" />
@@ -1664,50 +2537,118 @@ export const MapperDialog = ({
                 <div className="fm-dialog-form-shell">
                   {renderPaneTop()}
                   <div className="fm-key-trigger-pane-shell">
-                    {keyTriggerCharacters
-                      .filter((tab) =>
-                        selectedKeyTriggerTabIds.includes(tab.id),
-                      )
-                      .map((tab) => {
-                        // Restore last selected profile for this character/tab
-                        const mappedProfileId =
-                          keyTriggerCharacterProfileMapping?.[tab.name] || null;
+                    {(() => {
+                      const selectedKeyTriggerTabs =
+                        keyTriggerCharacters.filter((tab) =>
+                          selectedKeyTriggerTabIds.includes(tab.id),
+                        );
+
+                      if (selectedKeyTriggerTabs.length === 0) {
                         return (
+                          <>
+                            <Typography.Text
+                              type="secondary"
+                              style={{ display: "block", marginBottom: 8 }}
+                            >
+                              No character/tab is currently checked. You can
+                              still edit key trigger presets and profiles below.
+                            </Typography.Text>
+                            <KeyTriggerTab
+                              key="key-trigger-global-editor"
+                              presets={keyTriggerPresets}
+                              selectedPresetId={selectedKeyTriggerPresetId}
+                              onPresetsChange={setKeyTriggerPresets}
+                              onSelectedPresetIdChange={
+                                setSelectedKeyTriggerPresetId
+                              }
+                              availableTargetTabs={keyTriggerCharacters}
+                              activeMapperProfileName={
+                                selectedProfile?.name ?? null
+                              }
+                              activeMapperProfileBindings={
+                                selectedProfile?.shapes
+                                  .map((shape) => shape.keyBinding)
+                                  .filter(
+                                    (binding) => binding.trim().length > 0,
+                                  ) ?? []
+                              }
+                              isConfigLocked={!settings.editMode}
+                              onEditorOpenChange={setIsKeyTriggerEditorOpen}
+                              onFooterControlsChange={
+                                setKeyTriggerFooterControls
+                              }
+                              backRequestVersion={keyTriggerBackRequestVersion}
+                              selectedProfileId={null}
+                              onSelectedProfileIdChange={() => {
+                                // No tab is selected, so profile selection is not mapped yet.
+                              }}
+                            />
+                          </>
+                        );
+                      }
+
+                      const activeSelectedTab = selectedKeyTriggerTabs[0];
+                      const activeSelectedProfileId =
+                        keyTriggerCharacterProfileMapping?.[
+                          activeSelectedTab.name
+                        ] ?? null;
+
+                      return (
+                        <>
+                          <Typography.Text
+                            type="secondary"
+                            style={{ display: "block", marginBottom: 8 }}
+                          >
+                            Editing the selected preset will apply to the
+                            checked character/tab targets.
+                          </Typography.Text>
                           <KeyTriggerTab
-                            key={tab.id}
-                            profiles={keyTriggerProfiles}
-                            onProfilesChange={onKeyTriggerProfilesChange}
+                            key="key-trigger-shared-editor"
+                            presets={keyTriggerPresets}
+                            selectedPresetId={selectedKeyTriggerPresetId}
+                            onPresetsChange={setKeyTriggerPresets}
+                            onSelectedPresetIdChange={
+                              setSelectedKeyTriggerPresetId
+                            }
+                            availableTargetTabs={keyTriggerCharacters}
+                            activeMapperProfileName={
+                              selectedProfile?.name ?? null
+                            }
+                            activeMapperProfileBindings={
+                              selectedProfile?.shapes
+                                .map((shape) => shape.keyBinding)
+                                .filter(
+                                  (binding) => binding.trim().length > 0,
+                                ) ?? []
+                            }
                             isConfigLocked={!settings.editMode}
                             onEditorOpenChange={setIsKeyTriggerEditorOpen}
                             onFooterControlsChange={setKeyTriggerFooterControls}
                             backRequestVersion={keyTriggerBackRequestVersion}
-                            selectedProfileId={mappedProfileId}
+                            selectedProfileId={activeSelectedProfileId}
                             onSelectedProfileIdChange={(profileId) => {
-                              const nextFromProps =
-                                syncKeyTriggerCharacterProfileSelection({
-                                  currentMapping:
-                                    keyTriggerCharacterProfileMapping,
-                                  tabName: tab.name,
-                                  nextProfileId: profileId,
-                                });
-                              if (
-                                onKeyTriggerSelectedProfileIdChange &&
-                                nextFromProps.shouldNotify
-                              ) {
-                                onKeyTriggerSelectedProfileIdChange(profileId);
-                              }
                               setKeyTriggerCharacterProfileMapping((prev) => {
-                                const syncResult =
-                                  syncKeyTriggerCharacterProfileSelection({
-                                    currentMapping: prev,
-                                    tabName: tab.name,
-                                    nextProfileId: profileId,
-                                  });
+                                let nextMapping = prev;
+                                let changed = false;
 
-                                if (
-                                  !syncResult.shouldNotify ||
-                                  !syncResult.nextMapping
-                                ) {
+                                for (const tab of selectedKeyTriggerTabs) {
+                                  const syncResult =
+                                    syncKeyTriggerCharacterProfileSelection({
+                                      currentMapping: nextMapping,
+                                      tabName: tab.name,
+                                      nextProfileId: profileId,
+                                    });
+
+                                  if (
+                                    syncResult.shouldNotify &&
+                                    syncResult.nextMapping
+                                  ) {
+                                    nextMapping = syncResult.nextMapping;
+                                    changed = true;
+                                  }
+                                }
+
+                                if (!changed) {
                                   return prev;
                                 }
 
@@ -1716,15 +2657,17 @@ export const MapperDialog = ({
                                   storage.saveKeyTriggerCharacterProfileMapping
                                 ) {
                                   storage.saveKeyTriggerCharacterProfileMapping(
-                                    syncResult.nextMapping,
+                                    nextMapping,
                                   );
                                 }
-                                return syncResult.nextMapping;
+
+                                return nextMapping;
                               });
                             }}
                           />
-                        );
-                      })}
+                        </>
+                      );
+                    })()}
                   </div>
                   {dialogFooter}
                 </div>
@@ -1759,6 +2702,219 @@ export const MapperDialog = ({
                         </Typography.Text>
                       </Space>
                     </Form.Item>
+
+                    <Form.Item label="Factory Reset">
+                      <Space
+                        direction="vertical"
+                        size={6}
+                        className="fm-w-full"
+                      >
+                        <Button
+                          danger
+                          onClick={() => {
+                            onFactoryResetConfiguration();
+                          }}
+                        >
+                          Reset Tool to Clean Slate
+                        </Button>
+                        <Typography.Text type="warning">
+                          Back up your tool config JSON first. Factory reset
+                          removes all saved profiles, presets, mappings,
+                          selected tabs, and settings.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item label="Theme">
+                      <Space
+                        direction="vertical"
+                        size={6}
+                        className="fm-w-full"
+                      >
+                        <Select
+                          value={settings.theme}
+                          options={THEME_SELECT_OPTIONS as any}
+                          getPopupContainer={getDialogPopupContainer}
+                          dropdownStyle={PROFILE_SELECT_DROPDOWN_STYLE}
+                          onChange={(value) => {
+                            handleThemeChange(value as ThemeMode);
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          Active appearance:{" "}
+                          {resolvedThemePreset.appearance.toUpperCase()}.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item>
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        className="fm-w-full"
+                      >
+                        <Divider className="!fm-my-1" />
+                        <Typography.Text strong>
+                          Key Mapper Settings
+                        </Typography.Text>
+                        <Typography.Text type="secondary">
+                          Runtime behavior, visuals, and mapper-related
+                          shortcuts.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item label="Strict Input Passthrough">
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        className="fm-w-full"
+                      >
+                        <Switch
+                          checked={settings.strictPassthrough}
+                          disabled={isLocked}
+                          onChange={(checked) => {
+                            setSettings((prev) => ({
+                              ...prev,
+                              strictPassthrough: checked,
+                            }));
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          In Stop mode, gameplay input passes through unless it
+                          matches a mapper shortcut or mapped shape binding.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item label="Snap Line Indicators">
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        className="fm-w-full"
+                      >
+                        <Switch
+                          checked={settings.showSnapIndicators}
+                          disabled={isLocked}
+                          onChange={(checked) => {
+                            setSettings((prev) => ({
+                              ...prev,
+                              showSnapIndicators: checked,
+                            }));
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          Shows or hides snap alignment guide lines when snap
+                          alignment is active.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item label="Shape Key Binding Tooltips">
+                      <Space
+                        direction="vertical"
+                        size={4}
+                        className="fm-w-full"
+                      >
+                        <Switch
+                          checked={settings.showShapeTooltips}
+                          disabled={isLocked}
+                          onChange={(checked) => {
+                            setSettings((prev) => ({
+                              ...prev,
+                              showShapeTooltips: checked,
+                            }));
+                          }}
+                        />
+                        <Typography.Text type="secondary">
+                          Shows or hides key binding tooltips when hovering over
+                          shapes.
+                        </Typography.Text>
+                      </Space>
+                    </Form.Item>
+
+                    <Form.Item label="Opacity">
+                      <Slider
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={shapeOpacityDraft}
+                        onChange={(value) => {
+                          const nextOpacity = Number(value);
+                          setShapeOpacityDraft(nextOpacity);
+                          setSettings((prev) => ({
+                            ...prev,
+                            shapeOpacity: nextOpacity,
+                          }));
+                        }}
+                        onChangeComplete={(value) => {
+                          const nextOpacity = Number(value);
+                          setSettings((prev) => ({
+                            ...prev,
+                            shapeOpacity: nextOpacity,
+                          }));
+                        }}
+                      />
+                      <Typography.Text type="secondary">
+                        Controls visibility intensity for all shapes in the
+                        active profile.
+                      </Typography.Text>
+                    </Form.Item>
+
+                    {!effectiveWhitelisted && (
+                      <Form.Item label="Subscription Access Token">
+                        <Space
+                          direction="vertical"
+                          size={6}
+                          className="fm-w-full"
+                        >
+                          <Input
+                            value={settings.subscriptionAccessToken}
+                            placeholder="Enter subscription token"
+                            onChange={(event) => {
+                              setSettings((prev) => ({
+                                ...prev,
+                                subscriptionAccessToken: event.target.value,
+                              }));
+                            }}
+                          />
+                          <Button
+                            loading={Boolean(accessLoading)}
+                            onClick={() => {
+                              void applySubscriptionToken();
+                            }}
+                          >
+                            Validate Token
+                          </Button>
+                          <Button
+                            onClick={() => {
+                              void clearSavedToken();
+                            }}
+                          >
+                            Clear Saved Token
+                          </Button>
+                          {effectiveAccessSource === "token" &&
+                            tokenExpiresAtIso && (
+                              <Typography.Text type="secondary">
+                                Current token expires:{" "}
+                                {renderDateWithRemainingTooltip(
+                                  tokenExpiresAtIso,
+                                )}
+                              </Typography.Text>
+                            )}
+                          <Typography.Text type="secondary">
+                            To use another subscription token, replace the token
+                            value above and click Validate Token.
+                          </Typography.Text>
+                          {accessLastCheckedAtIso && (
+                            <Typography.Text type="secondary">
+                              Last access check:{" "}
+                              {formatTokenDate(accessLastCheckedAtIso)}
+                            </Typography.Text>
+                          )}
+                        </Space>
+                      </Form.Item>
+                    )}
 
                     <Form.Item label="Toggle Dialog Shortcut">
                       <Space
@@ -2701,26 +3857,551 @@ export const MapperDialog = ({
                   />
                 </div>
               </div>
+
+              <div className="fm-dialog-slider-pane">
+                <div className="fm-dialog-form-shell">
+                  {activeDialogPane === "admin" && canOpenAdminPane && (
+                    <>
+                      {renderPaneTop({ hideUtilityControls: true })}
+                      <Form
+                        layout="vertical"
+                        className="fm-settings-form"
+                        style={{ direction: "ltr", padding: "12px 16px 0" }}
+                      >
+                        <Form.Item>
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Typography.Text strong>
+                              Admin Panel
+                            </Typography.Text>
+                            <Typography.Text type="secondary">
+                              Role: {effectiveRole.toUpperCase()} | Plan:{" "}
+                              {effectivePlan.toUpperCase()} | Access Source:{" "}
+                              {effectiveAccessSource.toUpperCase()}
+                            </Typography.Text>
+                            {accessReason && (
+                              <Typography.Text type="secondary">
+                                {accessReason}
+                              </Typography.Text>
+                            )}
+                            {tokenExpiresAtIso && (
+                              <Typography.Text type="secondary">
+                                Token expires:{" "}
+                                {renderDateWithRemainingTooltip(
+                                  tokenExpiresAtIso,
+                                )}
+                              </Typography.Text>
+                            )}
+                            {!canManageAccessEffective && (
+                              <Typography.Text type="warning">
+                                Access is read-only for this role.
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        </Form.Item>
+
+                        {canManageAdminsEffective && (
+                          <Form.Item label="Whitelist User Management (Superadmin)">
+                            <Space
+                              direction="vertical"
+                              size={8}
+                              className="fm-w-full"
+                            >
+                              <Space size={8} wrap className="fm-w-full">
+                                <Input
+                                  value={adminTargetIp}
+                                  placeholder="Target IP"
+                                  onChange={(event) => {
+                                    setAdminTargetIp(event.target.value);
+                                  }}
+                                />
+                                <Input
+                                  value={adminName}
+                                  placeholder="Name (optional)"
+                                  onChange={(event) => {
+                                    setAdminName(event.target.value);
+                                  }}
+                                />
+                                <Select
+                                  value={adminRole}
+                                  options={[
+                                    { value: "user", label: "User" },
+                                    { value: "admin", label: "Admin" },
+                                  ]}
+                                  onChange={(value) => {
+                                    setAdminRole(
+                                      value === "admin" ? "admin" : "user",
+                                    );
+                                  }}
+                                />
+                              </Space>
+
+                              <Typography.Text type="secondary">
+                                Whitelisted users are granted direct access.
+                                Token generation is role-based (admin and
+                                superadmin only).
+                              </Typography.Text>
+
+                              <Typography.Text type="secondary">
+                                Showing {filteredWhitelistUsers.length}{" "}
+                                whitelist user
+                                {filteredWhitelistUsers.length === 1 ? "" : "s"}
+                                .
+                              </Typography.Text>
+
+                              <Space size={8} wrap>
+                                <Button
+                                  type="primary"
+                                  loading={whitelistSaving}
+                                  disabled={!canSubmitWhitelistUpdate}
+                                  onClick={() => {
+                                    void submitWhitelistUpdate();
+                                  }}
+                                >
+                                  {adminPreviousIp ? "Update User" : "Add User"}
+                                </Button>
+                                <Button
+                                  disabled={whitelistLoading}
+                                  onClick={() => {
+                                    void refreshWhitelistUsers();
+                                  }}
+                                >
+                                  Refresh Whitelist
+                                </Button>
+                                <Tooltip
+                                  title="Clears the editor fields and exits edit mode for the selected whitelist record."
+                                  {...dialogTooltipProps}
+                                >
+                                  <Button
+                                    onClick={() => {
+                                      resetWhitelistEditor();
+                                    }}
+                                  >
+                                    Clear Editor
+                                  </Button>
+                                </Tooltip>
+                              </Space>
+
+                              <div
+                                className="fm-w-full"
+                                style={adminTableShellStyle}
+                              >
+                                <table style={adminTableStyle}>
+                                  <thead>
+                                    <tr>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Name
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        IP
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Role
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Updated
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Actions
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {filteredWhitelistUsers.length === 0 ? (
+                                      <tr>
+                                        <td
+                                          colSpan={5}
+                                          style={adminBodyCellStyle}
+                                        >
+                                          <Typography.Text type="secondary">
+                                            No whitelist users found.
+                                          </Typography.Text>
+                                        </td>
+                                      </tr>
+                                    ) : (
+                                      filteredWhitelistUsers.map((item) => (
+                                        <tr key={item.ip}>
+                                          <td style={adminBodyCellStyle}>
+                                            {item.name || "-"}
+                                          </td>
+                                          <td style={adminBodyCellStyle}>
+                                            {item.ip}
+                                          </td>
+                                          <td style={adminBodyCellStyle}>
+                                            {item.role}
+                                          </td>
+                                          <td style={adminBodyCellStyle}>
+                                            {formatTokenDate(item.updatedAtIso)}
+                                          </td>
+                                          <td style={adminBodyCellStyle}>
+                                            <Space size={4}>
+                                              <Button
+                                                size="small"
+                                                onClick={() => {
+                                                  editWhitelistUser(item);
+                                                }}
+                                              >
+                                                Edit
+                                              </Button>
+                                              <Popconfirm
+                                                {...dialogPopconfirmProps}
+                                                title="Delete whitelist user?"
+                                                description={`Remove ${item.ip} from whitelist records.`}
+                                                okText="Delete"
+                                                okButtonProps={{ danger: true }}
+                                                onConfirm={() => {
+                                                  void removeWhitelistUser(
+                                                    item.ip,
+                                                  );
+                                                }}
+                                              >
+                                                <Button
+                                                  danger
+                                                  size="small"
+                                                  loading={
+                                                    deletingWhitelistIp ===
+                                                    item.ip
+                                                  }
+                                                >
+                                                  Delete
+                                                </Button>
+                                              </Popconfirm>
+                                            </Space>
+                                          </td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </Space>
+                          </Form.Item>
+                        )}
+
+                        {canGenerateTokensEffective && (
+                          <Form.Item label="Subscription Tokens">
+                            <Space
+                              direction="vertical"
+                              size={8}
+                              className="fm-w-full"
+                            >
+                              <Typography.Text type="secondary">
+                                Generate plan-bound subscription tokens for
+                                non-whitelisted users.
+                              </Typography.Text>
+                              <Select
+                                value={tokenIssuePlan}
+                                options={[
+                                  { value: "free", label: "Free (7 days)" },
+                                  { value: "pro", label: "Pro (30 days)" },
+                                  { value: "elite", label: "Elite (90 days)" },
+                                ]}
+                                onChange={(value) => {
+                                  setTokenIssuePlan(
+                                    value === "elite"
+                                      ? "elite"
+                                      : value === "pro"
+                                        ? "pro"
+                                        : "free",
+                                  );
+                                }}
+                              />
+                              <Typography.Text type="secondary">
+                                Expires At (auto by plan):{" "}
+                                {renderDateWithRemainingTooltip(
+                                  buildPlanExpiryIso(tokenIssuePlan),
+                                )}
+                              </Typography.Text>
+                              <Button
+                                loading={tokenIssueLoading}
+                                onClick={() => {
+                                  void issueSubscriptionToken();
+                                }}
+                              >
+                                Generate Subscription Token
+                              </Button>
+                              {generatedToken && (
+                                <Input.TextArea
+                                  value={generatedToken}
+                                  readOnly
+                                  autoSize={{ minRows: 2, maxRows: 4 }}
+                                />
+                              )}
+                              {generatedTokenExpiresAtIso && (
+                                <Typography.Text type="secondary">
+                                  Generated token expires:{" "}
+                                  {renderDateWithRemainingTooltip(
+                                    generatedTokenExpiresAtIso,
+                                  )}
+                                </Typography.Text>
+                              )}
+
+                              <Divider style={{ margin: "8px 0" }} />
+
+                              <Button
+                                icon={<ReloadOutlined />}
+                                loading={tokenListLoading}
+                                onClick={() => {
+                                  void refreshIssuedTokens();
+                                }}
+                              >
+                                Refresh Token List
+                              </Button>
+
+                              <Space size={8} wrap className="fm-w-full">
+                                <Select
+                                  value={tokenStatusFilter}
+                                  style={{ minWidth: 140 }}
+                                  options={[
+                                    { value: "all", label: "All Statuses" },
+                                    { value: "active", label: "Active" },
+                                    { value: "expired", label: "Expired" },
+                                  ]}
+                                  onChange={(value) => {
+                                    setTokenStatusFilter(
+                                      value === "active"
+                                        ? "active"
+                                        : value === "expired"
+                                          ? "expired"
+                                          : "all",
+                                    );
+                                  }}
+                                />
+                                <Select
+                                  value={tokenPlanFilter}
+                                  style={{ minWidth: 140 }}
+                                  options={[
+                                    { value: "all", label: "All Plans" },
+                                    { value: "free", label: "Free" },
+                                    { value: "pro", label: "Pro" },
+                                    { value: "elite", label: "Elite" },
+                                  ]}
+                                  onChange={(value) => {
+                                    setTokenPlanFilter(
+                                      value === "free"
+                                        ? "free"
+                                        : value === "pro"
+                                          ? "pro"
+                                          : value === "elite"
+                                            ? "elite"
+                                            : "all",
+                                    );
+                                  }}
+                                />
+                                <Typography.Text type="secondary">
+                                  Showing {filteredIssuedTokens.length} of{" "}
+                                  {issuedTokens.length}
+                                </Typography.Text>
+                              </Space>
+
+                              <div
+                                className="fm-w-full"
+                                style={adminTableShellStyle}
+                              >
+                                <table style={adminTableStyle}>
+                                  <thead>
+                                    <tr>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Token Hash
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Plan
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Status
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Expires
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Created
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Issuer IP
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Actions
+                                      </th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {filteredIssuedTokens.length === 0 ? (
+                                      <tr>
+                                        <td
+                                          colSpan={7}
+                                          style={adminBodyCellStyle}
+                                        >
+                                          <Typography.Text type="secondary">
+                                            No issued tokens match the current
+                                            filters.
+                                          </Typography.Text>
+                                        </td>
+                                      </tr>
+                                    ) : (
+                                      filteredIssuedTokens.map((item) => {
+                                        const effectiveStatus =
+                                          getTokenStatus(item);
+                                        const canRevoke = !item.isExpired;
+
+                                        return (
+                                          <tr key={item.tokenHash}>
+                                            <td style={adminBodyCellStyle}>
+                                              {maskedToken(item.tokenHash)}
+                                            </td>
+                                            <td style={adminBodyCellStyle}>
+                                              {item.plan.toUpperCase()}
+                                            </td>
+                                            <td style={adminBodyCellStyle}>
+                                              {effectiveStatus === "active"
+                                                ? renderStateTag(
+                                                    "active",
+                                                    "success",
+                                                  )
+                                                : renderStateTag(
+                                                    "expired",
+                                                    "warning",
+                                                  )}
+                                            </td>
+                                            <td style={adminBodyCellStyle}>
+                                              {renderDateWithRemainingTooltip(
+                                                item.expiresAt,
+                                              )}
+                                            </td>
+                                            <td style={adminBodyCellStyle}>
+                                              {formatTokenDate(item.createdAt)}
+                                            </td>
+                                            <td style={adminBodyCellStyle}>
+                                              {item.createdByIp ?? "-"}
+                                            </td>
+                                            <td style={adminBodyCellStyle}>
+                                              <Space size={4}>
+                                                <Popconfirm
+                                                  {...dialogPopconfirmProps}
+                                                  title="Revoke token?"
+                                                  description="This will deactivate the token immediately."
+                                                  okText="Revoke"
+                                                  okButtonProps={{
+                                                    danger: true,
+                                                  }}
+                                                  disabled={!canRevoke}
+                                                  onConfirm={() => {
+                                                    void revokeIssuedToken(
+                                                      item.tokenHash,
+                                                    );
+                                                  }}
+                                                >
+                                                  <Button
+                                                    danger
+                                                    size="small"
+                                                    disabled={!canRevoke}
+                                                    loading={
+                                                      revokingTokenHash ===
+                                                      item.tokenHash
+                                                    }
+                                                  >
+                                                    Revoke
+                                                  </Button>
+                                                </Popconfirm>
+                                                <Popconfirm
+                                                  {...dialogPopconfirmProps}
+                                                  title="Delete token record?"
+                                                  description="This permanently removes the token record from the list."
+                                                  okText="Delete"
+                                                  okButtonProps={{
+                                                    danger: true,
+                                                  }}
+                                                  onConfirm={() => {
+                                                    void deleteIssuedToken(
+                                                      item.tokenHash,
+                                                    );
+                                                  }}
+                                                >
+                                                  <Button
+                                                    danger
+                                                    size="small"
+                                                    loading={
+                                                      deletingTokenHash ===
+                                                      item.tokenHash
+                                                    }
+                                                  >
+                                                    Delete
+                                                  </Button>
+                                                </Popconfirm>
+                                              </Space>
+                                            </td>
+                                          </tr>
+                                        );
+                                      })
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            </Space>
+                          </Form.Item>
+                        )}
+                      </Form>
+                      {dialogFooter}
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </Card>
 
         <Modal
-          title="Mapper Shortcuts & Features"
+          title="Flyff Utility User Manual"
           open={isHelpDialogOpen}
           onCancel={() => setIsHelpDialogOpen(false)}
-          wrapClassName="fm-ltr-modal fm-shortcuts-features-modal"
+          wrapClassName="fm-ltr-modal fm-shortcuts-features-modal fm-user-manual-modal"
           footer={[
             <Button key="close" onClick={() => setIsHelpDialogOpen(false)}>
               Close
             </Button>,
           ]}
-          width={680}
+          width={760}
           zIndex={2147483647}
         >
-          <div style={{ maxHeight: 420, overflow: "auto", paddingRight: 4 }}>
-            {helpDialogContent}
-          </div>
+          <div className="fm-user-manual-scroll">{helpDialogContent}</div>
         </Modal>
 
         <div
@@ -2730,7 +4411,7 @@ export const MapperDialog = ({
             position: "absolute",
             inset: 0,
             pointerEvents: "none",
-            zIndex: 2147483647,
+            zIndex: 2147483645,
           }}
         >
           <div

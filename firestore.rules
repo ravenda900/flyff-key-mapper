@@ -1,0 +1,23 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Spark-friendly profile for client-side access checks and token workflows.
+    // This is operationally convenient but weaker from a security perspective.
+
+    match /whitelist/{ip} {
+      allow read, write: if true;
+    }
+
+    match /subscriptions/{ip} {
+      allow read, write: if true;
+    }
+
+    match /subscriptionTokens/{tokenHash} {
+      allow read, write: if true;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

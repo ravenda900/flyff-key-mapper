@@ -1,6 +1,15 @@
-﻿import { App, Card, ConfigProvider, Modal, message, theme } from "antd";
+﻿import {
+  App,
+  Card,
+  ConfigProvider,
+  Modal,
+  Typography,
+  message,
+  theme,
+} from "antd";
 import "antd/dist/reset.css";
 import {
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type SetStateAction,
   useCallback,
@@ -35,6 +44,7 @@ import {
   makeUniqueProfileName,
   normalizeShape,
 } from "./key-mapping/constants";
+import { getResolvedThemePreset, isThemeMode } from "./themePresets";
 import {
   isMouseWheelShortcutToken,
   shouldHandleGlobalDialogShortcut,
@@ -52,14 +62,30 @@ import {
   type GlobalShortcutField,
 } from "./key-mapping/shortcutBinding";
 import { ImportMappingsModal } from "./key-mapping/modals/ImportMappingsModal";
-import { ProfileNameModal } from "./key-mapping/modals/ProfileNameModal";
 import { DEFAULT_SETTINGS, storage } from "./storage";
+import {
+  deleteSubscriptionToken,
+  deleteWhitelistUser,
+  generateSubscriptionToken,
+  listSubscriptionTokens,
+  listWhitelistUsers,
+  revokeSubscriptionToken,
+  resolveAccessControlState,
+  upsertWhitelistUser,
+  updateUserRole,
+  updateWhitelistAndSubscription,
+  type AccessRole,
+  type AccessControlState,
+  type SubscriptionPlan,
+  type WhitelistUserRecord,
+} from "./accessControl";
 import "./styles.css";
 import type {
   CharacterTabInfo,
   DialogRect,
   KeyTriggerAction,
   KeyTriggerProfile,
+  KeyTriggerPreset,
   MappingProfile,
   MapperSettings,
   NormalizedRect,
@@ -78,7 +104,29 @@ const DEFAULT_DIALOG_RECT: DialogRect = {
 };
 
 const MAX_SHAPE_HISTORY_ENTRIES = 200;
-const RUN_STATE_STORAGE_KEY = "flyff-mapper-run-state-v1";
+
+const DEFAULT_ACCESS_CONTROL_STATE: AccessControlState = {
+  loading: true,
+  ipAddress: null,
+  whitelisted: false,
+  hasToolAccess: false,
+  accessSource: "none",
+  plan: "free",
+  role: "user",
+  canManageAccess: false,
+  canManageAdmins: false,
+  canGenerateTokens: false,
+  tokenExpiresAtIso: null,
+  features: {
+    keyTrigger: false,
+    autoHoly: false,
+    autoPills: false,
+    autoAwaken: false,
+    syncMouse: false,
+    experimentalFeatures: false,
+  },
+  reason: null,
+};
 
 type SharedRunState = {
   editMode?: unknown;
@@ -88,21 +136,7 @@ type SharedRunState = {
 };
 
 const loadSharedRunState = (): SharedRunState | null => {
-  try {
-    const raw = localStorage.getItem(RUN_STATE_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
-    const parsed = JSON.parse(raw) as SharedRunState;
-    if (typeof parsed !== "object" || parsed === null) {
-      return null;
-    }
-
-    return parsed;
-  } catch {
-    return null;
-  }
+  return storage.loadSharedRunState();
 };
 
 const AUTO_IMAGE_SCALE_WIDTH = 800;
@@ -123,6 +157,92 @@ const MAPPER_CHARACTER_PROFILE_MAPPING_STORAGE_KEY =
   "flyff-mapper-character-profiles-v1";
 const RECAPTCHA_SHARED_SIGNAL_KEY = "flyff-mapper-recaptcha-shared-v1";
 const RECAPTCHA_DEBUG_LOG = true;
+const KEY_TRIGGER_SESSION_SELECTED_TAB_IDS_KEY =
+  "flyff-mapper-key-trigger-selected-tabs-session-v1";
+const KEY_TRIGGER_SESSION_SELECTED_TAB_NAMES_KEY =
+  "flyff-mapper-key-trigger-selected-tab-names-session-v1";
+
+const loadSessionSelectedKeyTriggerTabIds = (): number[] => {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(
+      KEY_TRIGGER_SESSION_SELECTED_TAB_IDS_KEY,
+    );
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter((id): id is number => Number.isFinite(id));
+  } catch {
+    return [];
+  }
+};
+
+const saveSessionSelectedKeyTriggerTabIds = (ids: number[]): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(
+      KEY_TRIGGER_SESSION_SELECTED_TAB_IDS_KEY,
+      JSON.stringify(ids.filter((id) => Number.isFinite(id))),
+    );
+  } catch {
+    // Ignore session storage write failures.
+  }
+};
+
+const loadSessionSelectedKeyTriggerTabNames = (): string[] => {
+  if (typeof window === "undefined") {
+    return [];
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(
+      KEY_TRIGGER_SESSION_SELECTED_TAB_NAMES_KEY,
+    );
+    if (!raw) {
+      return [];
+    }
+
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.filter(
+      (name): name is string => typeof name === "string" && name.length > 0,
+    );
+  } catch {
+    return [];
+  }
+};
+
+const saveSessionSelectedKeyTriggerTabNames = (names: string[]): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(
+      KEY_TRIGGER_SESSION_SELECTED_TAB_NAMES_KEY,
+      JSON.stringify(
+        names.filter((name) => typeof name === "string" && name.length > 0),
+      ),
+    );
+  } catch {
+    // Ignore session storage write failures.
+  }
+};
 
 const isExtensionContextInvalidatedError = (error: unknown): boolean => {
   const message = error instanceof Error ? error.message : String(error ?? "");
@@ -158,16 +278,11 @@ const safeSendRuntimeMessageWithCallback = <TResponse = unknown,>(
 
   try {
     chrome.runtime.sendMessage(message, (response) => {
-      try {
-        const runtimeErrorMessage = chrome.runtime?.lastError?.message;
-        if (
-          runtimeErrorMessage &&
-          isExtensionContextInvalidatedError(new Error(runtimeErrorMessage))
-        ) {
-          callback(undefined);
-          return;
-        }
-      } catch {
+      const runtimeErrorMessage = chrome.runtime?.lastError?.message;
+      if (
+        runtimeErrorMessage &&
+        isExtensionContextInvalidatedError(new Error(runtimeErrorMessage))
+      ) {
         callback(undefined);
         return;
       }
@@ -277,62 +392,12 @@ type SharedRecaptchaSignal = {
   notifiedBy: string;
 };
 
-const getDefaultSharedAutoStopState = (): SharedAutoStopState => ({
-  lastActivityAt: 0,
-  stopSignalId: "",
-  stopSignalAt: 0,
-  stopSignalBy: "",
-  notifiedSignalId: "",
-  notifiedAt: 0,
-  notifiedBy: "",
-});
-
 const readSharedAutoStopState = (): SharedAutoStopState => {
-  try {
-    const raw = localStorage.getItem(AUTO_STOP_SHARED_STATE_KEY);
-    if (!raw) {
-      return getDefaultSharedAutoStopState();
-    }
-
-    const parsed = JSON.parse(raw) as Partial<SharedAutoStopState>;
-    return {
-      lastActivityAt:
-        typeof parsed.lastActivityAt === "number" &&
-        Number.isFinite(parsed.lastActivityAt)
-          ? parsed.lastActivityAt
-          : 0,
-      stopSignalId:
-        typeof parsed.stopSignalId === "string" ? parsed.stopSignalId : "",
-      stopSignalAt:
-        typeof parsed.stopSignalAt === "number" &&
-        Number.isFinite(parsed.stopSignalAt)
-          ? parsed.stopSignalAt
-          : 0,
-      stopSignalBy:
-        typeof parsed.stopSignalBy === "string" ? parsed.stopSignalBy : "",
-      notifiedSignalId:
-        typeof parsed.notifiedSignalId === "string"
-          ? parsed.notifiedSignalId
-          : "",
-      notifiedAt:
-        typeof parsed.notifiedAt === "number" &&
-        Number.isFinite(parsed.notifiedAt)
-          ? parsed.notifiedAt
-          : 0,
-      notifiedBy:
-        typeof parsed.notifiedBy === "string" ? parsed.notifiedBy : "",
-    };
-  } catch {
-    return getDefaultSharedAutoStopState();
-  }
+  return storage.loadSharedAutoStopState();
 };
 
 const writeSharedAutoStopState = (state: SharedAutoStopState) => {
-  try {
-    localStorage.setItem(AUTO_STOP_SHARED_STATE_KEY, JSON.stringify(state));
-  } catch {
-    return;
-  }
+  storage.saveSharedAutoStopState(state);
 };
 
 const getDefaultSharedRecaptchaSignal = (): SharedRecaptchaSignal => ({
@@ -346,46 +411,11 @@ const getDefaultSharedRecaptchaSignal = (): SharedRecaptchaSignal => ({
 });
 
 const readSharedRecaptchaSignal = (): SharedRecaptchaSignal => {
-  try {
-    const raw = localStorage.getItem(RECAPTCHA_SHARED_SIGNAL_KEY);
-    if (!raw) {
-      return getDefaultSharedRecaptchaSignal();
-    }
-
-    const parsed = JSON.parse(raw) as Partial<SharedRecaptchaSignal>;
-    return {
-      signalId: typeof parsed.signalId === "string" ? parsed.signalId : "",
-      detectedAt:
-        typeof parsed.detectedAt === "number" &&
-        Number.isFinite(parsed.detectedAt)
-          ? parsed.detectedAt
-          : 0,
-      detectedBy:
-        typeof parsed.detectedBy === "string" ? parsed.detectedBy : "",
-      stopRequested: Boolean(parsed.stopRequested),
-      notifiedSignalId:
-        typeof parsed.notifiedSignalId === "string"
-          ? parsed.notifiedSignalId
-          : "",
-      notifiedAt:
-        typeof parsed.notifiedAt === "number" &&
-        Number.isFinite(parsed.notifiedAt)
-          ? parsed.notifiedAt
-          : 0,
-      notifiedBy:
-        typeof parsed.notifiedBy === "string" ? parsed.notifiedBy : "",
-    };
-  } catch {
-    return getDefaultSharedRecaptchaSignal();
-  }
+  return storage.loadSharedRecaptchaSignal();
 };
 
 const writeSharedRecaptchaSignal = (signal: SharedRecaptchaSignal) => {
-  try {
-    localStorage.setItem(RECAPTCHA_SHARED_SIGNAL_KEY, JSON.stringify(signal));
-  } catch {
-    return;
-  }
+  storage.saveSharedRecaptchaSignal(signal);
 };
 
 const cloneDefaultSettings = (): MapperSettings => ({
@@ -1455,6 +1485,11 @@ const normalizeShortcutBinding = (rawBinding: string): string => {
         return;
       }
 
+      if (token === "escape") {
+        keys.push("esc");
+        return;
+      }
+
       keys.push(token);
     });
 
@@ -1467,6 +1502,34 @@ const normalizeShortcutBinding = (rawBinding: string): string => {
 
 const getOriginalKeyTriggerProfileId = (profileId: string): string => {
   return profileId.split("::")[0];
+};
+
+const areStringRecordsEqual = (
+  left: Record<string, string>,
+  right: Record<string, string>,
+): boolean => {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+
+  return leftKeys.every((key) => right[key] === left[key]);
+};
+
+const areNumberArraysEqual = (left: number[], right: number[]): boolean => {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
 };
 
 const normalizeKeyTriggerRunCount = (value: unknown, fallback = 1): number => {
@@ -1573,30 +1636,15 @@ function MapperApp() {
   const [modal, modalContextHolder] = Modal.useModal();
   const initialProfilesState = useMemo(() => storage.loadProfiles(), []);
   const initialUiState = useMemo(() => storage.loadUiState(), []);
-  const mergeWithPersistedMobilePushSettings = useCallback(
-    (base: MapperSettings): MapperSettings => {
-      const persisted = storage.loadSettings();
-      return {
-        ...base,
-        mobilePushEnabled: persisted.mobilePushEnabled,
-        mobilePushDiscordBotUrl: persisted.mobilePushDiscordBotUrl,
-        mobilePushDiscordUserId: persisted.mobilePushDiscordUserId,
-        mobilePushDiscordApiKey: persisted.mobilePushDiscordApiKey,
-      };
-    },
-    [],
+  const [settings, setSettings] = useState<MapperSettings>(() =>
+    storage.loadSettings(),
   );
-  const [settings, setSettings] = useState<MapperSettings>(() => {
-    const activeProfile = initialProfilesState.profiles.find(
-      (profile) => profile.id === initialProfilesState.activeProfileId,
-    );
-
-    return mergeWithPersistedMobilePushSettings(
-      activeProfile?.settings ??
-        initialProfilesState.profiles[0]?.settings ??
-        storage.loadSettings(),
-    );
-  });
+  const [accessControl, setAccessControl] = useState<AccessControlState>(
+    DEFAULT_ACCESS_CONTROL_STATE,
+  );
+  const [accessLastCheckedAtIso, setAccessLastCheckedAtIso] = useState<
+    string | null
+  >(null);
   const [profiles, setProfiles] = useState<MappingProfile[]>(
     initialProfilesState.profiles,
   );
@@ -1618,12 +1666,6 @@ function MapperApp() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [dialogVisible, setDialogVisible] = useState(false);
-  const [draftShape, setDraftShape] = useState<ShapeMapping>(() =>
-    normalizeShape({
-      ...createShape("rectangle"),
-      opacity: shapes[0]?.opacity ?? 1,
-    }),
-  );
 
   useEffect(() => {
     let isMounted = true;
@@ -1644,15 +1686,9 @@ function MapperApp() {
       isMounted = false;
     };
   }, []);
+
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
-  const [pendingImportText, setPendingImportText] = useState("");
-  const [profileNameDialogOpen, setProfileNameDialogOpen] = useState(false);
-  const [profileNameDialogMode, setProfileNameDialogMode] = useState<
-    "create" | "rename" | "import"
-  >("rename");
-  const [profileNameInput, setProfileNameInput] = useState("");
-  const [profileNameError, setProfileNameError] = useState("");
   const [activeProfileName, setActiveProfileName] = useState(() => {
     const activeProfile = initialProfilesState.profiles.find(
       (profile) => profile.id === initialProfilesState.activeProfileId,
@@ -1684,15 +1720,43 @@ function MapperApp() {
   const [globalShortcutErrors, setGlobalShortcutErrors] = useState<
     Partial<Record<GlobalShortcutField, string>>
   >({});
+  const initialKeyTriggerState = useMemo(
+    () => storage.loadKeyTriggerState(),
+    [],
+  );
+  const [keyTriggerPresets, setKeyTriggerPresets] = useState<
+    KeyTriggerPreset[]
+  >(initialKeyTriggerState.presets);
+  const [selectedKeyTriggerPresetId, setSelectedKeyTriggerPresetId] =
+    useState<string>(initialKeyTriggerState.selectedPresetId);
+  const [
+    keyTriggerCharacterPresetMapping,
+    setKeyTriggerCharacterPresetMapping,
+  ] = useState<Record<string, string>>(
+    () => initialKeyTriggerState.characterPresetMapping,
+  );
   const [keyTriggerProfiles, setKeyTriggerProfiles] = useState<
     KeyTriggerProfile[]
-  >(() => storage.loadKeyTriggerState().profiles);
+  >(() => {
+    const activePreset =
+      initialKeyTriggerState.presets.find(
+        (preset) => preset.id === initialKeyTriggerState.selectedPresetId,
+      ) ?? initialKeyTriggerState.presets[0];
+    return activePreset?.profiles ?? [];
+  });
+
   const [keyTriggerCharacters, setKeyTriggerCharacters] = useState<
     CharacterTabInfo[]
   >([]);
   const [selectedKeyTriggerTabIds, setSelectedKeyTriggerTabIds] = useState<
     number[]
-  >(() => storage.loadKeyTriggerTargetTabIds());
+  >(() => {
+    const sessionIds = loadSessionSelectedKeyTriggerTabIds();
+    const persistedIds = storage.loadKeyTriggerTargetTabIds();
+    return Array.from(new Set([...sessionIds, ...persistedIds])).filter((id) =>
+      Number.isFinite(id),
+    );
+  });
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
   const [currentCharacterName, setCurrentCharacterName] = useState<
     string | null
@@ -1711,6 +1775,7 @@ function MapperApp() {
     useState<AutomationRegionCaptureTarget | null>(null);
   const [automationRegionCaptureRect, setAutomationRegionCaptureRect] =
     useState<ViewportRect | null>(null);
+  const [systemThemeRefreshVersion, setSystemThemeRefreshVersion] = useState(0);
 
   const rotateIdRef = useRef<string | null>(null);
   const previousBodyCursorRef = useRef<string | null>(null);
@@ -1720,9 +1785,21 @@ function MapperApp() {
   const latestProfilesRef = useRef<MappingProfile[]>(profiles);
   const previousActiveProfileIdRef = useRef(activeProfileId);
   const skipNextProfilesSaveRef = useRef(false);
+  const suppressNextSettingsSaveRef = useRef(false);
+  const suppressNextUiStateSaveRef = useRef(false);
+  const suppressNextSharedRunStateSaveRef = useRef(false);
+  const suppressNextKeyTriggerStateSaveRef = useRef(false);
+  const suppressNextKeyTriggerTargetTabsSaveRef = useRef(false);
+  const suppressNextKeyTriggerCharacterProfileMappingSaveRef = useRef(false);
+  const suppressNextMapperCharacterProfileMappingSaveRef = useRef(false);
   const isSwitchingProfileRef = useRef(false);
   const isApplyingMappedProfileRef = useRef(false);
   const skipMappedAutoApplyOnceRef = useRef(false);
+  const isPrimarySyncSourceRef = useRef(
+    typeof document === "undefined"
+      ? true
+      : document.visibilityState === "visible" && document.hasFocus(),
+  );
   const previousShapeIdsRef = useRef<Set<string>>(new Set());
   const shapeBindingHistoryRef = useRef<
     Array<{ token: string; timestamp: number }>
@@ -1739,6 +1816,219 @@ function MapperApp() {
   const localMouseDownRef = useRef(false);
   const lastMouseMoveSyncTimeRef = useRef(0);
   const isDispatchingKeyTriggerRef = useRef(false);
+  const latestAccessControlRef = useRef<AccessControlState>(accessControl);
+
+  const canUseTool = accessControl.hasToolAccess;
+  const canUseKeyTrigger = canUseTool && accessControl.features.keyTrigger;
+  const canUseAutoHoly = canUseTool && accessControl.features.autoHoly;
+  const canUseAutoPills = canUseTool && accessControl.features.autoPills;
+  const canUseAutoAwaken = canUseTool && accessControl.features.autoAwaken;
+  const canUseSyncMouseEvents = canUseTool && accessControl.features.syncMouse;
+
+  const refreshAccessControl = useCallback(
+    async (subscriptionToken?: string) => {
+      const nextState = await resolveAccessControlState({
+        subscriptionToken:
+          typeof subscriptionToken === "string"
+            ? subscriptionToken
+            : latestSettingsRef.current.subscriptionAccessToken,
+      });
+      setAccessControl(nextState);
+      setAccessLastCheckedAtIso(new Date().toISOString());
+      return nextState;
+    },
+    [],
+  );
+
+  const handleAdminUpsertAccess = useCallback(
+    async (payload: {
+      targetIp: string;
+      whitelisted: boolean;
+      plan: "free" | "pro" | "elite";
+      expiresAtIso?: string | null;
+    }) => {
+      await updateWhitelistAndSubscription(accessControl, payload);
+      await refreshAccessControl();
+    },
+    [accessControl, refreshAccessControl],
+  );
+
+  const handleSuperAdminSetRole = useCallback(
+    async (payload: { targetIp: string; role: AccessRole }) => {
+      await updateUserRole(accessControl, payload);
+      await refreshAccessControl();
+    },
+    [accessControl, refreshAccessControl],
+  );
+
+  const handleListWhitelistUsers = useCallback(async () => {
+    return listWhitelistUsers(accessControl);
+  }, [accessControl]);
+
+  const handleUpsertWhitelistUser = useCallback(
+    async (payload: {
+      targetIp: string;
+      previousIp?: string | null;
+      name?: string | null;
+      role: AccessRole;
+    }) => {
+      await upsertWhitelistUser(accessControl, payload);
+      await refreshAccessControl();
+    },
+    [accessControl, refreshAccessControl],
+  );
+
+  const handleDeleteWhitelistUser = useCallback(
+    async (targetIp: string) => {
+      await deleteWhitelistUser(accessControl, targetIp);
+      await refreshAccessControl();
+    },
+    [accessControl, refreshAccessControl],
+  );
+
+  const handleGenerateSubscriptionToken = useCallback(
+    async (payload: { plan: SubscriptionPlan }) => {
+      return generateSubscriptionToken(accessControl, payload);
+    },
+    [accessControl],
+  );
+
+  const handleListSubscriptionTokens = useCallback(async () => {
+    return listSubscriptionTokens(accessControl);
+  }, [accessControl]);
+
+  const handleRevokeSubscriptionToken = useCallback(
+    async (tokenHash: string) => {
+      await revokeSubscriptionToken(accessControl, tokenHash);
+    },
+    [accessControl],
+  );
+
+  const handleDeleteSubscriptionToken = useCallback(
+    async (tokenHash: string) => {
+      await deleteSubscriptionToken(accessControl, tokenHash);
+    },
+    [accessControl],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void refreshAccessControl().then((nextState) => {
+      if (cancelled) {
+        return;
+      }
+
+      setAccessControl(nextState);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshAccessControl]);
+
+  // Periodically recheck access control to detect token expiry and whitelist changes.
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      void refreshAccessControl();
+    }, 30_000);
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === "visible") {
+        void refreshAccessControl();
+      }
+    };
+
+    window.addEventListener("focus", handleVisibilityOrFocus);
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+    };
+  }, [refreshAccessControl]);
+
+  useEffect(() => {
+    if (accessControl.loading || accessControl.hasToolAccess) {
+      return;
+    }
+
+    setOverlayVisible((prev) => (dialogVisible ? prev : false));
+    setAutomationRegionCaptureTarget(null);
+    setAutomationRegionCaptureRect(null);
+  }, [accessControl, dialogVisible]);
+
+  useEffect(() => {
+    if (
+      accessControl.loading ||
+      !accessControl.hasToolAccess ||
+      !dialogVisible
+    ) {
+      return;
+    }
+
+    setOverlayVisible(true);
+  }, [accessControl.hasToolAccess, accessControl.loading, dialogVisible]);
+
+  useEffect(() => {
+    if (!canUseKeyTrigger && activeUtilityTab === "key-trigger") {
+      setActiveUtilityTab("key-mapper");
+      return;
+    }
+
+    if (!canUseAutoAwaken && activeUtilityTab === "auto-awaken") {
+      setActiveUtilityTab("key-mapper");
+    }
+  }, [activeUtilityTab, canUseAutoAwaken, canUseKeyTrigger]);
+
+  useEffect(() => {
+    setSettings((prev) => {
+      let next = prev;
+
+      if (!canUseSyncMouseEvents && next.syncMouseEvents) {
+        next = {
+          ...next,
+          syncMouseEvents: false,
+        };
+      }
+
+      if (!canUseAutoAwaken && next.experimentalFeaturesEnabled) {
+        next = {
+          ...next,
+          experimentalFeaturesEnabled: false,
+        };
+      }
+
+      if (!canUseAutoHoly && next.autoHoly.enabled) {
+        next = {
+          ...next,
+          autoHoly: {
+            ...next.autoHoly,
+            enabled: false,
+          },
+        };
+      }
+
+      if (!canUseAutoPills && next.autoPills.enabled) {
+        next = {
+          ...next,
+          autoPills: {
+            ...next.autoPills,
+            enabled: false,
+          },
+        };
+      }
+
+      return next;
+    });
+  }, [
+    canUseAutoAwaken,
+    canUseAutoHoly,
+    canUseAutoPills,
+    canUseSyncMouseEvents,
+  ]);
+
   const isApplyingRemoteKeyboardSyncRef = useRef(false);
   const previousEditModeRef = useRef(settings.editMode);
   const autoHolyLastTriggerRef = useRef(0);
@@ -1859,16 +2149,34 @@ function MapperApp() {
     [updateShapes],
   );
 
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") {
+      isPrimarySyncSourceRef.current = true;
+      return;
+    }
+
+    const updateSyncSourceState = () => {
+      isPrimarySyncSourceRef.current =
+        document.visibilityState === "visible" && document.hasFocus();
+    };
+
+    updateSyncSourceState();
+    document.addEventListener("visibilitychange", updateSyncSourceState);
+    window.addEventListener("focus", updateSyncSourceState);
+    window.addEventListener("blur", updateSyncSourceState);
+
+    return () => {
+      document.removeEventListener("visibilitychange", updateSyncSourceState);
+      window.removeEventListener("focus", updateSyncSourceState);
+      window.removeEventListener("blur", updateSyncSourceState);
+    };
+  }, []);
+
   const setShapesWithoutHistory = useCallback(
     (updater: SetStateAction<ShapeMapping[]>) => {
       updateShapes(updater, { recordHistory: false, clearRedo: false });
     },
     [updateShapes],
-  );
-
-  const activeProfile = useMemo(
-    () => profiles.find((profile) => profile.id === activeProfileId) ?? null,
-    [activeProfileId, profiles],
   );
 
   const selectedShape = useMemo(
@@ -1895,10 +2203,106 @@ function MapperApp() {
     [profiles, selectedProfileId],
   );
 
-  const appliedTheme = useMemo(() => {
-    if (settings.theme === "system") return getSystemDark() ? "dark" : "light";
-    return settings.theme;
-  }, [settings.theme]);
+  const selectedKeyTriggerPreset = useMemo(
+    () =>
+      keyTriggerPresets.find(
+        (preset) => preset.id === selectedKeyTriggerPresetId,
+      ) ??
+      keyTriggerPresets[0] ??
+      null,
+    [keyTriggerPresets, selectedKeyTriggerPresetId],
+  );
+
+  useEffect(() => {
+    if (!selectedKeyTriggerPreset) {
+      return;
+    }
+
+    setKeyTriggerProfiles((prev) => {
+      const nextProfiles = selectedKeyTriggerPreset.profiles;
+      if (JSON.stringify(prev) === JSON.stringify(nextProfiles)) {
+        return prev;
+      }
+      return nextProfiles;
+    });
+  }, [selectedKeyTriggerPreset]);
+
+  useEffect(() => {
+    if (
+      keyTriggerPresets.length > 0 &&
+      !keyTriggerPresets.some(
+        (preset) => preset.id === selectedKeyTriggerPresetId,
+      )
+    ) {
+      setSelectedKeyTriggerPresetId(keyTriggerPresets[0].id);
+    }
+  }, [keyTriggerPresets, selectedKeyTriggerPresetId]);
+
+  const resolvedTheme = useMemo(
+    () => getResolvedThemePreset(settings.theme, getSystemDark()),
+    [settings.theme, systemThemeRefreshVersion],
+  );
+  const isDarkTheme = resolvedTheme.appearance === "dark";
+
+  // Keep all --fm-theme-* CSS custom properties up to date on the mapper root
+  // and document-level containers so portaled popups/modals also inherit them.
+  useEffect(() => {
+    const root = document.getElementById(ROOT_ID);
+    const targets: HTMLElement[] = [document.body, document.documentElement];
+    if (root) {
+      targets.push(root);
+    }
+    const t = resolvedTheme.token;
+    const bgBase = t.colorBgBase ?? "#f5f5f5";
+    const bgContainer = t.colorBgContainer ?? bgBase;
+    const bgElevated = t.colorBgElevated ?? bgContainer;
+    const bgLayout = t.colorBgLayout ?? bgBase;
+    const text = t.colorText ?? t.colorTextBase ?? "rgba(0, 0, 0, 0.88)";
+    const textSecondary =
+      t.colorTextSecondary ?? t.colorTextDescription ?? "rgba(0, 0, 0, 0.62)";
+    const border = t.colorBorder ?? "#d9d9d9";
+    const borderSecondary = t.colorBorderSecondary ?? border;
+    const fill = t.colorFillSecondary ?? "rgba(0, 0, 0, 0.06)";
+    const fillStrong = t.colorFillTertiary ?? fill;
+    const fillSoft = t.colorFillQuaternary ?? fill;
+    const primary = t.colorPrimary ?? "#1677ff";
+    const primaryBg = t.colorPrimaryBg ?? "#e6f4ff";
+    const success = t.colorSuccess ?? "#52c41a";
+    const successBg = t.colorSuccessBg ?? "#f6ffed";
+    const warning = t.colorWarning ?? "#faad14";
+    const warningBg = t.colorWarningBg ?? "#fffbe6";
+    const error = t.colorError ?? "#ff4d4f";
+    const errorBg = t.colorErrorBg ?? "#fff2f0";
+    const infoBg = t.colorInfoBg ?? primaryBg;
+
+    const vars: Array<[string, string]> = [
+      ["--fm-theme-bg-base", bgBase],
+      ["--fm-theme-bg-container", bgContainer],
+      ["--fm-theme-bg-elevated", bgElevated],
+      ["--fm-theme-bg-layout", bgLayout],
+      ["--fm-theme-text", text],
+      ["--fm-theme-text-secondary", textSecondary],
+      ["--fm-theme-border", border],
+      ["--fm-theme-border-secondary", borderSecondary],
+      ["--fm-theme-fill", fill],
+      ["--fm-theme-fill-strong", fillStrong],
+      ["--fm-theme-fill-soft", fillSoft],
+      ["--fm-theme-primary", primary],
+      ["--fm-theme-primary-bg", primaryBg],
+      ["--fm-theme-success", success],
+      ["--fm-theme-success-bg", successBg],
+      ["--fm-theme-warning", warning],
+      ["--fm-theme-warning-bg", warningBg],
+      ["--fm-theme-error", error],
+      ["--fm-theme-error-bg", errorBg],
+      ["--fm-theme-info-bg", infoBg],
+    ];
+    vars.forEach(([name, value]) => {
+      targets.forEach((target) => {
+        target.style.setProperty(name, value);
+      });
+    });
+  }, [resolvedTheme]);
 
   const importAnalysis = useMemo(() => {
     const raw = importText.trim();
@@ -1922,9 +2326,16 @@ function MapperApp() {
         profiles?: Array<{
           name?: string;
           shapes?: ShapeMapping[];
-          settings?: Partial<MapperSettings>;
         }>;
         keyTriggerProfiles?: KeyTriggerProfile[];
+        keyTriggerPresets?: Array<{
+          id?: string;
+          name?: string;
+          switchShortcut?: string;
+          profiles?: KeyTriggerProfile[];
+        }>;
+        selectedKeyTriggerPresetId?: string;
+        keyTriggerCharacterPresetMapping?: Record<string, string>;
         settings?: Partial<MapperSettings>;
         uiState?: {
           selectedPaletteShape?: ShapeType;
@@ -1938,7 +2349,7 @@ function MapperApp() {
       };
 
       const buildMapperSignature = (
-        candidate: Pick<MappingProfile, "shapes" | "settings">,
+        candidate: Pick<MappingProfile, "shapes">,
       ): string => {
         const normalizedShapes = candidate.shapes.map((shape) => ({
           type: shape.type,
@@ -1947,16 +2358,12 @@ function MapperApp() {
           width: shape.width,
           height: shape.height,
           rotation: shape.rotation,
-          opacity: shape.opacity,
           keyBinding: shape.keyBinding.trim(),
           delayMs: Math.max(0, Math.round(shape.delayMs || 0)),
           triggerType: shape.triggerType,
         }));
 
-        return JSON.stringify({
-          shapes: normalizedShapes,
-          settings: candidate.settings,
-        });
+        return JSON.stringify({ shapes: normalizedShapes });
       };
 
       const buildKeyTriggerSignature = (
@@ -1966,8 +2373,10 @@ function MapperApp() {
           | "triggerType"
           | "repeatCount"
           | "triggerKey"
+          | "executionScope"
           | "currentTabOnly"
           | "otherTabsOnly"
+          | "specificTargetTabIds"
           | "delayMode"
           | "actions"
         >,
@@ -1986,8 +2395,25 @@ function MapperApp() {
                   2,
                 )
               : 1,
+          executionScope:
+            action.executionScope === "current" ||
+            action.executionScope === "other" ||
+            action.executionScope === "specific"
+              ? action.executionScope
+              : action.otherTabsOnly === true
+                ? "other"
+                : action.currentTabOnly === true
+                  ? "current"
+                  : "all",
           currentTabOnly: action.currentTabOnly === true,
           otherTabsOnly: action.otherTabsOnly === true,
+          specificTargetTabIds: Array.from(
+            new Set(
+              (action.specificTargetTabIds ?? []).filter((id) =>
+                Number.isFinite(id),
+              ),
+            ),
+          ),
         }));
 
         return JSON.stringify({
@@ -1998,8 +2424,25 @@ function MapperApp() {
               ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
               : 1,
           triggerKey: profile.triggerKey.trim(),
+          executionScope:
+            profile.executionScope === "current" ||
+            profile.executionScope === "other" ||
+            profile.executionScope === "specific"
+              ? profile.executionScope
+              : profile.otherTabsOnly === true
+                ? "other"
+                : profile.currentTabOnly === true
+                  ? "current"
+                  : "all",
           currentTabOnly: profile.currentTabOnly === true,
           otherTabsOnly: profile.otherTabsOnly === true,
+          specificTargetTabIds: Array.from(
+            new Set(
+              (profile.specificTargetTabIds ?? []).filter((id) =>
+                Number.isFinite(id),
+              ),
+            ),
+          ),
           delayMode: profile.delayMode,
           actions: normalizedActions,
         });
@@ -2068,7 +2511,6 @@ function MapperApp() {
         profiles.map((profile) =>
           buildMapperSignature({
             shapes: profile.shapes,
-            settings: profile.settings,
           }),
         ),
       );
@@ -2082,10 +2524,6 @@ function MapperApp() {
 
           const signature = buildMapperSignature({
             shapes: profile.shapes.map(normalizeShape),
-            settings:
-              (profile.settings as MapperSettings | undefined) ??
-              (parsed.settings as MapperSettings | undefined) ??
-              settings,
           });
 
           if (mapperSignatures.has(signature)) {
@@ -2100,7 +2538,6 @@ function MapperApp() {
       if (Array.isArray(parsed.shapes)) {
         const signature = buildMapperSignature({
           shapes: parsed.shapes.map(normalizeShape),
-          settings: (parsed.settings as MapperSettings | undefined) ?? settings,
         });
 
         if (mapperSignatures.has(signature)) {
@@ -2116,8 +2553,10 @@ function MapperApp() {
             enabled: profile.enabled,
             triggerType: profile.triggerType,
             triggerKey: profile.triggerKey,
+            executionScope: profile.executionScope,
             currentTabOnly: profile.currentTabOnly,
             otherTabsOnly: profile.otherTabsOnly,
+            specificTargetTabIds: profile.specificTargetTabIds,
             delayMode: profile.delayMode,
             actions: profile.actions,
           }),
@@ -2158,8 +2597,23 @@ function MapperApp() {
             repeatCount: normalizeKeyTriggerRunCount(profile.repeatCount, 2),
             triggerKey:
               typeof profile.triggerKey === "string" ? profile.triggerKey : "",
+            executionScope:
+              profile.executionScope === "current" ||
+              profile.executionScope === "other" ||
+              profile.executionScope === "specific"
+                ? profile.executionScope
+                : profile.otherTabsOnly === true
+                  ? "other"
+                  : profile.currentTabOnly === true
+                    ? "current"
+                    : "all",
             currentTabOnly: profile.currentTabOnly,
             otherTabsOnly: profile.otherTabsOnly,
+            specificTargetTabIds: Array.isArray(profile.specificTargetTabIds)
+              ? profile.specificTargetTabIds
+              : Number.isFinite(profile.specificTargetTabId)
+                ? [profile.specificTargetTabId as number]
+                : [],
             delayMode:
               profile.delayMode === "synchronous"
                 ? "synchronous"
@@ -2249,12 +2703,9 @@ function MapperApp() {
 
         const nextName = activeProfileName.trim() || profile.name;
         const sameName = profile.name === nextName;
-        const sameShapes =
-          JSON.stringify(profile.shapes) === JSON.stringify(shapes);
-        const sameSettings =
-          JSON.stringify(profile.settings) === JSON.stringify(settings);
+        const sameShapes = profile.shapes === shapes;
 
-        if (sameName && sameShapes && sameSettings) {
+        if (sameName && sameShapes) {
           return profile;
         }
 
@@ -2262,11 +2713,10 @@ function MapperApp() {
           ...profile,
           name: nextName,
           shapes,
-          settings,
         };
       }),
     );
-  }, [activeProfileId, activeProfileName, settings, shapes]);
+  }, [activeProfileId, activeProfileName, shapes]);
 
   useEffect(() => {
     latestProfilesRef.current = profiles;
@@ -2344,18 +2794,13 @@ function MapperApp() {
 
     setShapesWithoutHistory(nextActiveProfile.shapes);
     resetShapeHistory();
-    setSettings(
-      mergeWithPersistedMobilePushSettings(nextActiveProfile.settings),
-    );
     setActiveProfileName(nextActiveProfile.name);
     selectSingleShape(null);
     setCopiedShapes([]);
     setIsTransformingShape(false);
     setSelectedProfileId(activeProfileId);
-    isSwitchingProfileRef.current = false;
   }, [
     activeProfileId,
-    mergeWithPersistedMobilePushSettings,
     profiles,
     resetShapeHistory,
     selectSingleShape,
@@ -2363,10 +2808,43 @@ function MapperApp() {
   ]);
 
   useEffect(() => {
+    if (!isSwitchingProfileRef.current) {
+      return;
+    }
+
+    const nextActiveProfile =
+      profiles.find((profile) => profile.id === activeProfileId) ?? null;
+    if (!nextActiveProfile) {
+      isSwitchingProfileRef.current = false;
+      return;
+    }
+
+    const shapeHydrated = shapes === nextActiveProfile.shapes;
+    const nameHydrated = activeProfileName === nextActiveProfile.name;
+
+    if (shapeHydrated && nameHydrated) {
+      isSwitchingProfileRef.current = false;
+    }
+  }, [activeProfileId, activeProfileName, profiles, shapes]);
+
+  useEffect(() => {
     latestSettingsRef.current = settings;
   }, [settings]);
 
   useEffect(() => {
+    latestAccessControlRef.current = accessControl;
+  }, [accessControl]);
+
+  useEffect(() => {
+    if (suppressNextSettingsSaveRef.current) {
+      suppressNextSettingsSaveRef.current = false;
+      return;
+    }
+
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
     storage.saveSettings(settings);
   }, [settings]);
 
@@ -2434,6 +2912,10 @@ function MapperApp() {
       return;
     }
 
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
     setMapperCharacterProfileMapping((prev) => {
       if (isApplyingMappedProfileRef.current) {
         isApplyingMappedProfileRef.current = false;
@@ -2454,6 +2936,15 @@ function MapperApp() {
   }, [activeProfileId, currentCharacterName, profiles]);
 
   useEffect(() => {
+    if (suppressNextUiStateSaveRef.current) {
+      suppressNextUiStateSaveRef.current = false;
+      return;
+    }
+
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
     storage.saveUiState({
       selectedPaletteShape,
       dialogRect,
@@ -2462,100 +2953,182 @@ function MapperApp() {
   }, [activeUtilityTab, dialogRect, selectedPaletteShape]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        RUN_STATE_STORAGE_KEY,
-        JSON.stringify({
-          editMode: settings.editMode,
-          experimentalFeaturesEnabled: settings.experimentalFeaturesEnabled,
-          shapesVisible,
-          updatedAt: Date.now(),
-        }),
-      );
-    } catch {
-      // Ignore storage write failures.
-    }
-  }, [settings.editMode, settings.experimentalFeaturesEnabled, shapesVisible]);
-
-  useEffect(() => {
-    storage.saveKeyTriggerState({
-      profiles: keyTriggerProfiles,
-    });
-  }, [keyTriggerProfiles]);
-
-  useEffect(() => {
-    storage.saveKeyTriggerTargetTabIds(selectedKeyTriggerTabIds);
-    const selectedNames = keyTriggerCharacters
-      .filter((tab) => selectedKeyTriggerTabIds.includes(tab.id))
-      .map((tab) => tab.name);
-
-    // Only clear saved names when the user clears selection.
-    // During tab/title refresh, names can be temporarily unresolved;
-    // preserve existing saved names so selection can be restored by name.
-    if (selectedKeyTriggerTabIds.length === 0) {
-      storage.saveKeyTriggerTargetTabNames([]);
+    if (suppressNextSharedRunStateSaveRef.current) {
+      suppressNextSharedRunStateSaveRef.current = false;
       return;
     }
 
-    if (selectedNames.length > 0) {
-      storage.saveKeyTriggerTargetTabNames(Array.from(new Set(selectedNames)));
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
+    storage.saveSharedRunState({
+      editMode: settings.editMode,
+      experimentalFeaturesEnabled: settings.experimentalFeaturesEnabled,
+      shapesVisible,
+      updatedAt: Date.now(),
+    });
+  }, [settings.editMode, settings.experimentalFeaturesEnabled, shapesVisible]);
+
+  useEffect(() => {
+    if (suppressNextKeyTriggerStateSaveRef.current) {
+      suppressNextKeyTriggerStateSaveRef.current = false;
+      return;
+    }
+
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
+    storage.saveKeyTriggerState({
+      selectedPresetId: selectedKeyTriggerPresetId,
+      presets: keyTriggerPresets,
+      characterPresetMapping: keyTriggerCharacterPresetMapping,
+    });
+  }, [
+    keyTriggerCharacterPresetMapping,
+    keyTriggerPresets,
+    selectedKeyTriggerPresetId,
+  ]);
+
+  useEffect(() => {
+    saveSessionSelectedKeyTriggerTabIds(selectedKeyTriggerTabIds);
+
+    const selectedNames = keyTriggerCharacters
+      .filter((tab) => selectedKeyTriggerTabIds.includes(tab.id))
+      .map((tab) => tab.name);
+    const selectedNameSet = new Set(selectedNames);
+    const previousSelectedNames = new Set([
+      ...loadSessionSelectedKeyTriggerTabNames(),
+      ...storage.loadKeyTriggerTargetTabNames(),
+    ]);
+    const currentlyVisibleNames = new Set(
+      keyTriggerCharacters.map((tab) => tab.name),
+    );
+    const preservedNames = Array.from(previousSelectedNames).filter(
+      (name) => !currentlyVisibleNames.has(name),
+    );
+    const uniqueSelectedNames = Array.from(
+      new Set([...Array.from(selectedNameSet), ...preservedNames]),
+    );
+
+    if (selectedKeyTriggerTabIds.length === 0) {
+      saveSessionSelectedKeyTriggerTabNames(uniqueSelectedNames);
+    } else if (uniqueSelectedNames.length > 0) {
+      saveSessionSelectedKeyTriggerTabNames(uniqueSelectedNames);
+    }
+
+    if (suppressNextKeyTriggerTargetTabsSaveRef.current) {
+      suppressNextKeyTriggerTargetTabsSaveRef.current = false;
+      return;
+    }
+
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
+    storage.saveKeyTriggerTargetTabIds(selectedKeyTriggerTabIds);
+
+    if (uniqueSelectedNames.length > 0) {
+      storage.saveKeyTriggerTargetTabNames(uniqueSelectedNames);
+      return;
+    }
+
+    if (selectedKeyTriggerTabIds.length === 0) {
+      // This represents an explicit user uncheck with no preserved names.
+      storage.saveKeyTriggerTargetTabNames([]);
     }
   }, [selectedKeyTriggerTabIds, keyTriggerCharacters]);
 
   useEffect(() => {
+    if (settings.editMode) {
+      return;
+    }
+
+    if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
+      return;
+    }
+
+    const tabIds = Array.from(
+      new Set(selectedKeyTriggerTabIds.filter((id) => Number.isFinite(id))),
+    );
+
+    void safeSendRuntimeMessage({
+      type: "KEY_TRIGGER_SYNC_TOGGLE_TABS",
+      tabIds,
+    });
+  }, [selectedKeyTriggerTabIds, settings.editMode]);
+
+  useEffect(() => {
+    if (suppressNextKeyTriggerCharacterProfileMappingSaveRef.current) {
+      suppressNextKeyTriggerCharacterProfileMappingSaveRef.current = false;
+      return;
+    }
+
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
     storage.saveKeyTriggerCharacterProfileMapping(
       keyTriggerCharacterProfileMapping,
     );
   }, [keyTriggerCharacterProfileMapping]);
 
   useEffect(() => {
+    if (suppressNextMapperCharacterProfileMappingSaveRef.current) {
+      suppressNextMapperCharacterProfileMappingSaveRef.current = false;
+      return;
+    }
+
+    if (!isPrimarySyncSourceRef.current) {
+      return;
+    }
+
     storage.saveMapperCharacterProfileMapping(mapperCharacterProfileMapping);
   }, [mapperCharacterProfileMapping]);
 
   useEffect(() => {
-    // Validate that all stored profiles still exist
-    const validatedMapping: Record<string, string> = {};
-    for (const [charName, profileId] of Object.entries(
-      keyTriggerCharacterProfileMapping,
-    )) {
-      if (keyTriggerProfiles.some((profile) => profile.id === profileId)) {
-        validatedMapping[charName] = profileId;
-      }
-    }
+    // Validate that all stored profiles still exist.
+    setKeyTriggerCharacterProfileMapping((prev) => {
+      const validProfileIds = new Set(keyTriggerProfiles.map((p) => p.id));
+      const validatedMapping: Record<string, string> = {};
 
-    if (
-      Object.keys(validatedMapping).length !==
-      Object.keys(keyTriggerCharacterProfileMapping).length
-    ) {
-      setKeyTriggerCharacterProfileMapping(validatedMapping);
-    }
-  }, [keyTriggerProfiles, keyTriggerCharacterProfileMapping]);
+      Object.entries(prev).forEach(([charName, profileId]) => {
+        if (validProfileIds.has(profileId)) {
+          validatedMapping[charName] = profileId;
+        }
+      });
 
-  useEffect(() => {
-    const validatedMapping: Record<string, string> = {};
-    for (const [charName, profileId] of Object.entries(
-      mapperCharacterProfileMapping,
-    )) {
-      if (profiles.some((profile) => profile.id === profileId)) {
-        validatedMapping[charName] = profileId;
-      }
-    }
-
-    if (
-      Object.keys(validatedMapping).length !==
-      Object.keys(mapperCharacterProfileMapping).length
-    ) {
-      setMapperCharacterProfileMapping(validatedMapping);
-    }
-  }, [mapperCharacterProfileMapping, profiles]);
+      return areStringRecordsEqual(prev, validatedMapping)
+        ? prev
+        : validatedMapping;
+    });
+  }, [keyTriggerProfiles]);
 
   useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (!event.key) {
+    setMapperCharacterProfileMapping((prev) => {
+      const validProfileIds = new Set(profiles.map((p) => p.id));
+      const validatedMapping: Record<string, string> = {};
+
+      Object.entries(prev).forEach(([charName, profileId]) => {
+        if (validProfileIds.has(profileId)) {
+          validatedMapping[charName] = profileId;
+        }
+      });
+
+      return areStringRecordsEqual(prev, validatedMapping)
+        ? prev
+        : validatedMapping;
+    });
+  }, [profiles]);
+
+  useEffect(() => {
+    const unsubscribe = storage.subscribeToSync((message) => {
+      if (isPrimarySyncSourceRef.current) {
         return;
       }
 
-      if (event.key === "flyff-mapper-profiles-v1") {
+      if (message.key === "flyff-mapper-profiles-v1") {
         const nextProfilesState = storage.loadProfiles();
         if (nextProfilesState.profiles.length === 0) {
           return;
@@ -2575,6 +3148,35 @@ function MapperApp() {
           return;
         }
 
+        const currentLocalProfileId = previousActiveProfileIdRef.current;
+        if (
+          currentLocalProfileId &&
+          currentLocalProfileId !== nextActiveProfile.id
+        ) {
+          const currentLocalProfile = nextProfilesState.profiles.find(
+            (profile) => profile.id === currentLocalProfileId,
+          );
+
+          if (currentLocalProfile) {
+            skipNextProfilesSaveRef.current = true;
+            setProfiles(nextProfilesState.profiles);
+            setSelectedProfileId((prev) => {
+              if (
+                prev &&
+                nextProfilesState.profiles.some(
+                  (profile) => profile.id === prev,
+                )
+              ) {
+                return prev;
+              }
+              return currentLocalProfile.id;
+            });
+            setActiveProfileName(currentLocalProfile.name);
+            return;
+          }
+          return;
+        }
+
         skipNextProfilesSaveRef.current = true;
         previousActiveProfileIdRef.current = nextActiveProfile.id;
         isSwitchingProfileRef.current = false;
@@ -2585,23 +3187,79 @@ function MapperApp() {
         setActiveProfileName(nextActiveProfile.name);
         setShapesWithoutHistory(nextActiveProfile.shapes);
         resetShapeHistory();
-        setSettings(
-          mergeWithPersistedMobilePushSettings(nextActiveProfile.settings),
-        );
         selectSingleShape(null);
         setCopiedShapes([]);
         setIsTransformingShape(false);
         return;
       }
 
-      if (event.key === "flyff-mapper-key-trigger-v1") {
-        const nextKeyTriggerState = storage.loadKeyTriggerState();
-        setKeyTriggerProfiles(nextKeyTriggerState.profiles);
+      if (message.key === "flyff-mapper-key-trigger-v1") {
+        suppressNextKeyTriggerStateSaveRef.current = true;
+        const nextState = storage.loadKeyTriggerState();
+        setKeyTriggerPresets((prev) => {
+          const prevSerialized = JSON.stringify(prev);
+          const nextSerialized = JSON.stringify(nextState.presets);
+          return prevSerialized === nextSerialized ? prev : nextState.presets;
+        });
+        setSelectedKeyTriggerPresetId((prev) =>
+          prev === nextState.selectedPresetId
+            ? prev
+            : nextState.selectedPresetId,
+        );
+        setKeyTriggerCharacterPresetMapping((prev) =>
+          areStringRecordsEqual(prev, nextState.characterPresetMapping)
+            ? prev
+            : nextState.characterPresetMapping,
+        );
+        const activePreset =
+          nextState.presets.find(
+            (preset) => preset.id === nextState.selectedPresetId,
+          ) ?? nextState.presets[0];
+        setKeyTriggerProfiles((prev) => {
+          const nextProfiles = activePreset?.profiles ?? [];
+          const prevSerialized = JSON.stringify(prev);
+          const nextSerialized = JSON.stringify(nextProfiles);
+          return prevSerialized === nextSerialized ? prev : nextProfiles;
+        });
         return;
       }
 
-      if (event.key === "flyff-mapper-settings-v1") {
+      if (message.key === "flyff-mapper-key-trigger-target-tabs-v1") {
+        suppressNextKeyTriggerTargetTabsSaveRef.current = true;
+        const syncedIds = storage.loadKeyTriggerTargetTabIds();
+        setSelectedKeyTriggerTabIds((prev) =>
+          areNumberArraysEqual(prev, syncedIds) ? prev : syncedIds,
+        );
+        saveSessionSelectedKeyTriggerTabIds(syncedIds);
+        return;
+      }
+
+      if (message.key === "flyff-mapper-key-trigger-target-tab-names-v1") {
+        const syncedNames = storage.loadKeyTriggerTargetTabNames();
+        saveSessionSelectedKeyTriggerTabNames(syncedNames);
+
+        if (keyTriggerCharacters.length === 0 || syncedNames.length === 0) {
+          return;
+        }
+
+        const availableNames = new Set(syncedNames);
+        const matchedIds = keyTriggerCharacters
+          .filter((tab) => availableNames.has(tab.name))
+          .map((tab) => tab.id);
+
+        if (matchedIds.length > 0) {
+          const nextMatchedIds = Array.from(new Set(matchedIds));
+          suppressNextKeyTriggerTargetTabsSaveRef.current = true;
+          setSelectedKeyTriggerTabIds((prev) =>
+            areNumberArraysEqual(prev, nextMatchedIds) ? prev : nextMatchedIds,
+          );
+        }
+        return;
+      }
+
+      if (message.key === "flyff-mapper-settings-v1") {
         const nextSettings = storage.loadSettings();
+        suppressNextSettingsSaveRef.current = true;
         setSettings((prev) => {
           const prevSerialized = JSON.stringify(prev);
           const nextSerialized = JSON.stringify(nextSettings);
@@ -2610,8 +3268,9 @@ function MapperApp() {
         return;
       }
 
-      if (event.key === "flyff-mapper-ui-state-v1") {
+      if (message.key === "flyff-mapper-ui-state-v1") {
         const nextUiState = storage.loadUiState();
+        suppressNextUiStateSaveRef.current = true;
         setSelectedPaletteShape((prev) =>
           prev === nextUiState.selectedPaletteShape
             ? prev
@@ -2632,90 +3291,60 @@ function MapperApp() {
         return;
       }
 
-      if (event.key === "flyff-mapper-key-trigger-character-profiles-v1") {
-        setKeyTriggerCharacterProfileMapping(
-          storage.loadKeyTriggerCharacterProfileMapping(),
+      if (message.key === "flyff-mapper-key-trigger-character-profiles-v1") {
+        suppressNextKeyTriggerCharacterProfileMappingSaveRef.current = true;
+        const syncedMapping = storage.loadKeyTriggerCharacterProfileMapping();
+        setKeyTriggerCharacterProfileMapping((prev) =>
+          areStringRecordsEqual(prev, syncedMapping) ? prev : syncedMapping,
         );
         return;
       }
 
-      if (event.key === MAPPER_CHARACTER_PROFILE_MAPPING_STORAGE_KEY) {
-        setMapperCharacterProfileMapping(
-          storage.loadMapperCharacterProfileMapping(),
+      if (message.key === MAPPER_CHARACTER_PROFILE_MAPPING_STORAGE_KEY) {
+        suppressNextMapperCharacterProfileMappingSaveRef.current = true;
+        const syncedMapping = storage.loadMapperCharacterProfileMapping();
+        setMapperCharacterProfileMapping((prev) =>
+          areStringRecordsEqual(prev, syncedMapping) ? prev : syncedMapping,
         );
         return;
       }
 
-      if (event.key === RUN_STATE_STORAGE_KEY) {
-        if (!event.newValue) {
-          return;
-        }
+      if (message.key === "flyff-mapper-run-state-v1") {
+        const nextRunState = storage.loadSharedRunState();
 
-        try {
-          const parsed = JSON.parse(event.newValue) as SharedRunState;
-          const nextEditMode =
-            typeof parsed.editMode === "boolean" ? parsed.editMode : null;
-          const nextExperimentalFeaturesEnabled =
-            typeof parsed.experimentalFeaturesEnabled === "boolean"
-              ? parsed.experimentalFeaturesEnabled
-              : null;
-          const nextShapesVisible =
-            typeof parsed.shapesVisible === "boolean"
-              ? parsed.shapesVisible
-              : null;
+        suppressNextSharedRunStateSaveRef.current = true;
+        setShapesVisible((prev) =>
+          prev === nextRunState.shapesVisible
+            ? prev
+            : nextRunState.shapesVisible,
+        );
+        setSettings((prev) => {
+          let changed = false;
+          const updates: Partial<MapperSettings> = {};
+
+          if (prev.editMode !== nextRunState.editMode) {
+            updates.editMode = nextRunState.editMode;
+            changed = true;
+          }
 
           if (
-            nextEditMode === null &&
-            nextExperimentalFeaturesEnabled === null &&
-            nextShapesVisible === null
+            prev.experimentalFeaturesEnabled !==
+            nextRunState.experimentalFeaturesEnabled
           ) {
-            return;
+            updates.experimentalFeaturesEnabled =
+              nextRunState.experimentalFeaturesEnabled;
+            changed = true;
           }
 
-          if (nextShapesVisible !== null) {
-            setShapesVisible((prev) =>
-              prev === nextShapesVisible ? prev : nextShapesVisible,
-            );
-          }
-
-          setSettings((prev) => {
-            let changed = false;
-            const updates: Partial<MapperSettings> = {};
-
-            if (nextEditMode !== null && prev.editMode !== nextEditMode) {
-              updates.editMode = nextEditMode;
-              changed = true;
-            }
-
-            if (
-              nextExperimentalFeaturesEnabled !== null &&
-              prev.experimentalFeaturesEnabled !==
-                nextExperimentalFeaturesEnabled
-            ) {
-              updates.experimentalFeaturesEnabled =
-                nextExperimentalFeaturesEnabled;
-              changed = true;
-            }
-
-            return changed ? { ...prev, ...updates } : prev;
-          });
-        } catch {
-          // Ignore malformed sync payload.
-        }
+          return changed ? { ...prev, ...updates } : prev;
+        });
         return;
       }
+    });
 
-      if (event.key === "flyff-mapper-key-trigger-target-tabs-v1") {
-        setSelectedKeyTriggerTabIds(storage.loadKeyTriggerTargetTabIds());
-      }
-    };
-
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener("storage", onStorage);
-    };
+    return unsubscribe;
   }, [
-    mergeWithPersistedMobilePushSettings,
+    keyTriggerCharacters,
     resetShapeHistory,
     selectSingleShape,
     setShapesWithoutHistory,
@@ -2759,14 +3388,24 @@ function MapperApp() {
 
           const tabIdSet = new Set(tabs.map((tab: CharacterTabInfo) => tab.id));
           const preselected = prev.filter((id) => tabIdSet.has(id));
-          const loadedSelected = storage.loadKeyTriggerTargetTabIds();
+          const loadedSelected = loadSessionSelectedKeyTriggerTabIds();
+          const storedSelected = storage.loadKeyTriggerTargetTabIds();
           const toRestore = loadedSelected.filter((id) => tabIdSet.has(id));
-          const savedNames = new Set(storage.loadKeyTriggerTargetTabNames());
+          const storedRestore = storedSelected.filter((id) => tabIdSet.has(id));
+          const savedNames = new Set([
+            ...loadSessionSelectedKeyTriggerTabNames(),
+            ...storage.loadKeyTriggerTargetTabNames(),
+          ]);
           const nameMatched = tabs
             .filter((tab: CharacterTabInfo) => savedNames.has(tab.name))
             .map((tab: CharacterTabInfo) => tab.id);
           const merged = Array.from(
-            new Set([...preselected, ...toRestore, ...nameMatched]),
+            new Set([
+              ...preselected,
+              ...toRestore,
+              ...storedRestore,
+              ...nameMatched,
+            ]),
           );
           return merged.length > 0 ? merged : prev;
         });
@@ -2851,7 +3490,9 @@ function MapperApp() {
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => setSettings((prev) => ({ ...prev }));
+    const onChange = () => {
+      setSystemThemeRefreshVersion((prev) => prev + 1);
+    };
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
   }, []);
@@ -3310,10 +3951,59 @@ function MapperApp() {
       action: KeyTriggerAction,
       profileCurrentTabOnly?: boolean,
       profileOtherTabsOnly?: boolean,
+      profileExecutionScope?: "all" | "current" | "other" | "specific",
+      profileSpecificTargetTabIds?: number[],
+      profileSpecificTargetTabId?: number | null,
     ): number[] => {
       const allTargetTabIds = getKeyTriggerTargetTabIds();
 
-      if (action.otherTabsOnly === true) {
+      const actionScope =
+        action.executionScope === "current" ||
+        action.executionScope === "other" ||
+        action.executionScope === "specific"
+          ? action.executionScope
+          : action.otherTabsOnly === true
+            ? "other"
+            : action.currentTabOnly === true
+              ? "current"
+              : "all";
+
+      if (actionScope === "specific") {
+        const scopedIds = Array.from(
+          new Set(
+            (action.specificTargetTabIds ?? []).filter((id) =>
+              Number.isFinite(id),
+            ),
+          ),
+        );
+        if (scopedIds.length > 0) {
+          const selectedTabSet = new Set(allTargetTabIds);
+          return scopedIds.filter((id) => selectedTabSet.has(id));
+        }
+      }
+
+      if (profileExecutionScope === "specific") {
+        const scopedIds = Array.from(
+          new Set(
+            (profileSpecificTargetTabIds ?? []).filter((id) =>
+              Number.isFinite(id),
+            ),
+          ),
+        );
+        const selectedTabSet = new Set(allTargetTabIds);
+        if (scopedIds.length > 0) {
+          return scopedIds.filter((id) => selectedTabSet.has(id));
+        }
+
+        if (Number.isFinite(profileSpecificTargetTabId)) {
+          return selectedTabSet.has(profileSpecificTargetTabId as number)
+            ? [profileSpecificTargetTabId as number]
+            : [];
+        }
+        return [];
+      }
+
+      if (actionScope === "other") {
         // Return all selected tabs except the current one
         if (currentTabId === null) {
           return allTargetTabIds;
@@ -3321,7 +4011,7 @@ function MapperApp() {
         return allTargetTabIds.filter((tabId) => tabId !== currentTabId);
       }
 
-      if (action.currentTabOnly === true) {
+      if (actionScope === "current") {
         // Return only the current tab if it's in the selected tabs
         if (currentTabId === null) {
           return [];
@@ -3392,6 +4082,9 @@ function MapperApp() {
             action,
             profile.currentTabOnly,
             profile.otherTabsOnly,
+            profile.executionScope,
+            profile.specificTargetTabIds,
+            profile.specificTargetTabId,
           );
           const key = JSON.stringify(tabIds);
           const existing = actionsByTabIds.get(key) ?? [];
@@ -3414,6 +4107,7 @@ function MapperApp() {
             actions,
             chainDepth,
             delayMode: inheritedDelayMode ?? profile.delayMode,
+            lockToTab: profile.lockToTab === true,
           });
         });
       });
@@ -3434,6 +4128,9 @@ function MapperApp() {
             action,
             profile.currentTabOnly,
             profile.otherTabsOnly,
+            profile.executionScope,
+            profile.specificTargetTabIds,
+            profile.specificTargetTabId,
           );
           const key = JSON.stringify(tabIds);
           const existing = actionsByTabIds.get(key) ?? [];
@@ -3459,28 +4156,6 @@ function MapperApp() {
       });
     },
     [getTabIdsForAction, isActionEnabled],
-  );
-
-  const handleKeyTriggerSelectedProfileIdChange = useCallback(
-    (profileId: string | null) => {
-      const resolvedCharacterName =
-        currentCharacterName ??
-        keyTriggerCharacters.find((tab) => tab.id === currentTabId)?.name;
-
-      if (!resolvedCharacterName) {
-        return;
-      }
-
-      setKeyTriggerCharacterProfileMapping((prev) => {
-        if (profileId === null) {
-          const next = { ...prev };
-          delete next[resolvedCharacterName];
-          return next;
-        }
-        return { ...prev, [resolvedCharacterName]: profileId };
-      });
-    },
-    [currentCharacterName, currentTabId, keyTriggerCharacters],
   );
 
   const applyRemoteCursorBodyStyle = useCallback((cursor: HTMLDivElement) => {
@@ -3781,7 +4456,10 @@ function MapperApp() {
   const dispatchKeyboardEventToCanvas = useCallback(
     (
       eventInit: KeyboardEventInit,
-      options?: { emitModifierKeyEvents?: boolean },
+      options?: {
+        emitModifierKeyEvents?: boolean;
+        sendKeyUp?: boolean;
+      },
     ) => {
       const canvas = document.querySelector("canvas") as HTMLElement | null;
       const target =
@@ -3800,7 +4478,9 @@ function MapperApp() {
 
       if (!shouldEmitModifierKeyEvents) {
         target.dispatchEvent(new KeyboardEvent("keydown", eventInit));
-        target.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+        if (options?.sendKeyUp !== false) {
+          target.dispatchEvent(new KeyboardEvent("keyup", eventInit));
+        }
         return;
       }
 
@@ -3881,15 +4561,17 @@ function MapperApp() {
           ...required,
         }),
       );
-      target.dispatchEvent(
-        new KeyboardEvent("keyup", {
-          ...eventInit,
-          bubbles: true,
-          cancelable: true,
-          repeat: false,
-          ...required,
-        }),
-      );
+      if (options?.sendKeyUp !== false) {
+        target.dispatchEvent(
+          new KeyboardEvent("keyup", {
+            ...eventInit,
+            bubbles: true,
+            cancelable: true,
+            repeat: false,
+            ...required,
+          }),
+        );
+      }
 
       [...modifierOrder].reverse().forEach((modifier) => {
         if (!required[modifier.keyFlag]) {
@@ -3909,6 +4591,31 @@ function MapperApp() {
         );
         active[modifier.keyFlag] = false;
       });
+    },
+    [],
+  );
+
+  const dispatchKeyboardKeyUpToCanvas = useCallback(
+    (eventInit: KeyboardEventInit) => {
+      const canvas = document.querySelector("canvas") as HTMLElement | null;
+      const target =
+        canvas ?? (document.activeElement as HTMLElement | null) ?? window;
+
+      if (canvas && document.activeElement !== canvas) {
+        if (canvas.tabIndex < 0) {
+          canvas.tabIndex = -1;
+        }
+        canvas.focus({ preventScroll: true });
+      }
+
+      target.dispatchEvent(
+        new KeyboardEvent("keyup", {
+          ...eventInit,
+          bubbles: true,
+          cancelable: true,
+          repeat: false,
+        }),
+      );
     },
     [],
   );
@@ -4768,6 +5475,13 @@ function MapperApp() {
 
   const startAutoAwakenLoop = useCallback(
     async (mode?: "reawaken") => {
+      if (!canUseAutoAwaken) {
+        message.warning(
+          "Your current subscription plan does not include Auto-Awaken.",
+        );
+        return;
+      }
+
       if (autoAwakenRunningRef.current) return;
 
       autoAwakenRunningRef.current = true;
@@ -6393,20 +7107,42 @@ function MapperApp() {
     activeKeyTriggerTimersRef.current.delete(profileId);
   }, []);
 
-  const toggleOverlay = () => {
+  const toggleOverlay = useCallback(() => {
+    const currentAccessControl = latestAccessControlRef.current;
+    const canUseToolNow = currentAccessControl.hasToolAccess;
+
+    if (currentAccessControl.loading) {
+      setOverlayVisible(true);
+      setDialogVisible(true);
+      message.info("Checking access status. Please try again in a moment.");
+      return;
+    }
+
+    if (!canUseToolNow) {
+      setOverlayVisible(true);
+      setDialogVisible(true);
+      return;
+    }
+
+    // If state drift makes the dialog logically open but visually hidden
+    // (for example during shape transforms or overlay gating), recover by
+    // forcing the dialog open instead of blindly toggling it closed.
+    const shouldForceOpen =
+      !dialogVisible || isTransformingShape || !overlayVisible;
+
     setIsTransformingShape(false);
     setOverlayVisible(true);
-    setDialogVisible((prev) => {
-      const next = !prev;
-      if (!next) {
-        setImportOpen(false);
-        window.setTimeout(() => {
-          focusGameCanvas();
-        }, 0);
-      }
-      return next;
-    });
-  };
+    if (shouldForceOpen) {
+      setDialogVisible(true);
+      return;
+    }
+
+    setDialogVisible(false);
+    setImportOpen(false);
+    window.setTimeout(() => {
+      focusGameCanvas();
+    }, 0);
+  }, [dialogVisible, focusGameCanvas, isTransformingShape, overlayVisible]);
 
   const toggleMode = () => {
     setSettings((prev) => {
@@ -6752,8 +7488,15 @@ function MapperApp() {
       }
     };
 
-    chrome.runtime.onMessage.addListener(onRuntimeMessage);
-    return () => chrome.runtime.onMessage.removeListener(onRuntimeMessage);
+    const runtimeOnMessage =
+      typeof chrome !== "undefined" ? chrome.runtime?.onMessage : undefined;
+
+    if (!runtimeOnMessage) {
+      return;
+    }
+
+    runtimeOnMessage.addListener(onRuntimeMessage);
+    return () => runtimeOnMessage.removeListener(onRuntimeMessage);
   }, [
     clearAllKeyTriggerTimers,
     clearKeyTriggerProfileTimers,
@@ -6763,6 +7506,7 @@ function MapperApp() {
     reloadKeyTriggerCharacters,
     scheduleKeyTriggerActions,
     focusGameCanvas,
+    toggleOverlay,
     selectSingleShape,
     selectedIds.length,
     settings.editMode,
@@ -7322,7 +8066,11 @@ function MapperApp() {
         );
       });
 
-      const hasPotentialKeyTriggerBinding = keyTriggerProfiles.some(
+      const effectiveKeyTriggerProfiles = canUseKeyTrigger
+        ? keyTriggerProfiles
+        : [];
+
+      const hasPotentialKeyTriggerBinding = effectiveKeyTriggerProfiles.some(
         (profile) =>
           profile.enabled !== false &&
           profile.triggerKey &&
@@ -7397,6 +8145,12 @@ function MapperApp() {
         event,
         settings.addKeyMapShortcut,
       );
+      const matchingKeyTriggerPreset = keyTriggerPresets.find(
+        (preset) =>
+          typeof preset.switchShortcut === "string" &&
+          preset.switchShortcut.trim().length > 0 &&
+          matchesBinding(event, preset.switchShortcut),
+      );
 
       if (!isInputTarget && isToggleOverlay && !event.repeat) {
         event.preventDefault();
@@ -7409,6 +8163,10 @@ function MapperApp() {
         event.preventDefault();
         event.stopPropagation();
         toggleOverlay();
+        return;
+      }
+
+      if (!latestAccessControlRef.current.hasToolAccess) {
         return;
       }
 
@@ -7443,20 +8201,15 @@ function MapperApp() {
         event.preventDefault();
         event.stopPropagation();
 
-        const allAtZero = shapes.every((shape) => shape.opacity <= 0.05);
-        const nextOpacity = allAtZero ? 1 : 0;
+        const nextOpacity = settings.shapeOpacity <= 0.05 ? 1 : 0;
 
-        setDraftShape((prev) => ({
-          ...prev,
-          opacity: nextOpacity,
-        }));
-        setShapes((prev) =>
-          prev.map((shape) =>
-            normalizeShape({
-              ...shape,
-              opacity: nextOpacity,
-            }),
-          ),
+        setSettings((prev) =>
+          Math.abs(prev.shapeOpacity - nextOpacity) <= 0.0001
+            ? prev
+            : {
+                ...prev,
+                shapeOpacity: nextOpacity,
+              },
         );
         return;
       }
@@ -7467,10 +8220,31 @@ function MapperApp() {
         const base = createShape(selectedPaletteShapeRef.current);
         const newShape = normalizeShape({
           ...base,
-          opacity: draftShape.opacity,
+          opacity: settings.shapeOpacity,
         });
         setShapes((prev) => [...prev, newShape]);
         setSelectedId(newShape.id);
+        return;
+      }
+
+      if (
+        dialogVisible &&
+        activeUtilityTab === "key-trigger" &&
+        !isInputTarget &&
+        matchingKeyTriggerPreset &&
+        !event.repeat
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (
+          keyTriggerPresets.length > 0 &&
+          matchingKeyTriggerPreset.id !== selectedKeyTriggerPresetId
+        ) {
+          void safeSendRuntimeMessage({ type: "KEY_TRIGGER_STOP_ALL" });
+          setSelectedKeyTriggerPresetId(matchingKeyTriggerPreset.id);
+        }
+
         return;
       }
 
@@ -7480,13 +8254,15 @@ function MapperApp() {
           return;
         }
 
-        const triggeredProfiles = keyTriggerProfiles.filter((profile) => {
-          return (
-            profile.enabled !== false &&
-            profile.triggerKey &&
-            matchesBinding(event, profile.triggerKey)
-          );
-        });
+        const triggeredProfiles = effectiveKeyTriggerProfiles.filter(
+          (profile) => {
+            return (
+              profile.enabled !== false &&
+              profile.triggerKey &&
+              matchesBinding(event, profile.triggerKey)
+            );
+          },
+        );
 
         if (triggeredProfiles.length > 0) {
           event.preventDefault();
@@ -7494,17 +8270,20 @@ function MapperApp() {
 
           isDispatchingKeyTriggerRef.current = true;
           try {
-            dispatchKeyboardEventToCanvas({
-              key: event.key,
-              code: event.code,
-              ctrlKey: event.ctrlKey,
-              altKey: event.altKey,
-              shiftKey: event.shiftKey,
-              metaKey: event.metaKey,
-              bubbles: true,
-              cancelable: true,
-              repeat: false,
-            });
+            dispatchKeyboardEventToCanvas(
+              {
+                key: event.key,
+                code: event.code,
+                ctrlKey: event.ctrlKey,
+                altKey: event.altKey,
+                shiftKey: event.shiftKey,
+                metaKey: event.metaKey,
+                bubbles: true,
+                cancelable: true,
+                repeat: false,
+              },
+              { emitModifierKeyEvents: true, sendKeyUp: false },
+            );
           } finally {
             isDispatchingKeyTriggerRef.current = false;
           }
@@ -7577,19 +8356,30 @@ function MapperApp() {
 
       if (!overlayVisible) return;
 
-      if (event.key === "Escape") {
+      const shouldPreserveEscapeForBindings =
+        !settings.editMode &&
+        !isInputTarget &&
+        event.key === "Escape" &&
+        (hasPotentialSingleStepBinding ||
+          hasPotentialSequenceStartBinding ||
+          hasPotentialKeyTriggerBinding);
+
+      const isShortcutCapturingInput =
+        isInputTarget &&
+        (event.target as HTMLElement | null)?.closest(
+          ".fm-shape-context-menu, .fm-shortcut-input-shell-shape",
+        ) !== null;
+
+      if (
+        event.key === "Escape" &&
+        !isShortcutCapturingInput &&
+        !shouldPreserveEscapeForBindings
+      ) {
         if (selectedShape) {
           event.preventDefault();
           event.stopPropagation();
           setSelectedId(null);
           (document.activeElement as HTMLElement | null)?.blur();
-          return;
-        }
-
-        if (dialogVisible) {
-          event.preventDefault();
-          event.stopPropagation();
-          attemptCloseDialog();
           return;
         }
       }
@@ -7743,6 +8533,14 @@ function MapperApp() {
           (releasedModifier === "meta" && entry.meta);
 
         if (entry.keyCode === releasedKeyCode || modifierReleasedStopsTimer) {
+          dispatchKeyboardKeyUpToCanvas({
+            key: event.key,
+            code: event.code,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+          });
           window.clearInterval(entry.timerId);
           activeHoldTriggerTimers.delete(signature);
         }
@@ -7774,12 +8572,12 @@ function MapperApp() {
     copyShapeIds,
     cutShapeIds,
     deleteShapeIds,
-    draftShape.opacity,
     dialogVisible,
     overlayVisible,
     selectedShape,
     selectedIds,
     settings.addKeyMapShortcut,
+    settings.shapeOpacity,
     settings.editMode,
     settings.focusCanvasShortcut,
     keyTriggerProfiles,
@@ -7795,6 +8593,7 @@ function MapperApp() {
     undoShapeChanges,
     redoShapeChanges,
     pasteCopiedShapesAt,
+    toggleOverlay,
   ]);
 
   useEffect(() => {
@@ -8255,11 +9054,6 @@ function MapperApp() {
     event.preventDefault();
     event.stopPropagation();
 
-    if (event.key === "Escape") {
-      (event.target as HTMLInputElement).blur();
-      return;
-    }
-
     const captured = buildShortcutFromEvent(event);
     if (!captured) return;
 
@@ -8493,7 +9287,7 @@ function MapperApp() {
       if (!point) {
         return normalizeShape({
           ...base,
-          opacity: draftShape.opacity,
+          opacity: settings.shapeOpacity,
         });
       }
 
@@ -8501,10 +9295,10 @@ function MapperApp() {
         ...base,
         x: point.x - base.width / 2,
         y: point.y - base.height / 2,
-        opacity: draftShape.opacity,
+        opacity: settings.shapeOpacity,
       });
     },
-    [draftShape.opacity],
+    [settings.shapeOpacity],
   );
 
   const addKeyMapOfType = useCallback(
@@ -8519,21 +9313,6 @@ function MapperApp() {
   const addKeyMap = useCallback(() => {
     addKeyMapOfType(selectedPaletteShape);
   }, [addKeyMapOfType, selectedPaletteShape]);
-
-  const openProfileNameDialog = (
-    mode: "create" | "rename" | "import",
-    initialName: string,
-  ) => {
-    setProfileNameDialogMode(mode);
-    setProfileNameInput(initialName);
-    setProfileNameError("");
-    setProfileNameDialogOpen(true);
-  };
-
-  const closeProfileNameDialog = () => {
-    setProfileNameDialogOpen(false);
-    setProfileNameError("");
-  };
 
   const validateProfileName = (
     rawName: string,
@@ -8572,10 +9351,6 @@ function MapperApp() {
     }
 
     switchProfileImmediately(nextProfileId);
-  };
-
-  const attemptCloseDialog = () => {
-    setDialogVisible(false);
   };
 
   function deleteShapeIds(ids: string[]) {
@@ -8691,7 +9466,8 @@ function MapperApp() {
         "This only resets Settings values to defaults. It keeps Key Mapper profiles, shapes, shape history, copied shapes, active/selected profile per character mapping, and Key Trigger profiles unchanged.",
       zIndex: 2147483647,
       okText: "Reset",
-      okButtonProps: { danger: true },
+      okButtonProps: { danger: true, type: "primary" },
+      cancelButtonProps: { type: "default" },
       cancelText: "Cancel",
       onOk: () => {
         const resetSettings = cloneDefaultSettings();
@@ -8700,20 +9476,150 @@ function MapperApp() {
         latestSettingsRef.current = resetSettings;
         storage.saveSettings(resetSettings);
 
-        setProfiles((prev) =>
-          prev.map((profile) => ({
-            ...profile,
-            settings: cloneDefaultSettings(),
-          })),
-        );
+        setDialogRect({ ...DEFAULT_DIALOG_RECT });
+        setActiveUtilityTab("key-mapper");
+        setSelectedPaletteShape("rectangle");
+      },
+    });
+  }, [modal]);
+
+  const factoryResetConfiguration = useCallback(() => {
+    modal.confirm({
+      className: "fm-confirm-modal fm-reset-config-modal",
+      title: "Factory reset tool data?",
+      content: (
+        <Typography.Text type="warning">
+          Back up your tool config JSON first. Factory reset clears all Key
+          Mapper profiles/shapes, Key Trigger presets/profiles/mappings,
+          selected tabs, and settings, then starts from a clean default state.
+        </Typography.Text>
+      ),
+      zIndex: 2147483647,
+      okText: "Factory Reset",
+      okButtonProps: { danger: true, type: "primary" },
+      cancelButtonProps: { type: "default" },
+      cancelText: "Cancel",
+      onOk: () => {
+        const resetSettings = cloneDefaultSettings();
+        const defaultProfileId = createProfileId();
+        const defaultProfiles: MappingProfile[] = [
+          {
+            id: defaultProfileId,
+            name: "Default",
+            shapes: [],
+          },
+        ];
+        const defaultPresetId = "kt-preset-default";
+        const defaultPresets: KeyTriggerPreset[] = [
+          {
+            id: defaultPresetId,
+            name: "Default",
+            switchShortcut: "",
+            profiles: [],
+          },
+        ];
+
+        setSettings(resetSettings);
+        latestSettingsRef.current = resetSettings;
+
+        setProfiles(defaultProfiles);
+        setActiveProfileId(defaultProfileId);
+        setSelectedProfileId(defaultProfileId);
+        setActiveProfileName("Default");
+        setShapesWithoutHistory([]);
+        resetShapeHistory();
+        selectSingleShape(null);
+        setSelectedIds([]);
+        setCopiedShapes([]);
+        setIsTransformingShape(false);
+
+        setMapperCharacterProfileMapping({});
+
+        setKeyTriggerPresets(defaultPresets);
+        setSelectedKeyTriggerPresetId(defaultPresetId);
+        setKeyTriggerProfiles([]);
+        setKeyTriggerCharacterPresetMapping({});
+        setKeyTriggerCharacterProfileMapping({});
+        setSelectedKeyTriggerTabIds([]);
 
         setDialogRect({ ...DEFAULT_DIALOG_RECT });
         setActiveUtilityTab("key-mapper");
         setSelectedPaletteShape("rectangle");
-        setDraftShape((prev) => ({ ...prev, opacity: 1 }));
+
+        setImportOpen(false);
+        setImportText("");
+
+        storage.saveSettings(resetSettings);
+        storage.saveProfiles({
+          activeProfileId: defaultProfileId,
+          profiles: defaultProfiles,
+        });
+        storage.saveUiState({
+          selectedPaletteShape: "rectangle",
+          dialogRect: { ...DEFAULT_DIALOG_RECT },
+          selectedUtilityTab: "key-mapper",
+        });
+        storage.saveKeyTriggerState({
+          selectedPresetId: defaultPresetId,
+          presets: defaultPresets,
+          characterPresetMapping: {},
+        });
+        storage.saveKeyTriggerTargetTabIds([]);
+        storage.saveKeyTriggerTargetTabNames([]);
+        storage.saveKeyTriggerCharacterProfileMapping({});
+        storage.saveMapperCharacterProfileMapping({});
+
+        message.success("Factory reset complete. Tool state is now clean.");
       },
     });
-  }, [modal]);
+  }, [modal, resetShapeHistory, selectSingleShape, setShapesWithoutHistory]);
+
+  const restoreKeyMapperProfilesFromBackup = useCallback(() => {
+    modal.confirm({
+      className: "fm-confirm-modal fm-reset-config-modal",
+      title: "Restore Key Mapper backup?",
+      content:
+        "This restores Key Mapper profiles from the saved backup snapshot. Key Trigger profiles are unchanged.",
+      zIndex: 2147483647,
+      okText: "Restore",
+      okButtonProps: { danger: true },
+      cancelText: "Cancel",
+      onOk: () => {
+        const restored = storage.restoreProfilesFromBackup();
+        if (!restored || restored.profiles.length === 0) {
+          message.error("No Key Mapper backup was found to restore.");
+          return;
+        }
+
+        const restoredActiveProfile =
+          restored.profiles.find(
+            (profile) => profile.id === restored.activeProfileId,
+          ) ?? restored.profiles[0];
+
+        if (!restoredActiveProfile) {
+          message.error("No usable Key Mapper backup was found.");
+          return;
+        }
+
+        skipNextProfilesSaveRef.current = true;
+        previousActiveProfileIdRef.current = restoredActiveProfile.id;
+        isSwitchingProfileRef.current = false;
+
+        setProfiles(restored.profiles);
+        setActiveProfileId(restoredActiveProfile.id);
+        setSelectedProfileId(restoredActiveProfile.id);
+        setActiveProfileName(restoredActiveProfile.name);
+        setShapesWithoutHistory(restoredActiveProfile.shapes);
+        resetShapeHistory();
+        selectSingleShape(null);
+        setSelectedIds([]);
+        setCopiedShapes([]);
+        setIsTransformingShape(false);
+
+        message.success("Key Mapper backup restored.");
+      },
+    });
+  }, [modal, resetShapeHistory, selectSingleShape, setShapesWithoutHistory]);
 
   const createProfile = (name?: string) => {
     const nextName =
@@ -8721,20 +9627,18 @@ function MapperApp() {
       makeUniqueProfileName(latestProfilesRef.current, "Profile");
     const validationError = validateProfileName(nextName);
     if (validationError) {
-      setProfileNameError(validationError);
-      return false;
+      return validationError;
     }
 
     const profile: MappingProfile = {
       id: createProfileId(),
       name: nextName,
       shapes: [],
-      settings: activeProfile?.settings ?? latestSettingsRef.current,
     };
 
     setProfiles((prev) => [...prev, profile]);
     requestProfileSwitch(profile.id);
-    return true;
+    return null;
   };
 
   const duplicateSelectedProfile = () => {
@@ -8749,7 +9653,6 @@ function MapperApp() {
         selectedProfile.name,
       ),
       shapes: selectedProfile.shapes.map((shape) => ({ ...shape })),
-      settings: { ...selectedProfile.settings },
     };
 
     setProfiles((prev) => {
@@ -8770,13 +9673,12 @@ function MapperApp() {
 
   const renameSelectedProfile = (nextName: string) => {
     if (!selectedProfile) {
-      return false;
+      return "Select a profile first.";
     }
 
     const validationError = validateProfileName(nextName, selectedProfile.id);
     if (validationError) {
-      setProfileNameError(validationError);
-      return false;
+      return validationError;
     }
 
     const trimmed = nextName.trim();
@@ -8795,7 +9697,7 @@ function MapperApp() {
       setActiveProfileName(trimmed);
     }
 
-    return true;
+    return null;
   };
 
   const deleteSelectedProfile = () => {
@@ -8840,26 +9742,6 @@ function MapperApp() {
     }
   };
 
-  const buildMapperProfileSignature = (profile: MappingProfile): string => {
-    const normalizedShapes = profile.shapes.map((shape) => ({
-      type: shape.type,
-      x: shape.x,
-      y: shape.y,
-      width: shape.width,
-      height: shape.height,
-      rotation: shape.rotation,
-      opacity: shape.opacity,
-      keyBinding: shape.keyBinding.trim(),
-      delayMs: Math.max(0, Math.round(shape.delayMs || 0)),
-      triggerType: shape.triggerType,
-    }));
-
-    return JSON.stringify({
-      shapes: normalizedShapes,
-      settings: profile.settings,
-    });
-  };
-
   const buildKeyTriggerProfileSignature = (
     profile: Pick<
       KeyTriggerProfile,
@@ -8868,8 +9750,12 @@ function MapperApp() {
       | "triggerType"
       | "repeatCount"
       | "triggerKey"
+      | "executionScope"
       | "currentTabOnly"
       | "otherTabsOnly"
+      | "specificTargetTabIds"
+      | "specificTargetTabId"
+      | "specificTargetTabName"
       | "delayMode"
       | "actions"
     >,
@@ -8885,8 +9771,25 @@ function MapperApp() {
         action.actionTriggerType === "repeat"
           ? normalizeKeyTriggerActionRepeatCount(action.actionRepeatCount, 2)
           : 1,
+      executionScope:
+        action.executionScope === "current" ||
+        action.executionScope === "other" ||
+        action.executionScope === "specific"
+          ? action.executionScope
+          : action.otherTabsOnly === true
+            ? "other"
+            : action.currentTabOnly === true
+              ? "current"
+              : "all",
       currentTabOnly: action.currentTabOnly === true,
       otherTabsOnly: action.otherTabsOnly === true,
+      specificTargetTabIds: Array.from(
+        new Set(
+          (action.specificTargetTabIds ?? []).filter((id) =>
+            Number.isFinite(id),
+          ),
+        ),
+      ),
     }));
 
     return JSON.stringify({
@@ -8897,8 +9800,28 @@ function MapperApp() {
           ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
           : 1,
       triggerKey: profile.triggerKey.trim(),
+      executionScope:
+        profile.executionScope === "current" ||
+        profile.executionScope === "other" ||
+        profile.executionScope === "specific"
+          ? profile.executionScope
+          : "all",
       currentTabOnly: profile.currentTabOnly === true,
       otherTabsOnly: profile.otherTabsOnly === true,
+      specificTargetTabIds: Array.from(
+        new Set(
+          (profile.specificTargetTabIds ?? []).filter((id) =>
+            Number.isFinite(id),
+          ),
+        ),
+      ),
+      specificTargetTabId: Number.isFinite(profile.specificTargetTabId)
+        ? Number(profile.specificTargetTabId)
+        : null,
+      specificTargetTabName:
+        typeof profile.specificTargetTabName === "string"
+          ? profile.specificTargetTabName
+          : null,
       delayMode: profile.delayMode,
       actions: normalizedActions,
     });
@@ -8949,7 +9872,7 @@ function MapperApp() {
       );
 
     const payloadObject = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       exportedAt: new Date().toISOString(),
       profiles: latestProfilesRef.current,
       activeProfileId,
@@ -8960,10 +9883,13 @@ function MapperApp() {
         selectedUtilityTab: activeUtilityTab,
       },
       keyTriggerProfiles,
+      keyTriggerPresets,
+      selectedKeyTriggerPresetId,
       selectedKeyTriggerTabIds: selectedKeyTriggerTabIdsUnique,
       selectedKeyTriggerTabNames,
       keyTriggerCharacterProfileMapping:
         filteredKeyTriggerCharacterProfileMapping,
+      keyTriggerCharacterPresetMapping,
       mapperCharacterProfileMapping: filteredMapperCharacterProfileMapping,
     };
 
@@ -8993,17 +9919,20 @@ function MapperApp() {
     }
 
     if (copied) {
-      message.success("Copy JSON successful.");
+      message.success("Tool config copied to clipboard.");
     } else {
-      message.error("Copy JSON failed. Please try again.");
+      message.error("Failed to copy tool config. Please try again.");
     }
   };
 
-  const performImportWithName = (baseProfileName: string) => {
+  const performImportWithName = (
+    baseProfileName: string,
+    sourceImportText: string,
+  ) => {
     try {
       const createImportedKeyTriggerProfileIdentifier = () =>
         `kt-identifier-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const parsed = JSON.parse(pendingImportText) as {
+      const parsed = JSON.parse(sourceImportText) as {
         schemaVersion?: number;
         profileName?: string;
         shapes?: ShapeMapping[];
@@ -9018,12 +9947,14 @@ function MapperApp() {
           id?: string;
           name?: string;
           shapes?: ShapeMapping[];
-          settings?: Partial<MapperSettings>;
         }>;
         keyTriggerProfiles?: KeyTriggerProfile[];
+        keyTriggerPresets?: KeyTriggerPreset[];
+        selectedKeyTriggerPresetId?: string;
         selectedKeyTriggerTabIds?: unknown[];
         selectedKeyTriggerTabNames?: unknown[];
         keyTriggerCharacterProfileMapping?: Record<string, string>;
+        keyTriggerCharacterPresetMapping?: Record<string, string>;
         mapperCharacterProfileMapping?: Record<string, string>;
       };
 
@@ -9032,23 +9963,251 @@ function MapperApp() {
         sourceLabel: string,
       ): { settings: MapperSettings; warnings: string[] } => {
         const baseSettings = latestSettingsRef.current;
+        const sanitizeScanRegion = (
+          value: unknown,
+          fallback: NormalizedRect | null,
+        ): NormalizedRect | null => {
+          if (value === null) {
+            return null;
+          }
+
+          if (typeof value !== "object" || !value) {
+            return fallback;
+          }
+
+          const parsedRegion = value as Partial<NormalizedRect>;
+          const x = Number(parsedRegion.x);
+          const y = Number(parsedRegion.y);
+          const width = Number(parsedRegion.width);
+          const height = Number(parsedRegion.height);
+
+          if (
+            !Number.isFinite(x) ||
+            !Number.isFinite(y) ||
+            !Number.isFinite(width) ||
+            !Number.isFinite(height)
+          ) {
+            return fallback;
+          }
+
+          return {
+            x: Math.max(0, Math.min(1, x)),
+            y: Math.max(0, Math.min(1, y)),
+            width: Math.max(0, Math.min(1, width)),
+            height: Math.max(0, Math.min(1, height)),
+          };
+        };
+
+        const sanitizeAwakenCriteria = (
+          value: unknown,
+          fallback: AwakenStatCriterion[],
+        ): AwakenStatCriterion[] => {
+          if (!Array.isArray(value)) {
+            return fallback;
+          }
+
+          const normalized = value
+            .map((entry) => {
+              if (typeof entry !== "object" || !entry) {
+                return null;
+              }
+
+              const parsedCriterion = entry as Partial<AwakenStatCriterion>;
+              if (
+                typeof parsedCriterion.statId !== "string" ||
+                parsedCriterion.statId.trim().length === 0
+              ) {
+                return null;
+              }
+
+              const statValue = Number(parsedCriterion.statValue);
+              if (!Number.isFinite(statValue)) {
+                return null;
+              }
+
+              return {
+                id:
+                  typeof parsedCriterion.id === "string" &&
+                  parsedCriterion.id.trim().length > 0
+                    ? parsedCriterion.id.trim()
+                    : `crit-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                statId: parsedCriterion.statId.trim(),
+                statValue,
+              } satisfies AwakenStatCriterion;
+            })
+            .filter(
+              (criterion): criterion is AwakenStatCriterion =>
+                criterion !== null,
+            );
+
+          return normalized;
+        };
+
+        const importedAutoStopSeconds = importedSettings?.autoStopSeconds;
+
         const resolved: MapperSettings = {
           ...baseSettings,
           theme: importedSettings?.theme ?? baseSettings.theme,
           editMode: importedSettings?.editMode ?? baseSettings.editMode,
+          experimentalFeaturesEnabled:
+            importedSettings?.experimentalFeaturesEnabled ??
+            baseSettings.experimentalFeaturesEnabled,
           showHandles:
             importedSettings?.showHandles ?? baseSettings.showHandles,
           showSnapIndicators:
             importedSettings?.showSnapIndicators ??
             baseSettings.showSnapIndicators,
+          showShapeTooltips:
+            importedSettings?.showShapeTooltips ??
+            baseSettings.showShapeTooltips,
+          shapeOpacity:
+            typeof importedSettings?.shapeOpacity === "number" &&
+            Number.isFinite(importedSettings.shapeOpacity)
+              ? Math.max(0, Math.min(1, importedSettings.shapeOpacity))
+              : baseSettings.shapeOpacity,
           strictPassthrough:
             importedSettings?.strictPassthrough ??
             baseSettings.strictPassthrough,
-          addKeyMapShortcut: baseSettings.addKeyMapShortcut,
-          toggleModeShortcut: baseSettings.toggleModeShortcut,
-          focusCanvasShortcut: baseSettings.focusCanvasShortcut,
-          toggleShapesShortcut: baseSettings.toggleShapesShortcut,
-          setZeroOpacityShortcut: baseSettings.setZeroOpacityShortcut,
+          syncMouseEvents:
+            importedSettings?.syncMouseEvents ?? baseSettings.syncMouseEvents,
+          mouseSyncPositionMode:
+            importedSettings?.mouseSyncPositionMode === "ratio"
+              ? "ratio"
+              : importedSettings?.mouseSyncPositionMode === "actual"
+                ? "actual"
+                : baseSettings.mouseSyncPositionMode,
+          addKeyMapShortcut:
+            typeof importedSettings?.addKeyMapShortcut === "string"
+              ? importedSettings.addKeyMapShortcut.trim() ||
+                baseSettings.addKeyMapShortcut
+              : baseSettings.addKeyMapShortcut,
+          toggleModeShortcut:
+            typeof importedSettings?.toggleModeShortcut === "string"
+              ? importedSettings.toggleModeShortcut.trim() ||
+                baseSettings.toggleModeShortcut
+              : baseSettings.toggleModeShortcut,
+          focusCanvasShortcut:
+            typeof importedSettings?.focusCanvasShortcut === "string"
+              ? importedSettings.focusCanvasShortcut.trim() ||
+                baseSettings.focusCanvasShortcut
+              : baseSettings.focusCanvasShortcut,
+          toggleShapesShortcut:
+            typeof importedSettings?.toggleShapesShortcut === "string"
+              ? importedSettings.toggleShapesShortcut.trim() ||
+                baseSettings.toggleShapesShortcut
+              : baseSettings.toggleShapesShortcut,
+          setZeroOpacityShortcut:
+            typeof importedSettings?.setZeroOpacityShortcut === "string"
+              ? importedSettings.setZeroOpacityShortcut.trim() ||
+                baseSettings.setZeroOpacityShortcut
+              : baseSettings.setZeroOpacityShortcut,
+          toggleDialogShortcut:
+            typeof importedSettings?.toggleDialogShortcut === "string"
+              ? importedSettings.toggleDialogShortcut.trim() ||
+                baseSettings.toggleDialogShortcut
+              : baseSettings.toggleDialogShortcut,
+          keyTriggerPresetSwitchShortcut:
+            typeof importedSettings?.keyTriggerPresetSwitchShortcut === "string"
+              ? importedSettings.keyTriggerPresetSwitchShortcut.trim() ||
+                baseSettings.keyTriggerPresetSwitchShortcut
+              : baseSettings.keyTriggerPresetSwitchShortcut,
+          autoStopSeconds:
+            importedAutoStopSeconds === null
+              ? null
+              : typeof importedAutoStopSeconds === "number" &&
+                  Number.isFinite(importedAutoStopSeconds)
+                ? Math.max(0, importedAutoStopSeconds)
+                : baseSettings.autoStopSeconds,
+          notifyOnRecaptcha:
+            importedSettings?.notifyOnRecaptcha ??
+            baseSettings.notifyOnRecaptcha,
+          stopOnRecaptcha:
+            importedSettings?.stopOnRecaptcha ?? baseSettings.stopOnRecaptcha,
+          mobilePushEnabled:
+            importedSettings?.mobilePushEnabled ??
+            baseSettings.mobilePushEnabled,
+          mobilePushDiscordBotUrl:
+            typeof importedSettings?.mobilePushDiscordBotUrl === "string"
+              ? importedSettings.mobilePushDiscordBotUrl.trim()
+              : baseSettings.mobilePushDiscordBotUrl,
+          mobilePushDiscordUserId:
+            typeof importedSettings?.mobilePushDiscordUserId === "string"
+              ? importedSettings.mobilePushDiscordUserId.trim()
+              : baseSettings.mobilePushDiscordUserId,
+          mobilePushDiscordApiKey:
+            typeof importedSettings?.mobilePushDiscordApiKey === "string"
+              ? importedSettings.mobilePushDiscordApiKey.trim()
+              : baseSettings.mobilePushDiscordApiKey,
+          subscriptionAccessToken:
+            typeof importedSettings?.subscriptionAccessToken === "string"
+              ? importedSettings.subscriptionAccessToken.trim()
+              : baseSettings.subscriptionAccessToken,
+          autoHoly: {
+            enabled:
+              importedSettings?.autoHoly?.enabled ??
+              baseSettings.autoHoly.enabled,
+            debuffType:
+              importedSettings?.autoHoly?.debuffType === "root" ||
+              importedSettings?.autoHoly?.debuffType === "stun" ||
+              importedSettings?.autoHoly?.debuffType === "all"
+                ? importedSettings.autoHoly.debuffType
+                : baseSettings.autoHoly.debuffType,
+            debugOverlayEnabled:
+              importedSettings?.autoHoly?.debugOverlayEnabled ??
+              baseSettings.autoHoly.debugOverlayEnabled,
+            holyKey:
+              typeof importedSettings?.autoHoly?.holyKey === "string"
+                ? importedSettings.autoHoly.holyKey
+                : baseSettings.autoHoly.holyKey,
+            scanRegion: sanitizeScanRegion(
+              importedSettings?.autoHoly?.scanRegion,
+              baseSettings.autoHoly.scanRegion,
+            ),
+          },
+          autoPills: {
+            enabled:
+              importedSettings?.autoPills?.enabled ??
+              baseSettings.autoPills.enabled,
+            hpThreshold:
+              typeof importedSettings?.autoPills?.hpThreshold === "number" &&
+              Number.isFinite(importedSettings.autoPills.hpThreshold)
+                ? Math.max(
+                    1,
+                    Math.min(99, importedSettings.autoPills.hpThreshold),
+                  )
+                : baseSettings.autoPills.hpThreshold,
+            debugOverlayEnabled:
+              importedSettings?.autoPills?.debugOverlayEnabled ??
+              baseSettings.autoPills.debugOverlayEnabled,
+            pillKey:
+              typeof importedSettings?.autoPills?.pillKey === "string"
+                ? importedSettings.autoPills.pillKey
+                : baseSettings.autoPills.pillKey,
+            scanRegion: sanitizeScanRegion(
+              importedSettings?.autoPills?.scanRegion,
+              baseSettings.autoPills.scanRegion,
+            ),
+          },
+          autoAwaken: {
+            scanRegion: sanitizeScanRegion(
+              importedSettings?.autoAwaken?.scanRegion,
+              baseSettings.autoAwaken.scanRegion,
+            ),
+            blessingType:
+              importedSettings?.autoAwaken?.blessingType === "goddess" ||
+              importedSettings?.autoAwaken?.blessingType === "demon" ||
+              importedSettings?.autoAwaken?.blessingType === "auto"
+                ? importedSettings.autoAwaken.blessingType
+                : baseSettings.autoAwaken.blessingType,
+            stat1Criteria: sanitizeAwakenCriteria(
+              importedSettings?.autoAwaken?.stat1Criteria,
+              baseSettings.autoAwaken.stat1Criteria,
+            ),
+            stat2Criteria: sanitizeAwakenCriteria(
+              importedSettings?.autoAwaken?.stat2Criteria,
+              baseSettings.autoAwaken.stat2Criteria,
+            ),
+          },
         };
 
         const warnings: string[] = [];
@@ -9086,6 +10245,27 @@ function MapperApp() {
       };
 
       const importWarnings: string[] = [];
+      const buildUniqueNameWithCounter = (
+        baseName: string,
+        existingNames: Set<string>,
+        fallback: string,
+      ): string => {
+        const normalizedBase = baseName.trim() || fallback;
+        if (!existingNames.has(normalizedBase)) {
+          existingNames.add(normalizedBase);
+          return normalizedBase;
+        }
+
+        let counter = 1;
+        let candidate = `${normalizedBase} (${counter})`;
+        while (existingNames.has(candidate)) {
+          counter += 1;
+          candidate = `${normalizedBase} (${counter})`;
+        }
+
+        existingNames.add(candidate);
+        return candidate;
+      };
 
       const baseSettingsResolution = resolveImportedSettings(
         parsed.settings,
@@ -9096,13 +10276,13 @@ function MapperApp() {
       const baseImportedSettings = baseSettingsResolution.settings;
 
       const importedProfiles: MappingProfile[] = [];
-      const skippedMapperDuplicates: string[] = [];
       const mapperImportedToNewProfileId = new Map<string, string>();
-      const existingMapperProfileSignatures = new Set(
-        latestProfilesRef.current.map((profile) =>
-          buildMapperProfileSignature(profile),
-        ),
-      );
+      const createImportedKeyTriggerProfileId = () =>
+        `kt-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const createImportedKeyTriggerActionId = () =>
+        `kt-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const importedPresetIdMap = new Map<string, string>();
+      const importedPresetIds = new Set<string>();
 
       if (Array.isArray(parsed.profiles)) {
         parsed.profiles.forEach((profile, index) => {
@@ -9122,26 +10302,11 @@ function MapperApp() {
             desiredName,
           );
 
-          const profileSettingsResolution = resolveImportedSettings(
-            profile.settings,
-            `Profile \"${uniqueName}\"`,
-          );
-          importWarnings.push(...profileSettingsResolution.warnings);
-
           const nextProfile: MappingProfile = {
             id: createProfileId(),
             name: uniqueName,
             shapes: profile.shapes.map(normalizeShape),
-            settings: profileSettingsResolution.settings,
           };
-
-          const signature = buildMapperProfileSignature(nextProfile);
-          if (existingMapperProfileSignatures.has(signature)) {
-            skippedMapperDuplicates.push(uniqueName);
-            return;
-          }
-
-          existingMapperProfileSignatures.add(signature);
           importedProfiles.push(nextProfile);
 
           if (typeof profile.id === "string" && profile.id.trim().length > 0) {
@@ -9166,21 +10331,14 @@ function MapperApp() {
           id: createProfileId(),
           name: uniqueName,
           shapes: parsed.shapes.map(normalizeShape),
-          settings: baseImportedSettings,
         };
 
-        const signature = buildMapperProfileSignature(nextProfile);
-        if (existingMapperProfileSignatures.has(signature)) {
-          skippedMapperDuplicates.push(uniqueName);
-        } else {
-          existingMapperProfileSignatures.add(signature);
-          importedProfiles.push(nextProfile);
-          if (
-            typeof parsed.profileId === "string" &&
-            parsed.profileId.trim().length > 0
-          ) {
-            mapperImportedToNewProfileId.set(parsed.profileId, nextProfile.id);
-          }
+        importedProfiles.push(nextProfile);
+        if (
+          typeof parsed.profileId === "string" &&
+          parsed.profileId.trim().length > 0
+        ) {
+          mapperImportedToNewProfileId.set(parsed.profileId, nextProfile.id);
         }
       }
 
@@ -9203,14 +10361,182 @@ function MapperApp() {
       }
 
       if (
+        Array.isArray((parsed as any).keyTriggerPresets) &&
+        (parsed as any).keyTriggerPresets.length > 0
+      ) {
+        const createImportedKeyTriggerPresetId = () =>
+          `kt-preset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        const existingPresetNames = new Set(
+          keyTriggerPresets.map((preset) => preset.name),
+        );
+        const importedPresets: KeyTriggerPreset[] = [];
+
+        (parsed as any).keyTriggerPresets.forEach(
+          (
+            preset: {
+              id?: string;
+              name?: string;
+              switchShortcut?: string;
+              profiles?: KeyTriggerProfile[];
+            },
+            presetIndex: number,
+          ) => {
+            const importedProfiles: KeyTriggerProfile[] = (
+              Array.isArray(preset.profiles) ? preset.profiles : []
+            ).map((profile) => {
+              const nextProfileIdentifier =
+                typeof profile.profileIdentifier === "string" &&
+                profile.profileIdentifier.trim().length > 0
+                  ? profile.profileIdentifier.trim()
+                  : `kt-identifier-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+              const normalizedSpecificTargetTabIds = Array.from(
+                new Set(
+                  (Array.isArray(profile.specificTargetTabIds)
+                    ? profile.specificTargetTabIds
+                    : Number.isFinite(profile.specificTargetTabId)
+                      ? [profile.specificTargetTabId as number]
+                      : []
+                  ).filter((id) => Number.isFinite(id)),
+                ),
+              );
+              const normalizedSpecificTargetTabNames = Array.from(
+                new Set(
+                  (Array.isArray(profile.specificTargetTabNames)
+                    ? profile.specificTargetTabNames
+                    : typeof profile.specificTargetTabName === "string" &&
+                        profile.specificTargetTabName.trim().length > 0
+                      ? [profile.specificTargetTabName]
+                      : []
+                  ).filter(
+                    (name): name is string =>
+                      typeof name === "string" && name.trim().length > 0,
+                  ),
+                ),
+              );
+
+              const normalizedActions: KeyTriggerAction[] = (
+                Array.isArray(profile.actions) ? profile.actions : []
+              ).map((action, actionIndex) => ({
+                ...action,
+                id: createImportedKeyTriggerActionId(),
+                name: action.name?.trim() || `Action ${actionIndex + 1}`,
+                key: action.key?.trim() || "",
+                delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+                enabled: action.enabled !== false,
+                actionTriggerType:
+                  action.actionTriggerType === "repeat" ? "repeat" : "once",
+                actionRepeatCount:
+                  action.actionTriggerType === "repeat"
+                    ? normalizeKeyTriggerActionRepeatCount(
+                        action.actionRepeatCount,
+                        2,
+                      )
+                    : 1,
+                executionScope:
+                  action.executionScope === "current" ||
+                  action.executionScope === "other" ||
+                  action.executionScope === "specific"
+                    ? action.executionScope
+                    : action.otherTabsOnly === true
+                      ? "other"
+                      : action.currentTabOnly === true
+                        ? "current"
+                        : "all",
+                currentTabOnly: action.currentTabOnly === true,
+                otherTabsOnly: action.otherTabsOnly === true,
+                specificTargetTabIds: Array.from(
+                  new Set(
+                    (action.specificTargetTabIds ?? []).filter((id) =>
+                      Number.isFinite(id),
+                    ),
+                  ),
+                ),
+                specificTargetTabNames: Array.from(
+                  new Set(
+                    (action.specificTargetTabNames ?? []).filter(
+                      (name): name is string =>
+                        typeof name === "string" && name.trim().length > 0,
+                    ),
+                  ),
+                ),
+              }));
+
+              return {
+                ...profile,
+                id: createImportedKeyTriggerProfileId(),
+                profileIdentifier: nextProfileIdentifier,
+                name:
+                  typeof profile.name === "string" &&
+                  profile.name.trim().length > 0
+                    ? profile.name.trim()
+                    : `Profile ${presetIndex + 1}`,
+                executionScope:
+                  profile.executionScope === "current" ||
+                  profile.executionScope === "other" ||
+                  profile.executionScope === "specific"
+                    ? profile.executionScope
+                    : normalizedSpecificTargetTabIds.length > 0
+                      ? "specific"
+                      : profile.otherTabsOnly === true
+                        ? "other"
+                        : profile.currentTabOnly === true
+                          ? "current"
+                          : "all",
+                currentTabOnly: profile.currentTabOnly === true,
+                otherTabsOnly: profile.otherTabsOnly === true,
+                specificTargetTabIds: normalizedSpecificTargetTabIds,
+                specificTargetTabNames: normalizedSpecificTargetTabNames,
+                specificTargetTabId: normalizedSpecificTargetTabIds[0] ?? null,
+                specificTargetTabName:
+                  normalizedSpecificTargetTabNames[0] ?? null,
+                actions: normalizedActions,
+              };
+            });
+
+            const presetNameBase =
+              typeof preset.name === "string" && preset.name.trim().length > 0
+                ? preset.name.trim()
+                : `Preset ${presetIndex + 1}`;
+
+            const importedPreset: KeyTriggerPreset = {
+              id: createImportedKeyTriggerPresetId(),
+              name: buildUniqueNameWithCounter(
+                presetNameBase,
+                existingPresetNames,
+                "Preset",
+              ),
+              switchShortcut:
+                typeof preset.switchShortcut === "string"
+                  ? preset.switchShortcut.trim()
+                  : "",
+              profiles: importedProfiles,
+            };
+
+            if (typeof preset.id === "string" && preset.id.trim().length > 0) {
+              importedPresetIdMap.set(preset.id, importedPreset.id);
+            }
+            importedPresetIds.add(importedPreset.id);
+            importedPresets.push(importedPreset);
+          },
+        );
+
+        if (importedPresets.length > 0) {
+          setKeyTriggerPresets((prev) => [...prev, ...importedPresets]);
+          if (typeof (parsed as any).selectedKeyTriggerPresetId === "string") {
+            const remappedPresetId = importedPresetIdMap.get(
+              (parsed as any).selectedKeyTriggerPresetId,
+            );
+            if (remappedPresetId) {
+              setSelectedKeyTriggerPresetId(remappedPresetId);
+            }
+          }
+        }
+      } else if (
         Array.isArray(parsed.keyTriggerProfiles) &&
         parsed.keyTriggerProfiles.length > 0
       ) {
-        const createImportedKeyTriggerProfileId = () =>
-          `kt-profile-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        const createImportedKeyTriggerActionId = () =>
-          `kt-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
         const existingKeyTriggerProfileByIdentifier = new Map(
           keyTriggerProfiles
             .map((profile) => {
@@ -9280,9 +10606,59 @@ function MapperApp() {
                       2,
                     )
                   : 1,
+              executionScope:
+                action.executionScope === "current" ||
+                action.executionScope === "other" ||
+                action.executionScope === "specific"
+                  ? action.executionScope
+                  : action.otherTabsOnly === true
+                    ? "other"
+                    : action.currentTabOnly === true
+                      ? "current"
+                      : "all",
               currentTabOnly: action.currentTabOnly === true,
               otherTabsOnly: action.otherTabsOnly === true,
+              specificTargetTabIds: Array.from(
+                new Set(
+                  (action.specificTargetTabIds ?? []).filter((id) =>
+                    Number.isFinite(id),
+                  ),
+                ),
+              ),
+              specificTargetTabNames: Array.from(
+                new Set(
+                  (action.specificTargetTabNames ?? []).filter(
+                    (name): name is string =>
+                      typeof name === "string" && name.trim().length > 0,
+                  ),
+                ),
+              ),
             }));
+
+            const normalizedSpecificTargetTabIds = Array.from(
+              new Set(
+                (Array.isArray(profile.specificTargetTabIds)
+                  ? profile.specificTargetTabIds
+                  : Number.isFinite(profile.specificTargetTabId)
+                    ? [profile.specificTargetTabId as number]
+                    : []
+                ).filter((id) => Number.isFinite(id)),
+              ),
+            );
+            const normalizedSpecificTargetTabNames = Array.from(
+              new Set(
+                (Array.isArray(profile.specificTargetTabNames)
+                  ? profile.specificTargetTabNames
+                  : typeof profile.specificTargetTabName === "string" &&
+                      profile.specificTargetTabName.trim().length > 0
+                    ? [profile.specificTargetTabName]
+                    : []
+                ).filter(
+                  (name): name is string =>
+                    typeof name === "string" && name.trim().length > 0,
+                ),
+              ),
+            );
 
             const normalizedProfile: KeyTriggerProfile = {
               id: createImportedKeyTriggerProfileId(),
@@ -9304,8 +10680,26 @@ function MapperApp() {
                   ? normalizeKeyTriggerRunCount(profile.repeatCount, 2)
                   : 1,
               triggerKey: profile.triggerKey?.trim() || "",
+              executionScope:
+                profile.executionScope === "current" ||
+                profile.executionScope === "other" ||
+                profile.executionScope === "specific"
+                  ? profile.executionScope
+                  : profile.specificTargetTabId !== undefined &&
+                      profile.specificTargetTabId !== null
+                    ? "specific"
+                    : profile.otherTabsOnly === true
+                      ? "other"
+                      : profile.currentTabOnly === true
+                        ? "current"
+                        : "all",
               currentTabOnly: profile.currentTabOnly === true,
               otherTabsOnly: profile.otherTabsOnly === true,
+              specificTargetTabIds: normalizedSpecificTargetTabIds,
+              specificTargetTabNames: normalizedSpecificTargetTabNames,
+              specificTargetTabId: normalizedSpecificTargetTabIds[0] ?? null,
+              specificTargetTabName:
+                normalizedSpecificTargetTabNames[0] ?? null,
               delayMode:
                 profile.delayMode === "synchronous"
                   ? "synchronous"
@@ -9342,7 +10736,40 @@ function MapperApp() {
         );
 
         if (incomingKtProfiles.length > 0) {
-          setKeyTriggerProfiles((prev) => [...prev, ...incomingKtProfiles]);
+          if (keyTriggerPresets.length === 0) {
+            const defaultPresetId = "kt-preset-default";
+            setKeyTriggerPresets([
+              {
+                id: defaultPresetId,
+                name: "Default",
+                switchShortcut: "",
+                profiles: incomingKtProfiles,
+              },
+            ]);
+            setSelectedKeyTriggerPresetId(defaultPresetId);
+            setKeyTriggerProfiles(incomingKtProfiles);
+            importWarnings.push(
+              `Migrated ${incomingKtProfiles.length} legacy key-trigger profile${incomingKtProfiles.length > 1 ? "s" : ""} into preset "Default".`,
+            );
+          } else {
+            const targetPresetId = keyTriggerPresets.some(
+              (preset) => preset.id === selectedKeyTriggerPresetId,
+            )
+              ? selectedKeyTriggerPresetId
+              : keyTriggerPresets[0].id;
+
+            setKeyTriggerPresets((prev) =>
+              prev.map((preset) =>
+                preset.id === targetPresetId
+                  ? {
+                      ...preset,
+                      profiles: [...preset.profiles, ...incomingKtProfiles],
+                    }
+                  : preset,
+              ),
+            );
+            setKeyTriggerProfiles((prev) => [...prev, ...incomingKtProfiles]);
+          }
         }
 
         if (
@@ -9413,6 +10840,57 @@ function MapperApp() {
         }
       }
 
+      if (
+        (parsed as any).keyTriggerCharacterPresetMapping &&
+        typeof (parsed as any).keyTriggerCharacterPresetMapping === "object"
+      ) {
+        const validPresetIds = new Set([
+          ...keyTriggerPresets.map((preset) => preset.id),
+          ...importedPresetIds,
+        ]);
+        const filteredImportedPresetMapping: Record<string, string> = {};
+
+        Object.entries(
+          (parsed as any).keyTriggerCharacterPresetMapping,
+        ).forEach(([characterName, presetId]) => {
+          if (
+            typeof characterName === "string" &&
+            characterName.trim().length > 0 &&
+            typeof presetId === "string"
+          ) {
+            const remappedPresetId =
+              importedPresetIdMap.get(presetId) ?? presetId;
+            if (validPresetIds.has(remappedPresetId)) {
+              filteredImportedPresetMapping[characterName.trim()] =
+                remappedPresetId;
+            }
+          }
+        });
+
+        if (Object.keys(filteredImportedPresetMapping).length > 0) {
+          setKeyTriggerCharacterPresetMapping((prev) => ({
+            ...prev,
+            ...filteredImportedPresetMapping,
+          }));
+        }
+      }
+
+      if (
+        typeof (parsed as any).selectedKeyTriggerPresetId === "string" &&
+        [
+          ...keyTriggerPresets.map((preset) => preset.id),
+          ...Array.from(importedPresetIds),
+        ].includes(
+          importedPresetIdMap.get((parsed as any).selectedKeyTriggerPresetId) ??
+            (parsed as any).selectedKeyTriggerPresetId,
+        )
+      ) {
+        setSelectedKeyTriggerPresetId(
+          importedPresetIdMap.get((parsed as any).selectedKeyTriggerPresetId) ??
+            (parsed as any).selectedKeyTriggerPresetId,
+        );
+      }
+
       const importedSelectedTabIds = Array.isArray(
         parsed.selectedKeyTriggerTabIds,
       )
@@ -9481,12 +10959,6 @@ function MapperApp() {
             ...filteredMapperMapping,
           }));
         }
-      }
-
-      if (skippedMapperDuplicates.length > 0) {
-        importWarnings.push(
-          `Skipped ${skippedMapperDuplicates.length} duplicate key-mapper profile${skippedMapperDuplicates.length > 1 ? "s" : ""}.`,
-        );
       }
 
       if (parsed.settings && typeof parsed.settings === "object") {
@@ -9572,21 +11044,21 @@ function MapperApp() {
         )
       ) {
         Modal.error({
+          className: "fm-confirm-modal",
           title: "Invalid import payload",
           content:
-            "Please provide a valid JSON mapping export with shapes or profiles.",
+            "Please provide a valid tool-config JSON export with profiles, settings, or key-trigger data.",
           zIndex: 2147483647,
         });
         return;
       }
 
-      setPendingImportText("");
       setImportText("");
       setImportOpen(false);
-      closeProfileNameDialog();
 
       if (importWarnings.length > 0) {
         modal.warning({
+          className: "fm-confirm-modal",
           title: "Some import items were skipped",
           content: importWarnings.join(" "),
           zIndex: 2147483647,
@@ -9594,46 +11066,22 @@ function MapperApp() {
       }
     } catch {
       Modal.error({
+        className: "fm-confirm-modal",
         title: "Invalid import payload",
-        content: "Please provide a valid JSON mapping export.",
+        content: "Please provide a valid tool-config JSON export.",
         zIndex: 2147483647,
       });
     }
   };
 
-  const handleProfileNameDialogSave = () => {
-    const trimmed = profileNameInput.trim();
-    if (!trimmed) {
-      setProfileNameError("Profile name is required.");
-      return;
-    }
-
-    if (profileNameDialogMode === "create") {
-      const ok = createProfile(trimmed);
-      if (!ok) {
-        return;
-      }
-      closeProfileNameDialog();
-      return;
-    }
-
-    if (profileNameDialogMode === "rename") {
-      const ok = renameSelectedProfile(trimmed);
-      if (!ok) return;
-      closeProfileNameDialog();
-      return;
-    }
-
-    performImportWithName(trimmed);
-  };
-
   const applyImport = () => {
     if (!canImportNow) {
       Modal.error({
-        title: "Cannot import mappings",
+        className: "fm-confirm-modal",
+        title: "Cannot import tool config",
         content:
           importAnalysis.parseError ||
-          "Please provide a valid JSON mapping export with shapes.",
+          "Please provide a valid tool-config JSON export.",
         zIndex: 2147483647,
       });
       return;
@@ -9663,27 +11111,25 @@ function MapperApp() {
       suggestedName = "Imported";
     }
 
-    setPendingImportText(importText);
+    performImportWithName(
+      hasKeyMapperProfiles ? suggestedName : "Imported",
+      importText,
+    );
+  };
 
-    if (!hasKeyMapperProfiles) {
-      performImportWithName("Imported");
+  const handleThemeChange = (value: ThemeMode) => {
+    if (!isThemeMode(value)) {
       return;
     }
 
-    setImportOpen(false);
-    openProfileNameDialog("import", suggestedName);
+    setSettings((prev) => ({ ...prev, theme: value }));
   };
 
-  const handleThemeChange = (value: string | number) => {
-    setSettings((prev) => ({ ...prev, theme: value as ThemeMode }));
-  };
-
-  const algorithm =
-    appliedTheme === "dark" ? theme.darkAlgorithm : theme.defaultAlgorithm;
+  const algorithm = isDarkTheme ? theme.darkAlgorithm : theme.defaultAlgorithm;
 
   useEffect(() => {
     const bodyClass = "fm-dark-theme";
-    if (appliedTheme === "dark") {
+    if (isDarkTheme) {
       document.body.classList.add(bodyClass);
       return () => {
         document.body.classList.remove(bodyClass);
@@ -9691,17 +11137,254 @@ function MapperApp() {
     }
 
     document.body.classList.remove(bodyClass);
-  }, [appliedTheme]);
+  }, [isDarkTheme]);
+
+  useEffect(() => {
+    const overlayRoot = document.getElementById(ROOT_ID);
+    if (!overlayRoot) {
+      return;
+    }
+
+    let appliedCursor: string | null = null;
+
+    const readCursorVariable = (
+      name: string,
+      fallback: string,
+      element?: Element | null,
+    ): string => {
+      const fromElement = element
+        ? window.getComputedStyle(element).getPropertyValue(name).trim()
+        : "";
+      if (fromElement) {
+        return fromElement;
+      }
+
+      const fromRoot = window
+        .getComputedStyle(overlayRoot)
+        .getPropertyValue(name)
+        .trim();
+      if (fromRoot) {
+        return fromRoot;
+      }
+
+      const fromBody = window
+        .getComputedStyle(document.body)
+        .getPropertyValue(name)
+        .trim();
+      return fromBody || fallback;
+    };
+
+    const resolveOverlayCursor = (
+      target: EventTarget | null,
+    ): string | null => {
+      if (rotateIdRef.current) {
+        return null;
+      }
+
+      if (!(target instanceof Element) || !target.closest(`#${ROOT_ID}`)) {
+        return null;
+      }
+
+      if (target.closest(".fm-automation-snipper")) {
+        return "crosshair";
+      }
+
+      if (
+        target.closest(
+          ".react-resizable-handle-nw, .react-resizable-handle-se, .fm-resize-handle-tl, .fm-resize-handle-br",
+        )
+      ) {
+        return readCursorVariable(
+          "--fm-cursor-diag-primary",
+          "nwse-resize",
+          target,
+        );
+      }
+
+      if (
+        target.closest(
+          ".react-resizable-handle-ne, .react-resizable-handle-sw, .fm-resize-handle-tr, .fm-resize-handle-bl",
+        )
+      ) {
+        return readCursorVariable(
+          "--fm-cursor-diag-secondary",
+          "nesw-resize",
+          target,
+        );
+      }
+
+      if (
+        target.closest(
+          ".react-resizable-handle-n, .react-resizable-handle-s, .fm-resize-handle-t, .fm-resize-handle-b",
+        )
+      ) {
+        return readCursorVariable("--fm-cursor-vertical", "ns-resize", target);
+      }
+
+      if (
+        target.closest(
+          ".react-resizable-handle-e, .react-resizable-handle-w, .fm-resize-handle-r, .fm-resize-handle-l",
+        )
+      ) {
+        return readCursorVariable(
+          "--fm-cursor-horizontal",
+          "ew-resize",
+          target,
+        );
+      }
+
+      if (
+        target.closest(
+          [
+            ".fm-shape-shortcut-input",
+            ".fm-shape-context-input",
+            ".fm-global-shortcut-input",
+            ".ant-input",
+            "input.ant-input",
+            ".ant-input-number-input",
+            "input",
+            "textarea",
+          ].join(", "),
+        )
+      ) {
+        return readCursorVariable("--fm-cursor-input", "text", target);
+      }
+
+      if (
+        target.closest(
+          [
+            ".fm-dialog",
+            ".fm-panel",
+            ".fm-toolbar",
+            ".fm-shape",
+            ".fm-shape-shell",
+            ".fm-shape-fill",
+            ".fm-shape-hit-area",
+            ".fm-close-btn",
+            ".fm-shortcut-input-shell",
+            ".fm-shape-context-action",
+            ".fm-rotate-handle",
+          ].join(", "),
+        )
+      ) {
+        return readCursorVariable("--fm-cursor-base", "auto", target);
+      }
+
+      return null;
+    };
+
+    const applyOverlayCursor = (target: EventTarget | null) => {
+      const nextCursor = resolveOverlayCursor(target);
+
+      if (!nextCursor) {
+        if (appliedCursor !== null && !rotateIdRef.current) {
+          document.body.style.cursor = "";
+          appliedCursor = null;
+        }
+        return;
+      }
+
+      if (appliedCursor === nextCursor) {
+        return;
+      }
+
+      document.body.style.cursor = nextCursor;
+      appliedCursor = nextCursor;
+    };
+
+    const clearOverlayCursor = () => {
+      if (appliedCursor !== null && !rotateIdRef.current) {
+        document.body.style.cursor = "";
+        appliedCursor = null;
+      }
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      applyOverlayCursor(event.target);
+    };
+
+    const onPointerLeave = (event: PointerEvent) => {
+      const nextTarget = event.relatedTarget;
+      if (nextTarget instanceof Element && nextTarget.closest(`#${ROOT_ID}`)) {
+        applyOverlayCursor(nextTarget);
+        return;
+      }
+
+      clearOverlayCursor();
+    };
+
+    overlayRoot.addEventListener("pointermove", onPointerMove, true);
+    overlayRoot.addEventListener("pointerover", onPointerMove, true);
+    overlayRoot.addEventListener("pointerout", onPointerLeave, true);
+
+    return () => {
+      overlayRoot.removeEventListener("pointermove", onPointerMove, true);
+      overlayRoot.removeEventListener("pointerover", onPointerMove, true);
+      overlayRoot.removeEventListener("pointerout", onPointerLeave, true);
+      clearOverlayCursor();
+    };
+  }, [rotateIdRef]);
 
   return (
-    <ConfigProvider theme={{ algorithm }}>
+    <ConfigProvider
+      theme={{
+        algorithm,
+        token: resolvedTheme.token,
+      }}
+    >
       <App>
         {modalContextHolder}
         <div
-          className={`fm-relative fm-size-full ${appliedTheme === "dark" ? "fm-dark" : ""}`}
+          className={`fm-relative fm-size-full ${isDarkTheme ? "fm-dark fm-theme-dark" : "fm-theme-light"}`}
+          style={
+            {
+              ["--fm-accent" as "--fm-accent"]: resolvedTheme.accent,
+              ["--fm-theme-bg-base" as "--fm-theme-bg-base"]:
+                resolvedTheme.token.colorBgBase,
+              ["--fm-theme-bg-container" as "--fm-theme-bg-container"]:
+                resolvedTheme.token.colorBgContainer,
+              ["--fm-theme-bg-elevated" as "--fm-theme-bg-elevated"]:
+                resolvedTheme.token.colorBgElevated,
+              ["--fm-theme-bg-layout" as "--fm-theme-bg-layout"]:
+                resolvedTheme.token.colorBgLayout,
+              ["--fm-theme-text" as "--fm-theme-text"]:
+                resolvedTheme.token.colorText,
+              ["--fm-theme-text-secondary" as "--fm-theme-text-secondary"]:
+                resolvedTheme.token.colorTextSecondary,
+              ["--fm-theme-border" as "--fm-theme-border"]:
+                resolvedTheme.token.colorBorder,
+              ["--fm-theme-border-secondary" as "--fm-theme-border-secondary"]:
+                resolvedTheme.token.colorBorderSecondary,
+              ["--fm-theme-fill" as "--fm-theme-fill"]:
+                resolvedTheme.token.colorFillSecondary,
+              ["--fm-theme-fill-strong" as "--fm-theme-fill-strong"]:
+                resolvedTheme.token.colorFillTertiary,
+              ["--fm-theme-fill-soft" as "--fm-theme-fill-soft"]:
+                resolvedTheme.token.colorFillQuaternary,
+              ["--fm-theme-primary" as "--fm-theme-primary"]:
+                resolvedTheme.token.colorPrimary,
+              ["--fm-theme-primary-bg" as "--fm-theme-primary-bg"]:
+                resolvedTheme.token.colorPrimaryBg,
+              ["--fm-theme-success" as "--fm-theme-success"]:
+                resolvedTheme.token.colorSuccess,
+              ["--fm-theme-success-bg" as "--fm-theme-success-bg"]:
+                resolvedTheme.token.colorSuccessBg,
+              ["--fm-theme-warning" as "--fm-theme-warning"]:
+                resolvedTheme.token.colorWarning,
+              ["--fm-theme-warning-bg" as "--fm-theme-warning-bg"]:
+                resolvedTheme.token.colorWarningBg,
+              ["--fm-theme-error" as "--fm-theme-error"]:
+                resolvedTheme.token.colorError,
+              ["--fm-theme-error-bg" as "--fm-theme-error-bg"]:
+                resolvedTheme.token.colorErrorBg,
+              ["--fm-theme-info-bg" as "--fm-theme-info-bg"]:
+                resolvedTheme.token.colorInfoBg,
+            } as CSSProperties
+          }
         >
           <ShapeOverlay
             overlayVisible={overlayVisible}
+            dialogVisible={dialogVisible}
             shapesVisible={shapesVisible}
             shapes={shapes}
             settings={settings}
@@ -9733,6 +11416,8 @@ function MapperApp() {
             activeProfileName={activeProfileName}
             focusGameCanvas={focusGameCanvas}
             onResetDialogConfiguration={resetDialogConfiguration}
+            onFactoryResetConfiguration={factoryResetConfiguration}
+            onRestoreDialogConfiguration={restoreKeyMapperProfilesFromBackup}
             settings={settings}
             toggleMode={toggleMode}
             addKeyMap={addKeyMap}
@@ -9741,25 +11426,15 @@ function MapperApp() {
             onSelectProfileChange={(value) => {
               requestProfileSwitch(value);
             }}
-            onOpenCreateProfile={() =>
-              openProfileNameDialog(
-                "create",
-                makeUniqueProfileName(latestProfilesRef.current, "Profile"),
-              )
-            }
+            onCreateProfileWithName={createProfile}
             duplicateSelectedProfile={duplicateSelectedProfile}
-            onOpenRenameProfile={() => {
-              if (!selectedProfile) return;
-              openProfileNameDialog("rename", selectedProfile.name);
-            }}
+            onRenameProfileWithName={renameSelectedProfile}
             deleteSelectedProfile={deleteSelectedProfile}
             activeUtilityTab={activeUtilityTab}
             onActiveUtilityTabChange={setActiveUtilityTab}
             selectedPaletteShape={selectedPaletteShape}
             setSelectedPaletteShape={setSelectedPaletteShape}
             handleThemeChange={handleThemeChange}
-            draftShape={draftShape}
-            setDraftShape={setDraftShape}
             setShapes={setShapes}
             normalizeShape={normalizeShape}
             setSettings={setSettings}
@@ -9767,19 +11442,22 @@ function MapperApp() {
             setImportOpen={setImportOpen}
             captureGlobalShortcut={captureGlobalShortcut}
             globalShortcutErrors={globalShortcutErrors}
-            keyTriggerProfiles={keyTriggerProfiles}
-            onKeyTriggerProfilesChange={setKeyTriggerProfiles}
+            keyTriggerPresets={keyTriggerPresets}
+            selectedKeyTriggerPresetId={selectedKeyTriggerPresetId}
+            setKeyTriggerPresets={setKeyTriggerPresets}
+            setSelectedKeyTriggerPresetId={setSelectedKeyTriggerPresetId}
             keyTriggerCharacters={keyTriggerCharacters}
             selectedKeyTriggerTabIds={selectedKeyTriggerTabIds}
             onSelectedKeyTriggerTabIdsChange={setSelectedKeyTriggerTabIds}
+            keyTriggerCharacterPresetMapping={keyTriggerCharacterPresetMapping}
+            setKeyTriggerCharacterPresetMapping={
+              setKeyTriggerCharacterPresetMapping
+            }
             keyTriggerCharacterProfileMapping={
               keyTriggerCharacterProfileMapping
             }
             setKeyTriggerCharacterProfileMapping={
               setKeyTriggerCharacterProfileMapping
-            }
-            onKeyTriggerSelectedProfileIdChange={
-              handleKeyTriggerSelectedProfileIdChange
             }
             reloadKeyTriggerCharacters={syncReloadKeyTriggerCharacters}
             autoStopCountdown={autoStopCountdown}
@@ -9792,6 +11470,37 @@ function MapperApp() {
             autoAwakenLogs={autoAwakenLogs}
             onStartAutoAwaken={startAutoAwakenLoop}
             onStopAutoAwaken={stopAutoAwakenLoop}
+            accessLoading={accessControl.loading}
+            subscriptionPlan={accessControl.plan}
+            accessRole={accessControl.role}
+            canManageAccess={accessControl.canManageAccess}
+            canManageAdmins={accessControl.canManageAdmins}
+            canGenerateTokens={accessControl.canGenerateTokens}
+            hasToolAccess={accessControl.hasToolAccess}
+            whitelisted={accessControl.whitelisted}
+            accessReason={accessControl.reason}
+            tokenExpiresAtIso={accessControl.tokenExpiresAtIso}
+            accessLastCheckedAtIso={accessLastCheckedAtIso}
+            accessSource={accessControl.accessSource}
+            onAdminUpsertAccess={handleAdminUpsertAccess}
+            onSuperAdminSetRole={handleSuperAdminSetRole}
+            onListWhitelistUsers={
+              handleListWhitelistUsers as () => Promise<WhitelistUserRecord[]>
+            }
+            onUpsertWhitelistUser={handleUpsertWhitelistUser}
+            onDeleteWhitelistUser={handleDeleteWhitelistUser}
+            onGenerateSubscriptionToken={handleGenerateSubscriptionToken}
+            onListSubscriptionTokens={handleListSubscriptionTokens}
+            onRevokeSubscriptionToken={handleRevokeSubscriptionToken}
+            onDeleteSubscriptionToken={handleDeleteSubscriptionToken}
+            onRefreshAccessControl={refreshAccessControl}
+            featureAccess={{
+              keyTrigger: canUseKeyTrigger,
+              autoHoly: canUseAutoHoly,
+              autoPills: canUseAutoPills,
+              autoAwaken: canUseAutoAwaken,
+              syncMouse: canUseSyncMouseEvents,
+            }}
           />
 
           {automationRegionCaptureTarget && (
@@ -10058,20 +11767,7 @@ function MapperApp() {
             onClose={() => {
               setImportOpen(false);
               setImportText("");
-              setPendingImportText("");
             }}
-          />
-
-          <ProfileNameModal
-            overlayVisible={overlayVisible}
-            profileNameDialogOpen={profileNameDialogOpen}
-            profileNameDialogMode={profileNameDialogMode}
-            profileNameInput={profileNameInput}
-            profileNameError={profileNameError}
-            setProfileNameInput={setProfileNameInput}
-            clearProfileNameError={() => setProfileNameError("")}
-            onClose={closeProfileNameDialog}
-            onSave={handleProfileNameDialogSave}
           />
         </div>
       </App>
@@ -10085,8 +11781,27 @@ const mount = () => {
     existingRoot.remove();
   }
 
+  const resolveExtensionAssetUrl = (assetPath: string) =>
+    typeof chrome !== "undefined" && chrome.runtime?.getURL
+      ? chrome.runtime.getURL(assetPath)
+      : assetPath;
+
   const rootElement = document.createElement("div");
   rootElement.id = ROOT_ID;
+  const cursorVariables = {
+    "--fm-cursor-base": `url("${resolveExtensionAssetUrl("curbase.cur")}"), auto`,
+    "--fm-cursor-input": `url("${resolveExtensionAssetUrl("edit.cur")}"), text`,
+    "--fm-cursor-diag-primary": `url("${resolveExtensionAssetUrl("cur00001.cur")}"), nwse-resize`,
+    "--fm-cursor-diag-secondary": `url("${resolveExtensionAssetUrl("cur00002.cur")}"), nesw-resize`,
+    "--fm-cursor-vertical": `url("${resolveExtensionAssetUrl("resize_h.cur")}"), ns-resize`,
+    "--fm-cursor-horizontal": `url("${resolveExtensionAssetUrl("hori.cur")}"), ew-resize`,
+  } as const;
+
+  Object.entries(cursorVariables).forEach(([name, value]) => {
+    rootElement.style.setProperty(name, value);
+    document.body.style.setProperty(name, value);
+  });
+
   document.body.appendChild(rootElement);
 
   createRoot(rootElement).render(<MapperApp />);
@@ -10105,4 +11820,7 @@ window.addEventListener("unhandledrejection", (event) => {
   }
 });
 
-mount();
+void (async () => {
+  await storage.initialize();
+  mount();
+})();

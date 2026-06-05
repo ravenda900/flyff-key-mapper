@@ -34,6 +34,7 @@ type SnapGuides = {
 
 type Props = {
   overlayVisible: boolean;
+  dialogVisible: boolean;
   shapesVisible: boolean;
   shapes: ShapeMapping[];
   settings: MapperSettings;
@@ -60,6 +61,7 @@ type Props = {
 
 type ShapeItemProps = {
   shape: ShapeMapping;
+  shapeOpacity: number;
   shapeRects: Record<string, ShapeRect>;
   isSelected: boolean;
   selectedIds: string[];
@@ -114,6 +116,7 @@ type ShapeItemProps = {
 
 const ShapeOverlayItem = ({
   shape,
+  shapeOpacity,
   shapeRects,
   isSelected,
   selectedIds,
@@ -210,10 +213,6 @@ const ShapeOverlayItem = ({
           if (!editMode) return;
           event.preventDefault();
           event.stopPropagation();
-          if (event.key === "Escape") {
-            (event.target as HTMLInputElement).blur();
-            return;
-          }
           if (event.key === "Backspace" || event.key === "Delete") {
             updateShapeBinding(shape.id, "");
             return;
@@ -315,7 +314,7 @@ const ShapeOverlayItem = ({
                 bottom: "auto",
                 width: "12px",
                 height: "12px",
-                cursor: "nwse-resize",
+                cursor: "var(--fm-cursor-diag-primary)",
               },
               top: {
                 left: "0",
@@ -324,7 +323,7 @@ const ShapeOverlayItem = ({
                 bottom: "auto",
                 width: "auto",
                 height: "8px",
-                cursor: "ns-resize",
+                cursor: "var(--fm-cursor-vertical)",
               },
               topRight: {
                 right: "2px",
@@ -333,7 +332,7 @@ const ShapeOverlayItem = ({
                 bottom: "auto",
                 width: "12px",
                 height: "12px",
-                cursor: "nesw-resize",
+                cursor: "var(--fm-cursor-diag-secondary)",
               },
               right: {
                 right: "0",
@@ -342,7 +341,7 @@ const ShapeOverlayItem = ({
                 bottom: "0",
                 width: "8px",
                 height: "auto",
-                cursor: "ew-resize",
+                cursor: "var(--fm-cursor-horizontal)",
               },
               bottom: {
                 left: "0",
@@ -351,7 +350,7 @@ const ShapeOverlayItem = ({
                 top: "auto",
                 width: "auto",
                 height: "8px",
-                cursor: "ns-resize",
+                cursor: "var(--fm-cursor-vertical)",
               },
               bottomLeft: {
                 left: "2px",
@@ -360,7 +359,7 @@ const ShapeOverlayItem = ({
                 top: "auto",
                 width: "12px",
                 height: "12px",
-                cursor: "nesw-resize",
+                cursor: "var(--fm-cursor-diag-secondary)",
               },
               left: {
                 left: "0",
@@ -369,7 +368,7 @@ const ShapeOverlayItem = ({
                 bottom: "0",
                 width: "8px",
                 height: "auto",
-                cursor: "ew-resize",
+                cursor: "var(--fm-cursor-horizontal)",
               },
               bottomRight: {
                 right: "2px",
@@ -378,7 +377,7 @@ const ShapeOverlayItem = ({
                 top: "auto",
                 width: "12px",
                 height: "12px",
-                cursor: "nwse-resize",
+                cursor: "var(--fm-cursor-diag-primary)",
               },
             }
           : {}
@@ -769,7 +768,7 @@ const ShapeOverlayItem = ({
         className="fm-shape-shell"
         style={{
           transform: `rotate(${shape.rotation}deg)`,
-          opacity: shape.opacity,
+          opacity: shapeOpacity,
           pointerEvents: "auto",
         }}
       >
@@ -876,6 +875,7 @@ const MemoizedShapeOverlayItem = memo(
   ShapeOverlayItem,
   (prev, next) =>
     prev.shape === next.shape &&
+    prev.shapeOpacity === next.shapeOpacity &&
     prev.isSelected === next.isSelected &&
     prev.editMode === next.editMode &&
     prev.livePosition === next.livePosition,
@@ -883,6 +883,7 @@ const MemoizedShapeOverlayItem = memo(
 
 export const ShapeOverlay = ({
   overlayVisible,
+  dialogVisible,
   shapesVisible,
   shapes,
   settings,
@@ -1353,15 +1354,17 @@ export const ShapeOverlay = ({
   );
 
   useEffect(() => {
-    if (!overlayVisible || !shapesVisible || !settings.editMode) {
+    if (
+      !overlayVisible ||
+      !dialogVisible ||
+      !shapesVisible ||
+      !settings.editMode ||
+      !hasClipboardShapes
+    ) {
       return;
     }
 
     const onCanvasContextMenu = (event: MouseEvent) => {
-      if (!hasClipboardShapes) {
-        return;
-      }
-
       const target = event.target as HTMLElement | null;
       if (!target?.closest("canvas")) {
         return;
@@ -1381,7 +1384,13 @@ export const ShapeOverlay = ({
         capture: true,
       });
     };
-  }, [hasClipboardShapes, overlayVisible, settings.editMode, shapesVisible]);
+  }, [
+    dialogVisible,
+    hasClipboardShapes,
+    overlayVisible,
+    settings.editMode,
+    shapesVisible,
+  ]);
 
   useEffect(() => {
     if (!cursorMoveState || !settings.editMode) {
@@ -1723,12 +1732,13 @@ export const ShapeOverlay = ({
       !settings.editMode ||
       !overlayVisible ||
       !shapesVisible ||
-      (contextMenu.kind === "canvas" && !hasClipboardShapes)
+      (contextMenu.kind === "canvas" && (!hasClipboardShapes || !dialogVisible))
     ) {
       setContextMenu(null);
     }
   }, [
     contextMenu,
+    dialogVisible,
     hasClipboardShapes,
     overlayVisible,
     settings.editMode,
@@ -1746,6 +1756,7 @@ export const ShapeOverlay = ({
             <MemoizedShapeOverlayItem
               key={shape.id}
               shape={shape}
+              shapeOpacity={settings.shapeOpacity}
               shapeRects={shapeRects}
               isSelected={settings.editMode && selectedIdSet.has(shape.id)}
               selectedIds={selectedIds}
@@ -1797,345 +1808,350 @@ export const ShapeOverlay = ({
           />
         )}
 
-      {overlayVisible && shapesVisible && settings.editMode && contextMenu && (
-        <div
-          className="fm-shape-context-menu"
-          style={contextMenuPosition}
-          onPointerDown={(event) => {
-            event.stopPropagation();
-          }}
-        >
-          {contextMenu.kind === "canvas" ? (
-            <div className="fm-shape-context-actions fm-shape-context-actions-list">
-              <button
-                type="button"
-                className="fm-shape-context-action"
-                onClick={() => {
-                  pasteCopiedShapesAt({ x: contextMenu.x, y: contextMenu.y });
-                  closeContextMenu();
-                }}
-              >
-                Paste
-              </button>
-            </div>
-          ) : (
-            contextShape && (
-              <>
-                <div className="fm-shape-context-actions fm-shape-context-actions-list">
-                  <button
-                    type="button"
-                    className="fm-shape-context-action fm-shape-context-action-danger"
-                    onClick={() => {
-                      deleteShapeIds(getContextTargetIds());
-                      closeContextMenu();
-                    }}
-                  >
-                    Delete
-                  </button>
-                  <button
-                    type="button"
-                    className="fm-shape-context-action"
-                    onClick={() => {
-                      copyShapeIds(getContextTargetIds());
-                      closeContextMenu();
-                    }}
-                  >
-                    Copy
-                  </button>
-                  <button
-                    type="button"
-                    className="fm-shape-context-action"
-                    onClick={() => {
-                      cutShapeIds(getContextTargetIds());
-                      closeContextMenu();
-                    }}
-                  >
-                    Cut
-                  </button>
-                  {hasClipboardShapes && (
+      {overlayVisible &&
+        shapesVisible &&
+        settings.editMode &&
+        contextMenu &&
+        (contextMenu.kind === "shape" ||
+          (contextMenu.kind === "canvas" &&
+            dialogVisible &&
+            hasClipboardShapes)) && (
+          <div
+            className="fm-shape-context-menu"
+            style={contextMenuPosition}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+            }}
+          >
+            {contextMenu.kind === "canvas" ? (
+              <div className="fm-shape-context-actions fm-shape-context-actions-list">
+                <button
+                  type="button"
+                  className="fm-shape-context-action"
+                  onClick={() => {
+                    pasteCopiedShapesAt({ x: contextMenu.x, y: contextMenu.y });
+                    closeContextMenu();
+                  }}
+                >
+                  Paste
+                </button>
+              </div>
+            ) : (
+              contextShape && (
+                <>
+                  <div className="fm-shape-context-actions fm-shape-context-actions-list">
+                    <button
+                      type="button"
+                      className="fm-shape-context-action fm-shape-context-action-danger"
+                      onClick={() => {
+                        deleteShapeIds(getContextTargetIds());
+                        closeContextMenu();
+                      }}
+                    >
+                      Delete
+                    </button>
                     <button
                       type="button"
                       className="fm-shape-context-action"
                       onClick={() => {
-                        pasteCopiedShapesAt({
-                          x: contextMenu.x,
-                          y: contextMenu.y,
-                        });
+                        copyShapeIds(getContextTargetIds());
                         closeContextMenu();
                       }}
                     >
-                      Paste
+                      Copy
                     </button>
+                    <button
+                      type="button"
+                      className="fm-shape-context-action"
+                      onClick={() => {
+                        cutShapeIds(getContextTargetIds());
+                        closeContextMenu();
+                      }}
+                    >
+                      Cut
+                    </button>
+                    {hasClipboardShapes && (
+                      <button
+                        type="button"
+                        className="fm-shape-context-action"
+                        onClick={() => {
+                          pasteCopiedShapesAt({
+                            x: contextMenu.x,
+                            y: contextMenu.y,
+                          });
+                          closeContextMenu();
+                        }}
+                      >
+                        Paste
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="fm-shape-context-action"
+                      onClick={() => {
+                        startCursorMove(contextShape.id);
+                      }}
+                    >
+                      Move
+                    </button>
+                  </div>
+
+                  {contextShapeNeedsShortcutInput && (
+                    <>
+                      <label
+                        htmlFor="fm-context-shortcut-input"
+                        className="fm-shape-context-label"
+                      >
+                        Shortcut
+                      </label>
+                      <div
+                        className={`fm-shortcut-input-shell${contextShape.keyBinding ? " fm-shortcut-input-has-value" : ""}`}
+                      >
+                        <input
+                          id="fm-context-shortcut-input"
+                          className="fm-shape-context-input"
+                          value={contextShape.keyBinding}
+                          placeholder="Press keys"
+                          onKeyDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (
+                              event.key === "Backspace" ||
+                              event.key === "Delete"
+                            ) {
+                              updateShapeBinding(contextShape.id, "");
+                              return;
+                            }
+                            const captured = buildShortcutFromEvent(event);
+                            if (!captured) return;
+
+                            updateShapeBinding(
+                              contextShape.id,
+                              mergeCapturedShortcut(
+                                contextShape.keyBinding,
+                                captured,
+                                contextShape.id,
+                              ),
+                            );
+                          }}
+                          onMouseDown={(event) => {
+                            const input =
+                              event.currentTarget as HTMLInputElement;
+                            const wasFocused = document.activeElement === input;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            input.focus({ preventScroll: true });
+
+                            if (!wasFocused) {
+                              return;
+                            }
+
+                            if (event.button === 0 || event.button === 2) {
+                              capturePointerBinding(event, contextShape.id);
+                            }
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onWheel={(event) => {
+                            const input =
+                              event.currentTarget as HTMLInputElement;
+                            const wasFocused = document.activeElement === input;
+                            event.stopPropagation();
+                            if (!wasFocused) {
+                              input.focus({ preventScroll: true });
+                              return;
+                            }
+                            const token =
+                              event.deltaY < 0 ? "Wheel Up" : "Wheel Down";
+                            updateShapeBinding(
+                              contextShape.id,
+                              buildPointerShortcut(event, token),
+                            );
+                          }}
+                        />
+                        {contextShape.keyBinding && (
+                          <span
+                            className="fm-shortcut-input-overlay"
+                            aria-hidden="true"
+                          >
+                            <ShortcutKeys combo={contextShape.keyBinding} />
+                          </span>
+                        )}
+                      </div>
+                      {contextShortcutConflict && (
+                        <div className="fm-shape-context-error">
+                          {contextShortcutConflict}
+                        </div>
+                      )}
+                    </>
                   )}
-                  <button
-                    type="button"
-                    className="fm-shape-context-action"
-                    onClick={() => {
-                      startCursorMove(contextShape.id);
+
+                  <label className="fm-shape-context-label">X</label>
+                  <input
+                    className="fm-shape-context-input"
+                    type="number"
+                    step={1}
+                    value={Math.round(contextShape.x)}
+                    onChange={(event) => {
+                      const nextX = Math.round(Number(event.target.value) || 0);
+                      setShapes((prev) =>
+                        prev.map((item) =>
+                          item.id === contextShape.id
+                            ? normalizeShape({
+                                ...item,
+                                x: nextX,
+                              })
+                            : item,
+                        ),
+                      );
+                    }}
+                    aria-label="Shape X coordinate"
+                  />
+                  <label className="fm-shape-context-label">Y</label>
+                  <input
+                    className="fm-shape-context-input"
+                    type="number"
+                    step={1}
+                    value={Math.round(contextShape.y)}
+                    onChange={(event) => {
+                      const nextY = Math.round(Number(event.target.value) || 0);
+                      setShapes((prev) =>
+                        prev.map((item) =>
+                          item.id === contextShape.id
+                            ? normalizeShape({
+                                ...item,
+                                y: nextY,
+                              })
+                            : item,
+                        ),
+                      );
+                    }}
+                    aria-label="Shape Y coordinate"
+                  />
+
+                  <label className="fm-shape-context-label">Width</label>
+                  <input
+                    className="fm-shape-context-input"
+                    type="number"
+                    min={5}
+                    step={1}
+                    value={Math.round(contextShape.width)}
+                    onChange={(event) => {
+                      const nextWidth = Math.max(
+                        5,
+                        Math.round(Number(event.target.value) || 0),
+                      );
+                      setShapes((prev) =>
+                        prev.map((item) =>
+                          item.id === contextShape.id
+                            ? normalizeShape({
+                                ...item,
+                                width: nextWidth,
+                              })
+                            : item,
+                        ),
+                      );
+                    }}
+                    aria-label="Shape width"
+                  />
+                  <label className="fm-shape-context-label">Height</label>
+                  <input
+                    className="fm-shape-context-input"
+                    type="number"
+                    min={5}
+                    step={1}
+                    value={Math.round(contextShape.height)}
+                    onChange={(event) => {
+                      const nextHeight = Math.max(
+                        5,
+                        Math.round(Number(event.target.value) || 0),
+                      );
+                      setShapes((prev) =>
+                        prev.map((item) =>
+                          item.id === contextShape.id
+                            ? normalizeShape({
+                                ...item,
+                                height: nextHeight,
+                              })
+                            : item,
+                        ),
+                      );
+                    }}
+                    aria-label="Shape height"
+                  />
+
+                  <label
+                    htmlFor="fm-delay-input"
+                    className="fm-shape-context-label"
+                  >
+                    Trigger Delay (ms)
+                  </label>
+                  <input
+                    id="fm-delay-input"
+                    className="fm-shape-context-input"
+                    type="number"
+                    min={0}
+                    step={25}
+                    value={contextShape.delayMs}
+                    onChange={(event) => {
+                      const nextDelay = Math.max(
+                        0,
+                        Math.round(Number(event.target.value) || 0),
+                      );
+
+                      setShapesWithoutHistory((prev) =>
+                        prev.map((item) =>
+                          item.id === contextShape.id
+                            ? normalizeShape({
+                                ...item,
+                                delayMs: nextDelay,
+                              })
+                            : item,
+                        ),
+                      );
+                    }}
+                  />
+
+                  <label
+                    htmlFor="fm-trigger-type-input"
+                    className="fm-shape-context-label"
+                  >
+                    Trigger Type
+                  </label>
+                  <select
+                    id="fm-trigger-type-input"
+                    className="fm-shape-context-input"
+                    value={contextShape.triggerType}
+                    onChange={(event) => {
+                      const nextType =
+                        event.target.value === "toggle" ? "toggle" : "once";
+
+                      if (nextType === "once") {
+                        stopToggleShapeArea(contextShape.id);
+                      }
+
+                      setShapesWithoutHistory((prev) =>
+                        prev.map((item) =>
+                          item.id === contextShape.id
+                            ? normalizeShape({
+                                ...item,
+                                triggerType: nextType,
+                              })
+                            : item,
+                        ),
+                      );
                     }}
                   >
-                    Move
-                  </button>
-                </div>
-
-                {contextShapeNeedsShortcutInput && (
-                  <>
-                    <label
-                      htmlFor="fm-context-shortcut-input"
-                      className="fm-shape-context-label"
-                    >
-                      Shortcut
-                    </label>
-                    <div
-                      className={`fm-shortcut-input-shell${contextShape.keyBinding ? " fm-shortcut-input-has-value" : ""}`}
-                    >
-                      <input
-                        id="fm-context-shortcut-input"
-                        className="fm-shape-context-input"
-                        value={contextShape.keyBinding}
-                        placeholder="Press keys"
-                        onKeyDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          if (event.key === "Escape") {
-                            (event.target as HTMLInputElement).blur();
-                            return;
-                          }
-                          if (
-                            event.key === "Backspace" ||
-                            event.key === "Delete"
-                          ) {
-                            updateShapeBinding(contextShape.id, "");
-                            return;
-                          }
-                          const captured = buildShortcutFromEvent(event);
-                          if (!captured) return;
-
-                          updateShapeBinding(
-                            contextShape.id,
-                            mergeCapturedShortcut(
-                              contextShape.keyBinding,
-                              captured,
-                              contextShape.id,
-                            ),
-                          );
-                        }}
-                        onMouseDown={(event) => {
-                          const input = event.currentTarget as HTMLInputElement;
-                          const wasFocused = document.activeElement === input;
-                          event.preventDefault();
-                          event.stopPropagation();
-                          input.focus({ preventScroll: true });
-
-                          if (!wasFocused) {
-                            return;
-                          }
-
-                          if (event.button === 0 || event.button === 2) {
-                            capturePointerBinding(event, contextShape.id);
-                          }
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                        }}
-                        onWheel={(event) => {
-                          const input = event.currentTarget as HTMLInputElement;
-                          const wasFocused = document.activeElement === input;
-                          event.stopPropagation();
-                          if (!wasFocused) {
-                            input.focus({ preventScroll: true });
-                            return;
-                          }
-                          const token =
-                            event.deltaY < 0 ? "Wheel Up" : "Wheel Down";
-                          updateShapeBinding(
-                            contextShape.id,
-                            buildPointerShortcut(event, token),
-                          );
-                        }}
-                      />
-                      {contextShape.keyBinding && (
-                        <span
-                          className="fm-shortcut-input-overlay"
-                          aria-hidden="true"
-                        >
-                          <ShortcutKeys combo={contextShape.keyBinding} />
-                        </span>
-                      )}
-                    </div>
-                    {contextShortcutConflict && (
-                      <div className="fm-shape-context-error">
-                        {contextShortcutConflict}
-                      </div>
-                    )}
-                  </>
-                )}
-
-                <label className="fm-shape-context-label">X</label>
-                <input
-                  className="fm-shape-context-input"
-                  type="number"
-                  step={1}
-                  value={Math.round(contextShape.x)}
-                  onChange={(event) => {
-                    const nextX = Math.round(Number(event.target.value) || 0);
-                    setShapes((prev) =>
-                      prev.map((item) =>
-                        item.id === contextShape.id
-                          ? normalizeShape({
-                              ...item,
-                              x: nextX,
-                            })
-                          : item,
-                      ),
-                    );
-                  }}
-                  aria-label="Shape X coordinate"
-                />
-                <label className="fm-shape-context-label">Y</label>
-                <input
-                  className="fm-shape-context-input"
-                  type="number"
-                  step={1}
-                  value={Math.round(contextShape.y)}
-                  onChange={(event) => {
-                    const nextY = Math.round(Number(event.target.value) || 0);
-                    setShapes((prev) =>
-                      prev.map((item) =>
-                        item.id === contextShape.id
-                          ? normalizeShape({
-                              ...item,
-                              y: nextY,
-                            })
-                          : item,
-                      ),
-                    );
-                  }}
-                  aria-label="Shape Y coordinate"
-                />
-
-                <label className="fm-shape-context-label">Width</label>
-                <input
-                  className="fm-shape-context-input"
-                  type="number"
-                  min={5}
-                  step={1}
-                  value={Math.round(contextShape.width)}
-                  onChange={(event) => {
-                    const nextWidth = Math.max(
-                      5,
-                      Math.round(Number(event.target.value) || 0),
-                    );
-                    setShapes((prev) =>
-                      prev.map((item) =>
-                        item.id === contextShape.id
-                          ? normalizeShape({
-                              ...item,
-                              width: nextWidth,
-                            })
-                          : item,
-                      ),
-                    );
-                  }}
-                  aria-label="Shape width"
-                />
-                <label className="fm-shape-context-label">Height</label>
-                <input
-                  className="fm-shape-context-input"
-                  type="number"
-                  min={5}
-                  step={1}
-                  value={Math.round(contextShape.height)}
-                  onChange={(event) => {
-                    const nextHeight = Math.max(
-                      5,
-                      Math.round(Number(event.target.value) || 0),
-                    );
-                    setShapes((prev) =>
-                      prev.map((item) =>
-                        item.id === contextShape.id
-                          ? normalizeShape({
-                              ...item,
-                              height: nextHeight,
-                            })
-                          : item,
-                      ),
-                    );
-                  }}
-                  aria-label="Shape height"
-                />
-
-                <label
-                  htmlFor="fm-delay-input"
-                  className="fm-shape-context-label"
-                >
-                  Trigger Delay (ms)
-                </label>
-                <input
-                  id="fm-delay-input"
-                  className="fm-shape-context-input"
-                  type="number"
-                  min={0}
-                  step={25}
-                  value={contextShape.delayMs}
-                  onChange={(event) => {
-                    const nextDelay = Math.max(
-                      0,
-                      Math.round(Number(event.target.value) || 0),
-                    );
-
-                    setShapesWithoutHistory((prev) =>
-                      prev.map((item) =>
-                        item.id === contextShape.id
-                          ? normalizeShape({
-                              ...item,
-                              delayMs: nextDelay,
-                            })
-                          : item,
-                      ),
-                    );
-                  }}
-                />
-
-                <label
-                  htmlFor="fm-trigger-type-input"
-                  className="fm-shape-context-label"
-                >
-                  Trigger Type
-                </label>
-                <select
-                  id="fm-trigger-type-input"
-                  className="fm-shape-context-input"
-                  value={contextShape.triggerType}
-                  onChange={(event) => {
-                    const nextType =
-                      event.target.value === "toggle" ? "toggle" : "once";
-
-                    if (nextType === "once") {
-                      stopToggleShapeArea(contextShape.id);
-                    }
-
-                    setShapesWithoutHistory((prev) =>
-                      prev.map((item) =>
-                        item.id === contextShape.id
-                          ? normalizeShape({
-                              ...item,
-                              triggerType: nextType,
-                            })
-                          : item,
-                      ),
-                    );
-                  }}
-                >
-                  <option value="once">Once</option>
-                  <option value="toggle">Toggle</option>
-                </select>
-              </>
-            )
-          )}
-        </div>
-      )}
+                    <option value="once">Once</option>
+                    <option value="toggle">Toggle</option>
+                  </select>
+                </>
+              )
+            )}
+          </div>
+        )}
 
       {overlayVisible &&
         shapesVisible &&

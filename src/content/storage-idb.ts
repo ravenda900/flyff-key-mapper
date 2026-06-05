@@ -8,7 +8,7 @@ import type { IDBPDatabase } from "idb";
 export type FlyffMapperDB = IDBPDatabase<any>;
 
 const DB_NAME = "flyff-mapper";
-const DB_VERSION = 1;
+const DB_VERSION = 5;
 
 const STORE_KEYS = [
   "profiles",
@@ -20,9 +20,22 @@ const STORE_KEYS = [
   "keyTriggerTargetTabNames",
   "keyTriggerCharacterProfiles",
   "mapperCharacterProfiles",
+  "sharedRunState",
+  "sharedAutoStopState",
+  "sharedRecaptchaSignal",
 ];
 
 let dbPromise: Promise<FlyffMapperDB> | null = null;
+
+export async function resetDbConnectionForTests(): Promise<void> {
+  if (!dbPromise) {
+    return;
+  }
+
+  const db = await dbPromise;
+  db.close();
+  dbPromise = null;
+}
 
 export function getDB(): Promise<FlyffMapperDB> {
   if (!dbPromise) {

@@ -4087,9 +4087,26 @@ function MapperApp() {
       profileOtherTabsOnly?: boolean,
       profileExecutionScope?: "all" | "current" | "other" | "specific",
       profileSpecificTargetTabIds?: number[],
+      profileSpecificTargetTabNames?: string[],
       profileSpecificTargetTabId?: number | null,
     ): number[] => {
       const allTargetTabIds = getKeyTriggerTargetTabIds();
+      const selectedTabSet = new Set(allTargetTabIds);
+      const selectedTabsByName = new Map<string, number[]>();
+
+      keyTriggerCharacters.forEach((tab) => {
+        if (!selectedTabSet.has(tab.id)) {
+          return;
+        }
+
+        const normalizedName = tab.name.trim().toLowerCase();
+        if (!normalizedName) {
+          return;
+        }
+
+        const existing = selectedTabsByName.get(normalizedName) ?? [];
+        selectedTabsByName.set(normalizedName, [...existing, tab.id]);
+      });
 
       const actionScope =
         action.executionScope === "current" ||
@@ -4111,8 +4128,26 @@ function MapperApp() {
           ),
         );
         if (scopedIds.length > 0) {
-          const selectedTabSet = new Set(allTargetTabIds);
           return scopedIds.filter((id) => selectedTabSet.has(id));
+        }
+
+        const scopedNames = Array.from(
+          new Set(
+            (action.specificTargetTabNames ?? [])
+              .map((name) =>
+                typeof name === "string" ? name.trim().toLowerCase() : "",
+              )
+              .filter((name) => name.length > 0),
+          ),
+        );
+
+        if (scopedNames.length > 0) {
+          const resolved = scopedNames.flatMap(
+            (name) => selectedTabsByName.get(name) ?? [],
+          );
+          if (resolved.length > 0) {
+            return Array.from(new Set(resolved));
+          }
         }
       }
 
@@ -4124,9 +4159,27 @@ function MapperApp() {
             ),
           ),
         );
-        const selectedTabSet = new Set(allTargetTabIds);
         if (scopedIds.length > 0) {
           return scopedIds.filter((id) => selectedTabSet.has(id));
+        }
+
+        const scopedNames = Array.from(
+          new Set(
+            (profileSpecificTargetTabNames ?? [])
+              .map((name) =>
+                typeof name === "string" ? name.trim().toLowerCase() : "",
+              )
+              .filter((name) => name.length > 0),
+          ),
+        );
+
+        if (scopedNames.length > 0) {
+          const resolved = scopedNames.flatMap(
+            (name) => selectedTabsByName.get(name) ?? [],
+          );
+          if (resolved.length > 0) {
+            return Array.from(new Set(resolved));
+          }
         }
 
         if (Number.isFinite(profileSpecificTargetTabId)) {
@@ -4172,7 +4225,7 @@ function MapperApp() {
       // Default: return all selected tabs
       return allTargetTabIds;
     },
-    [currentTabId, getKeyTriggerTargetTabIds],
+    [currentTabId, getKeyTriggerTargetTabIds, keyTriggerCharacters],
   );
 
   const isActionEnabled = useCallback(
@@ -4218,6 +4271,7 @@ function MapperApp() {
             profile.otherTabsOnly,
             profile.executionScope,
             profile.specificTargetTabIds,
+            profile.specificTargetTabNames,
             profile.specificTargetTabId,
           );
           const key = JSON.stringify(tabIds);
@@ -4264,6 +4318,7 @@ function MapperApp() {
             profile.otherTabsOnly,
             profile.executionScope,
             profile.specificTargetTabIds,
+            profile.specificTargetTabNames,
             profile.specificTargetTabId,
           );
           const key = JSON.stringify(tabIds);

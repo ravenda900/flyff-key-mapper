@@ -1,5 +1,20 @@
 # Flyff Mapper Release Notes
 
+## v4.1.0 (2026-06-09)
+
+Auto-Awaken Start-detection calibration and runtime load tuning release.
+
+### Changed
+
+- Updated Auto-Awaken Start-button template matching calibration for region-window detection.
+- Updated Start-button matching tolerance and pass behavior for more resilient template hits.
+- Reduced expensive retry-loop workload during automation to improve page responsiveness under reroll cycles.
+
+### Packaging
+
+- Package version updated to 4.1.0.
+- Manifest extension version updated to 4.1.0.
+
 ## v4.0.0 (2026-06-06)
 
 Key Trigger runtime stability, running-mode tab selection, and Key Mapper settings relocation.
@@ -17,6 +32,9 @@ Key Trigger runtime stability, running-mode tab selection, and Key Mapper settin
 - Updated the Opacity slider so it now drives the global Key Mapper shape opacity setting used by the overlay renderer.
 - Updated held Key Trigger behavior so the canvas now receives a true sustained key press until the real key release occurs.
 - Updated release-facing access/token UX to show token expiry, refresh timestamps, and clearer switching guidance.
+- Reworked access control to token-only mode and removed whitelist-based access behavior.
+- Updated token issuance model to role-aware tokens (`user`, `admin`, `superadmin`): admins can access the Admin panel and generate subscription tokens, while admin-panel token creation remains limited to `user` and `admin` roles.
+- Added `unlimited` subscription plan support with no expiry and full feature access.
 - Updated Key Trigger specific-scope dispatch so it respects the currently selected tab set.
 
 ### Fixed

@@ -1,7 +1,7 @@
 {
   "name": "flyff-utility",
   "private": true,
-  "version": "4.0.0",
+  "version": "4.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,6 +14,7 @@
     "access:mode:blaze": "node scripts/switch-access-mode.mjs --mode blaze",
     "firebase:claims": "node scripts/set-firebase-claims.mjs",
     "firebase:claims-email": "node scripts/set-firebase-claims-by-email.mjs",
+    "firebase:token": "node scripts/create-subscription-token.mjs",
     "ocr:sample": "node scripts/ocr-sample.mjs",
     "test": "vitest run",
     "lint": "eslint .",
@@ -28,6 +29,7 @@
     "jsfeat": "^0.0.8",
     "lz-string": "^1.5.0",
     "opencv-js-wasm": "^5.0.0-alpha",
+    "pixelmatch": "^7.2.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-rnd": "^10.5.2",

@@ -37,6 +37,14 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
   - Rename, create, and delete profiles.
 - Persistent local storage for settings and shapes.
 
+## What's new in v4.1.0
+
+### Auto-Awaken Start detection and runtime tuning
+
+- Refined Start-button template matching calibration for region-based detection.
+- Improved matching robustness by broadening template scale handling around Start-button passes.
+- Reduced high-frequency automation workload during reroll loops to improve in-page responsiveness.
+
 ## What's new in v4.0.0
 
 ### Key Trigger running-mode updates
@@ -169,9 +177,15 @@ npm run dev
 
 The app supports Firebase-backed:
 
-- IP whitelist checks
-- plan-based feature activation (`free`, `pro`, `elite`)
+- subscription-token-based access control
+- plan-based feature activation (`free`, `pro`, `elite`, `unlimited`)
 - role-based management (`user`, `admin`, `superadmin`)
+
+Notes:
+
+- Access is granted by valid subscription token only.
+- Admin panel can issue `user` and `admin` token roles.
+- `unlimited` plan has no expiry and unlocks all features.
 
 Setup guide: [docs/firebase-access-control.md](docs/firebase-access-control.md)
 
@@ -379,7 +393,7 @@ Declared in manifest:
 
 ## Versioning
 
-Current release version is `4.0.0`.
+Current release version is `4.1.0`.
 
 Extension manifest format remains **Manifest V3**.
 

@@ -3179,10 +3179,6 @@ function MapperApp() {
   }, [selectedKeyTriggerTabIds, keyTriggerCharacters]);
 
   useEffect(() => {
-    if (settings.editMode) {
-      return;
-    }
-
     if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
       return;
     }
@@ -3195,7 +3191,7 @@ function MapperApp() {
       type: "KEY_TRIGGER_SYNC_TOGGLE_TABS",
       tabIds,
     });
-  }, [selectedKeyTriggerTabIds, settings.editMode]);
+  }, [selectedKeyTriggerTabIds]);
 
   useEffect(() => {
     if (suppressNextKeyTriggerCharacterProfileMappingSaveRef.current) {

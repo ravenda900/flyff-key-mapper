@@ -21,6 +21,8 @@ Auto-Awaken Start-detection calibration and runtime load tuning release.
 - Fixed repeated high-cost retry behavior that could make the page unresponsive after initial Start attempts.
 - Fixed excessive pre-attempt OCR overhead during Start-click retries by replacing it with lightweight retry logging.
 - Fixed noisy full-region OCR logging impact by making full-region OCR logs opt-in and throttled.
+- Fixed running toggle-tab selection sync so unchecking a character/tab immediately stops toggle dispatch for that tab.
+- Fixed re-check behavior for active toggles so checking a character/tab immediately resumes toggle dispatch without requiring a manual retrigger.
 
 ### Packaging
 

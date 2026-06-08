@@ -642,11 +642,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           .catch(() => undefined);
       });
 
-      if (tabIds.length === 0) {
-        activeToggleTargets.delete(profileId);
-        return;
-      }
-
       activeToggleTargets.set(profileId, {
         ...target,
         tabIds,

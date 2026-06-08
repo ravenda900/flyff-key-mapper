@@ -4,11 +4,23 @@
 
 Auto-Awaken Start-detection calibration and runtime load tuning release.
 
+### Added
+
+- Added a focused `start-band` template search region in Auto-Awaken to prioritize the most likely Start-button area before broader fallback passes.
+
 ### Changed
 
 - Updated Auto-Awaken Start-button template matching calibration for region-window detection.
-- Updated Start-button matching tolerance and pass behavior for more resilient template hits.
-- Reduced expensive retry-loop workload during automation to improve page responsiveness under reroll cycles.
+- Updated Start-button matching pass order to use `button_image.png` and `button_image2.png` across prioritized regions (`start-band`, `bottom-center`, `footer-center`, `footer`, `lower-third-center`, `lower-third`).
+- Updated Start-button matching tolerance/threshold passes and scale handling for more resilient template hits.
+- Updated screenshot-matching resolution cap for Auto-Awaken region snapshots to reduce heavy frame processing while preserving detection quality.
+- Updated wait-loop polling cadence for idle/disappear/reappear phases to lower CPU pressure during reroll cycles.
+
+### Fixed
+
+- Fixed repeated high-cost retry behavior that could make the page unresponsive after initial Start attempts.
+- Fixed excessive pre-attempt OCR overhead during Start-click retries by replacing it with lightweight retry logging.
+- Fixed noisy full-region OCR logging impact by making full-region OCR logs opt-in and throttled.
 
 ### Packaging
 

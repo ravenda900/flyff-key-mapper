@@ -7,7 +7,8 @@ import { getFirestore } from "firebase-admin/firestore";
 initializeApp();
 
 const VALID_ROLES = new Set(["user", "admin", "superadmin"]);
-const VALID_PLANS = new Set(["free", "pro", "elite"]);
+const VALID_ISSUABLE_ROLES = new Set(["user", "admin"]);
+const VALID_PLANS = new Set(["free", "pro", "elite", "unlimited"]);
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TOKEN_BYTE_LENGTH = 24;
 const TOKEN_COLLECTION = "subscriptionTokens";
@@ -84,6 +85,9 @@ const resolvePlan = (value) => {
   if (normalized === "elite") {
     return "elite";
   }
+  if (normalized === "unlimited") {
+    return "unlimited";
+  }
   return "free";
 };
 
@@ -124,61 +128,35 @@ const getEpochMs = (value) => {
   return null;
 };
 
-const loadRequesterAccess = async (request, actorIp) => {
+const parseRequesterContext = (request, actorIp) => {
   const requesterIp = resolveRequesterIp(request, actorIp);
-  if (!requesterIp) {
-    throw new HttpsError(
-      "permission-denied",
-      "Unable to determine requester IP.",
-    );
-  }
-
-  const db = getFirestore();
-  const whitelistSnapshot = await db.doc(`whitelist/${requesterIp}`).get();
-  if (!whitelistSnapshot.exists) {
-    throw new HttpsError(
-      "permission-denied",
-      "Requester IP is not whitelisted.",
-    );
-  }
-
-  const whitelistData = whitelistSnapshot.data() ?? {};
-  const role = resolveRole(whitelistData.role);
-  const enabled = whitelistData.enabled !== false;
-  const blocked = whitelistData.blocked === true;
-  const canGenerateTokens =
-    role === "superadmin" || whitelistData.canGenerateTokens === true;
+  const requesterRole = resolveRole(
+    request.auth?.token?.role ?? request.data?.requesterRole,
+  );
 
   return {
     requesterIp,
-    role,
-    enabled,
-    blocked,
-    canGenerateTokens,
+    requesterRole,
   };
 };
 
-const assertSuperadminRequester = async (request, actorIp) => {
-  const requester = await loadRequesterAccess(request, actorIp);
-  if (
-    !requester.enabled ||
-    requester.blocked ||
-    requester.role !== "superadmin"
-  ) {
-    throw new HttpsError(
-      "permission-denied",
-      "Superadmin whitelist role is required.",
-    );
+const assertSuperadminRequester = (request, actorIp) => {
+  const requester = parseRequesterContext(request, actorIp);
+  if (requester.requesterRole !== "superadmin") {
+    throw new HttpsError("permission-denied", "Superadmin role is required.");
   }
   return requester;
 };
 
-const assertTokenIssuerRequester = async (request, actorIp) => {
-  const requester = await loadRequesterAccess(request, actorIp);
-  if (!requester.enabled || requester.blocked || !requester.canGenerateTokens) {
+const assertTokenIssuerRequester = (request, actorIp) => {
+  const requester = parseRequesterContext(request, actorIp);
+  if (
+    requester.requesterRole !== "admin" &&
+    requester.requesterRole !== "superadmin"
+  ) {
     throw new HttpsError(
       "permission-denied",
-      "Token issuer privileges are required.",
+      "Admin or superadmin role is required.",
     );
   }
   return requester;
@@ -189,16 +167,24 @@ const buildTokenValidationResult = (data) => {
     return {
       valid: false,
       plan: "free",
+      role: "user",
       expiresAtIso: null,
       reason: "Invalid subscription token.",
     };
   }
 
+  const plan = resolvePlan(data.plan);
+  const role = resolveRole(data.role);
+
   const expiresAtMs = getEpochMs(data.expiresAt);
-  if (expiresAtMs === null || Date.now() > expiresAtMs) {
+  if (
+    plan !== "unlimited" &&
+    (expiresAtMs === null || Date.now() > expiresAtMs)
+  ) {
     return {
       valid: false,
       plan: "free",
+      role: "user",
       expiresAtIso:
         typeof data.expiresAt === "string" && data.expiresAt.trim().length > 0
           ? data.expiresAt
@@ -211,6 +197,7 @@ const buildTokenValidationResult = (data) => {
     return {
       valid: false,
       plan: "free",
+      role: "user",
       expiresAtIso:
         typeof data.expiresAt === "string" && data.expiresAt.trim().length > 0
           ? data.expiresAt
@@ -221,7 +208,8 @@ const buildTokenValidationResult = (data) => {
 
   return {
     valid: true,
-    plan: resolvePlan(data.plan),
+    plan,
+    role,
     expiresAtIso:
       typeof data.expiresAt === "string" && data.expiresAt.trim().length > 0
         ? data.expiresAt
@@ -256,7 +244,7 @@ export const assignClaimsByEmail = onCall({ cors: true }, async (request) => {
     throw new HttpsError("invalid-argument", "A valid role is required.");
   }
 
-  await assertSuperadminRequester(request, actorIp);
+  assertSuperadminRequester(request, actorIp);
 
   const auth = getAuth();
   const targetUser = await auth.getUserByEmail(email);
@@ -292,7 +280,7 @@ export const getClaimsByEmail = onCall({ cors: true }, async (request) => {
     );
   }
 
-  await assertSuperadminRequester(request, actorIp);
+  assertSuperadminRequester(request, actorIp);
 
   const auth = getAuth();
   const targetUser = await auth.getUserByEmail(email);
@@ -313,6 +301,7 @@ export const generateSubscriptionToken = onCall(
   { cors: true },
   async (request) => {
     const plan = resolvePlan(request.data?.plan);
+    const role = resolveRole(request.data?.role);
     const actorIp =
       typeof request.data?.requesterIp === "string"
         ? request.data.requesterIp.trim()
@@ -322,17 +311,26 @@ export const generateSubscriptionToken = onCall(
       throw new HttpsError("invalid-argument", "A valid plan is required.");
     }
 
-    const requester = await assertTokenIssuerRequester(request, actorIp);
+    if (!VALID_ISSUABLE_ROLES.has(role)) {
+      throw new HttpsError(
+        "invalid-argument",
+        "Role must be either user or admin.",
+      );
+    }
+
+    const requester = assertTokenIssuerRequester(request, actorIp);
 
     const token = createToken();
     const tokenHash = hashToken(token);
-    const expiresAtIso = addDaysIso(PLAN_DURATION_DAYS[plan]);
+    const expiresAtIso =
+      plan === "unlimited" ? null : addDaysIso(PLAN_DURATION_DAYS[plan]);
 
     const db = getFirestore();
     await db.collection(TOKEN_COLLECTION).doc(tokenHash).set(
       {
         tokenHash,
         plan,
+        role,
         status: "active",
         expiresAt: expiresAtIso,
         createdAt: new Date().toISOString(),
@@ -344,6 +342,7 @@ export const generateSubscriptionToken = onCall(
     return {
       token,
       plan,
+      role,
       expiresAtIso,
     };
   },
@@ -359,6 +358,7 @@ export const validateSubscriptionToken = onCall(
       return {
         valid: false,
         plan: "free",
+        role: "user",
         expiresAtIso: null,
         reason: "No subscription token provided.",
       };
@@ -372,6 +372,7 @@ export const validateSubscriptionToken = onCall(
       return {
         valid: false,
         plan: "free",
+        role: "user",
         expiresAtIso: null,
         reason: "Invalid subscription token.",
       };
@@ -410,59 +411,6 @@ export const resolveAccessControl = onCall({ cors: true }, async (request) => {
   }
 
   const db = getFirestore();
-  const whitelistSnapshot = await db.doc(`whitelist/${requesterIp}`).get();
-  const hasWhitelistDoc = whitelistSnapshot.exists;
-
-  let role = "user";
-  let canManageAccess = false;
-  let canManageAdmins = false;
-  let canGenerateTokens = false;
-  let isWhitelisted = false;
-
-  if (hasWhitelistDoc) {
-    const whitelistData = whitelistSnapshot.data() ?? {};
-    role = resolveRole(whitelistData.role);
-    canManageAccess = role === "admin" || role === "superadmin";
-    canManageAdmins = role === "superadmin";
-    canGenerateTokens =
-      role === "superadmin" || whitelistData.canGenerateTokens === true;
-    isWhitelisted =
-      whitelistData.enabled !== false && whitelistData.blocked !== true;
-  }
-
-  if (isWhitelisted) {
-    const subscriptionSnapshot = await db
-      .doc(`subscriptions/${requesterIp}`)
-      .get();
-    const subscriptionData = subscriptionSnapshot.exists
-      ? (subscriptionSnapshot.data() ?? {})
-      : null;
-    const status = normalizeStatus(subscriptionData?.status);
-    const expiresAtMs = getEpochMs(subscriptionData?.expiresAt);
-
-    let plan = resolvePlan(subscriptionData?.plan);
-    if (status !== "active") {
-      plan = "free";
-    }
-    if (expiresAtMs !== null && Date.now() > expiresAtMs) {
-      plan = "free";
-    }
-
-    return {
-      ipAddress: requesterIp,
-      whitelisted: true,
-      hasToolAccess: true,
-      accessSource: "whitelist",
-      plan,
-      role,
-      canManageAccess,
-      canManageAdmins,
-      canGenerateTokens,
-      tokenExpiresAtIso: null,
-      reason: null,
-    };
-  }
-
   const tokenValidation = subscriptionToken
     ? await (async () => {
         const tokenHash = hashToken(subscriptionToken);
@@ -475,6 +423,7 @@ export const resolveAccessControl = onCall({ cors: true }, async (request) => {
           return {
             valid: false,
             plan: "free",
+            role: "user",
             expiresAtIso: null,
             reason: "Invalid subscription token.",
           };
@@ -485,21 +434,23 @@ export const resolveAccessControl = onCall({ cors: true }, async (request) => {
     : {
         valid: false,
         plan: "free",
+        role: "user",
         expiresAtIso: null,
         reason: null,
       };
 
   if (tokenValidation.valid) {
+    const role = resolveRole(tokenValidation.role);
     return {
       ipAddress: requesterIp,
       whitelisted: false,
       hasToolAccess: true,
       accessSource: "token",
       plan: resolvePlan(tokenValidation.plan),
-      role: "user",
-      canManageAccess: false,
-      canManageAdmins: false,
-      canGenerateTokens: false,
+      role,
+      canManageAccess: role === "admin" || role === "superadmin",
+      canManageAdmins: role === "superadmin",
+      canGenerateTokens: role === "admin" || role === "superadmin",
       tokenExpiresAtIso: tokenValidation.expiresAtIso,
       reason: null,
     };
@@ -511,16 +462,12 @@ export const resolveAccessControl = onCall({ cors: true }, async (request) => {
     hasToolAccess: false,
     accessSource: "none",
     plan: "free",
-    role,
-    canManageAccess,
-    canManageAdmins,
-    canGenerateTokens,
+    role: "user",
+    canManageAccess: false,
+    canManageAdmins: false,
+    canGenerateTokens: false,
     tokenExpiresAtIso: null,
-    reason:
-      tokenValidation.reason ??
-      (hasWhitelistDoc
-        ? "Your IP address is currently blocked and the provided token is invalid."
-        : "Your IP address is not whitelisted and no valid subscription token was found."),
+    reason: tokenValidation.reason ?? "No valid subscription token was found.",
   };
 });
 
@@ -532,7 +479,7 @@ export const listSubscriptionTokens = onCall(
         ? request.data.requesterIp.trim()
         : "";
 
-    const requester = await assertTokenIssuerRequester(request, actorIp);
+    const requester = assertTokenIssuerRequester(request, actorIp);
 
     const db = getFirestore();
     const baseQuery = db.collection(TOKEN_COLLECTION);
@@ -553,6 +500,7 @@ export const listSubscriptionTokens = onCall(
         return {
           tokenHash: doc.id,
           plan: resolvePlan(data.plan),
+          role: resolveRole(data.role),
           status: normalizeStatus(data.status),
           expiresAt: typeof data.expiresAt === "string" ? data.expiresAt : null,
           createdAt: typeof data.createdAt === "string" ? data.createdAt : null,
@@ -587,7 +535,7 @@ export const revokeSubscriptionToken = onCall(
       throw new HttpsError("invalid-argument", "tokenHash is required.");
     }
 
-    const requester = await assertTokenIssuerRequester(request, actorIp);
+    const requester = assertTokenIssuerRequester(request, actorIp);
 
     const db = getFirestore();
     const docRef = db.collection(TOKEN_COLLECTION).doc(tokenHash);

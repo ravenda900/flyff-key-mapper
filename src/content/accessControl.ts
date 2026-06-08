@@ -13,7 +13,7 @@ import {
   where,
 } from "firebase/firestore";
 
-export type SubscriptionPlan = "free" | "pro" | "elite";
+export type SubscriptionPlan = "free" | "pro" | "elite" | "unlimited";
 export type AccessRole = "user" | "admin" | "superadmin";
 
 export type AccessFeature =
@@ -29,7 +29,7 @@ export type AccessControlState = {
   ipAddress: string | null;
   whitelisted: boolean;
   hasToolAccess: boolean;
-  accessSource: "none" | "whitelist" | "token";
+  accessSource: "none" | "token";
   plan: SubscriptionPlan;
   role: AccessRole;
   canManageAccess: boolean;
@@ -74,23 +74,28 @@ export type ClaimsLookupResult = {
 export type TokenValidationResult = {
   valid: boolean;
   plan: SubscriptionPlan;
+  role: AccessRole;
   expiresAtIso: string | null;
   reason: string | null;
 };
 
 export type TokenGenerationPayload = {
   plan: SubscriptionPlan;
+  role?: AccessRole;
 };
 
 export type TokenGenerationResult = {
   token: string;
   plan: SubscriptionPlan;
-  expiresAtIso: string;
+  role: AccessRole;
+  expiresAtIso: string | null;
 };
 
 export type SubscriptionTokenRecord = {
   tokenHash: string;
   plan: SubscriptionPlan;
+  role: AccessRole;
+  status: "active" | "inactive";
   expiresAt: string | null;
   createdAt: string | null;
   createdByIp: string | null;
@@ -122,6 +127,14 @@ const PLAN_FEATURES: Record<SubscriptionPlan, AccessFeature[]> = {
     "autoAwaken",
     "experimentalFeatures",
   ],
+  unlimited: [
+    "keyTrigger",
+    "autoHoly",
+    "autoPills",
+    "syncMouse",
+    "autoAwaken",
+    "experimentalFeatures",
+  ],
 };
 
 const FIREBASE_CONFIG = {
@@ -141,10 +154,19 @@ const ACCESS_CONTROL_MODE =
     .toLowerCase() === "blaze"
     ? "blaze"
     : "spark";
-const PLAN_DURATION_DAYS: Record<SubscriptionPlan, number> = {
+const PLAN_DURATION_DAYS: Record<
+  Exclude<SubscriptionPlan, "unlimited">,
+  number
+> = {
   free: 7,
   pro: 30,
   elite: 90,
+};
+
+const resolveTokenStatus = (value: unknown): "active" | "inactive" => {
+  const normalized =
+    typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "inactive" ? "inactive" : "active";
 };
 
 const isFirebaseConfigReady = () =>
@@ -253,14 +275,8 @@ const isValidIpAddress = (value: string): boolean => {
   return ipv4.test(trimmed) || ipv6.test(trimmed);
 };
 
-const requireManageAccessPermission = (actor: AccessControlState) => {
-  if (!actor.whitelisted || !actor.canManageAccess) {
-    throw new Error("Access denied. Admin privileges are required.");
-  }
-};
-
 const requireSuperAdminPermission = (actor: AccessControlState) => {
-  if (!actor.whitelisted || !actor.canManageAdmins) {
+  if (!actor.hasToolAccess || !actor.canManageAdmins) {
     throw new Error(
       "Access denied. Superadmin privileges are required for role management.",
     );
@@ -339,6 +355,7 @@ const validateSubscriptionTokenDirect = async (
     return {
       valid: false,
       plan: "free",
+      role: "user",
       expiresAtIso: null,
       reason: "Firebase is not configured.",
     };
@@ -349,6 +366,7 @@ const validateSubscriptionTokenDirect = async (
     return {
       valid: false,
       plan: "free",
+      role: "user",
       expiresAtIso: null,
       reason: null,
     };
@@ -361,6 +379,7 @@ const validateSubscriptionTokenDirect = async (
     return {
       valid: false,
       plan: "free",
+      role: "user",
       expiresAtIso: null,
       reason: "Invalid subscription token.",
     };
@@ -368,18 +387,26 @@ const validateSubscriptionTokenDirect = async (
 
   const data = snapshot.data() as {
     plan?: unknown;
+    role?: unknown;
+    status?: unknown;
     expiresAt?: unknown;
   };
+  const plan = resolvePlan(data.plan);
+  const role = resolveRole(data.role);
   const expiresAtMs = getEpochMs(data.expiresAt);
   const expiresAtIso =
     typeof data.expiresAt === "string" && data.expiresAt.trim().length > 0
       ? data.expiresAt
       : null;
 
-  if (expiresAtMs === null || Date.now() > expiresAtMs) {
+  if (
+    plan !== "unlimited" &&
+    (expiresAtMs === null || Date.now() > expiresAtMs)
+  ) {
     return {
       valid: false,
       plan: "free",
+      role: "user",
       expiresAtIso,
       reason: "Subscription token has expired.",
     };
@@ -387,7 +414,8 @@ const validateSubscriptionTokenDirect = async (
 
   return {
     valid: true,
-    plan: resolvePlan(data.plan),
+    plan,
+    role,
     expiresAtIso,
     reason: null,
   };
@@ -401,6 +429,9 @@ const resolvePlan = (value: unknown): SubscriptionPlan => {
   if (normalized === "elite") {
     return "elite";
   }
+  if (normalized === "unlimited") {
+    return "unlimited";
+  }
 
   return "free";
 };
@@ -413,7 +444,7 @@ export const resolveAccessControlState = async (options?: {
     return {
       ...DEFAULT_STATE,
       reason:
-        "Firebase is not configured. Set VITE_FIREBASE_* env values to enable whitelist and subscriptions.",
+        "Firebase is not configured. Set VITE_FIREBASE_* env values to enable subscription-token access.",
     };
   }
 
@@ -446,9 +477,9 @@ export const resolveAccessControlState = async (options?: {
       return {
         loading: false,
         ipAddress: data.ipAddress,
-        whitelisted: data.whitelisted,
+        whitelisted: false,
         hasToolAccess: data.hasToolAccess,
-        accessSource: data.accessSource,
+        accessSource: data.hasToolAccess ? "token" : "none",
         plan: resolvePlan(data.plan),
         role: resolvedRole,
         canManageAccess: data.canManageAccess === true,
@@ -468,54 +499,13 @@ export const resolveAccessControlState = async (options?: {
       };
     }
 
-    const db = getFirestore(app);
-    const whitelistSnapshot = await getDoc(doc(db, "whitelist", ipAddress));
-    const hasWhitelistDoc = whitelistSnapshot.exists();
-
-    let role: AccessRole = "user";
-    let canManageAccess = false;
-    let canManageAdmins = false;
-    let canGenerateTokens = false;
-    let isWhitelisted = false;
-
-    if (hasWhitelistDoc) {
-      const whitelistData = whitelistSnapshot.data() as {
-        role?: unknown;
-      };
-
-      role = resolveRole(whitelistData.role);
-      canManageAccess = role === "superadmin";
-      canManageAdmins = role === "superadmin";
-      canGenerateTokens = role === "superadmin" || role === "admin";
-      isWhitelisted = true;
-    }
-
-    if (isWhitelisted) {
-      const plan: SubscriptionPlan = "elite";
-
-      return {
-        loading: false,
-        ipAddress,
-        whitelisted: true,
-        hasToolAccess: true,
-        accessSource: "whitelist",
-        plan,
-        role,
-        canManageAccess,
-        canManageAdmins,
-        canGenerateTokens,
-        tokenExpiresAtIso: null,
-        features: buildFeatureFlags(plan),
-        reason: null,
-      };
-    }
-
     const tokenValidation = await validateSubscriptionTokenDirect(
       app,
       options?.subscriptionToken ?? "",
     );
 
     if (tokenValidation.valid) {
+      const role = tokenValidation.role;
       return {
         loading: false,
         ipAddress,
@@ -523,10 +513,10 @@ export const resolveAccessControlState = async (options?: {
         hasToolAccess: true,
         accessSource: "token",
         plan: tokenValidation.plan,
-        role: "user",
-        canManageAccess: false,
-        canManageAdmins: false,
-        canGenerateTokens: false,
+        role,
+        canManageAccess: role === "admin" || role === "superadmin",
+        canManageAdmins: role === "superadmin",
+        canGenerateTokens: role === "admin" || role === "superadmin",
         tokenExpiresAtIso: tokenValidation.expiresAtIso,
         features: buildFeatureFlags(tokenValidation.plan),
         reason: null,
@@ -536,15 +526,9 @@ export const resolveAccessControlState = async (options?: {
     return {
       ...DEFAULT_STATE,
       ipAddress,
-      role,
-      canManageAccess,
-      canManageAdmins,
-      canGenerateTokens,
       reason:
         tokenValidation.reason ??
-        (hasWhitelistDoc
-          ? `Your IP address exists in whitelist records but access could not be resolved. Detected IP: ${ipAddress}`
-          : `Your IP address is not whitelisted and no valid subscription token was found. Detected IP: ${ipAddress}`),
+        `No valid subscription token was found. Detected IP: ${ipAddress}`,
     };
   } catch {
     return {
@@ -559,52 +543,10 @@ export const updateWhitelistAndSubscription = async (
   actor: AccessControlState,
   payload: AccessUpdatePayload,
 ): Promise<void> => {
-  requireManageAccessPermission(actor);
-
-  const app = getFirebaseApp();
-  if (!app) {
-    throw new Error("Firebase is not configured.");
-  }
-
-  const targetIp = payload.targetIp.trim();
-  if (!isValidIpAddress(targetIp)) {
-    throw new Error("Please enter a valid target IP address.");
-  }
-
-  const db = getFirestore(app);
-  const whitelistRef = doc(db, "whitelist", targetIp);
-  const existingWhitelist = await getDoc(whitelistRef);
-  const existingRole = existingWhitelist.exists()
-    ? resolveRole((existingWhitelist.data() as { role?: unknown }).role)
-    : "user";
-
-  const nextPlan = resolvePlan(payload.plan);
-
-  if (payload.whitelisted) {
-    await setDoc(
-      whitelistRef,
-      {
-        role: existingRole,
-        updatedAt: new Date().toISOString(),
-        updatedBy: actor.ipAddress,
-      },
-      { merge: true },
-    );
-  } else {
-    await deleteDoc(whitelistRef);
-  }
-  await setDoc(
-    doc(db, "subscriptions", targetIp),
-    {
-      plan: nextPlan,
-      expiresAt:
-        payload.expiresAtIso && payload.expiresAtIso.trim().length > 0
-          ? payload.expiresAtIso.trim()
-          : addDaysIso(PLAN_DURATION_DAYS[nextPlan]),
-      updatedAt: new Date().toISOString(),
-      updatedBy: actor.ipAddress,
-    },
-    { merge: true },
+  void actor;
+  void payload;
+  throw new Error(
+    "Whitelist management has been removed. Use subscription token role assignment instead.",
   );
 };
 
@@ -612,29 +554,10 @@ export const updateUserRole = async (
   actor: AccessControlState,
   payload: RoleUpdatePayload,
 ): Promise<void> => {
-  requireSuperAdminPermission(actor);
-
-  const app = getFirebaseApp();
-  if (!app) {
-    throw new Error("Firebase is not configured.");
-  }
-
-  const targetIp = payload.targetIp.trim();
-  if (!isValidIpAddress(targetIp)) {
-    throw new Error("Please enter a valid target IP address.");
-  }
-
-  const db = getFirestore(app);
-  const role = resolveRole(payload.role);
-
-  await setDoc(
-    doc(db, "whitelist", targetIp),
-    {
-      role,
-      updatedAt: new Date().toISOString(),
-      updatedBy: actor.ipAddress,
-    },
-    { merge: true },
+  void actor;
+  void payload;
+  throw new Error(
+    "Direct IP role updates are removed. Assign role through token generation or auth claims.",
   );
 };
 
@@ -652,12 +575,15 @@ export const generateSubscriptionToken = async (
   }
 
   const plan = resolvePlan(payload.plan);
+  const role = resolveRole(payload.role ?? "user");
 
   if (ACCESS_CONTROL_MODE === "blaze") {
     const functions = getFunctions(app);
     const callable = httpsCallable<
       {
         plan: SubscriptionPlan;
+        role: AccessRole;
+        requesterRole: AccessRole;
         requesterIp: string;
       },
       TokenGenerationResult
@@ -665,6 +591,8 @@ export const generateSubscriptionToken = async (
 
     const response = await callable({
       plan,
+      role,
+      requesterRole: actor.role,
       requesterIp: actor.ipAddress ?? "",
     });
 
@@ -672,13 +600,15 @@ export const generateSubscriptionToken = async (
     return {
       token: data.token,
       plan: resolvePlan(data.plan),
+      role: resolveRole(data.role),
       expiresAtIso: data.expiresAtIso,
     };
   }
 
   const token = createToken();
   const tokenHash = await hashToken(token);
-  const expiresAtIso = addDaysIso(PLAN_DURATION_DAYS[plan]);
+  const expiresAtIso =
+    plan === "unlimited" ? null : addDaysIso(PLAN_DURATION_DAYS[plan]);
   const db = getFirestore(app);
 
   await setDoc(
@@ -686,6 +616,8 @@ export const generateSubscriptionToken = async (
     {
       tokenHash,
       plan,
+      role,
+      status: "active",
       expiresAt: expiresAtIso,
       createdAt: new Date().toISOString(),
       createdByIp: actor.ipAddress,
@@ -696,6 +628,7 @@ export const generateSubscriptionToken = async (
   return {
     token,
     plan,
+    role,
     expiresAtIso,
   };
 };
@@ -734,6 +667,7 @@ export const assignClaimsByEmail = async (
       email: string;
       role: AccessRole;
       ip: string | null;
+      requesterRole: AccessRole;
       actorIp: string;
     },
     { uid: string; email: string }
@@ -743,6 +677,7 @@ export const assignClaimsByEmail = async (
     email,
     role,
     ip: ip || null,
+    requesterRole: actor.role,
     actorIp: actor.ipAddress ?? "",
   });
 
@@ -775,6 +710,7 @@ export const lookupClaimsByEmail = async (
   const callable = httpsCallable<
     {
       email: string;
+      requesterRole: AccessRole;
       actorIp: string;
     },
     ClaimsLookupResult
@@ -782,6 +718,7 @@ export const lookupClaimsByEmail = async (
 
   const response = await callable({
     email,
+    requesterRole: actor.role,
     actorIp: actor.ipAddress ?? "",
   });
 
@@ -803,11 +740,14 @@ export const listSubscriptionTokens = async (
   if (ACCESS_CONTROL_MODE === "blaze") {
     const functions = getFunctions(app);
     const callable = httpsCallable<
-      { requesterIp: string },
+      { requesterIp: string; requesterRole: AccessRole },
       { tokens: SubscriptionTokenRecord[] }
     >(functions, "listSubscriptionTokens");
 
-    const response = await callable({ requesterIp: actor.ipAddress ?? "" });
+    const response = await callable({
+      requesterIp: actor.ipAddress ?? "",
+      requesterRole: actor.role,
+    });
     return response.data.tokens;
   }
 
@@ -826,6 +766,8 @@ export const listSubscriptionTokens = async (
     .map((tokenDoc) => {
       const data = tokenDoc.data() as {
         plan?: unknown;
+        role?: unknown;
+        status?: unknown;
         expiresAt?: unknown;
         createdAt?: unknown;
         createdByIp?: unknown;
@@ -835,6 +777,8 @@ export const listSubscriptionTokens = async (
       return {
         tokenHash: tokenDoc.id,
         plan: resolvePlan(data.plan),
+        role: resolveRole(data.role),
+        status: resolveTokenStatus(data.status),
         expiresAt: typeof data.expiresAt === "string" ? data.expiresAt : null,
         createdAt: typeof data.createdAt === "string" ? data.createdAt : null,
         createdByIp:
@@ -867,17 +811,21 @@ export const revokeSubscriptionToken = async (
   if (ACCESS_CONTROL_MODE === "blaze") {
     const functions = getFunctions(app);
     const callable = httpsCallable<
-      { tokenHash: string; requesterIp: string },
+      { tokenHash: string; requesterIp: string; requesterRole: AccessRole },
       { ok: boolean }
     >(functions, "revokeSubscriptionToken");
 
-    await callable({ tokenHash, requesterIp: actor.ipAddress ?? "" });
+    await callable({
+      tokenHash,
+      requesterIp: actor.ipAddress ?? "",
+      requesterRole: actor.role,
+    });
     return;
   }
 
   const db = getFirestore(app);
   await updateDoc(doc(db, TOKEN_COLLECTION, tokenHash), {
-    expiresAt: new Date().toISOString(),
+    status: "inactive",
     revokedAt: new Date().toISOString(),
     revokedByIp: actor.ipAddress ?? "",
   });
@@ -921,106 +869,28 @@ export const deleteSubscriptionToken = async (
 export const listWhitelistUsers = async (
   actor: AccessControlState,
 ): Promise<WhitelistUserRecord[]> => {
-  requireSuperAdminPermission(actor);
-
-  const app = getFirebaseApp();
-  if (!app) {
-    throw new Error("Firebase is not configured.");
-  }
-
-  const db = getFirestore(app);
-  const whitelistSnapshot = await getDocs(collection(db, "whitelist"));
-
-  return whitelistSnapshot.docs
-    .map((entry) => {
-      const data = entry.data() as {
-        name?: unknown;
-        role?: unknown;
-        updatedAt?: unknown;
-      };
-      const role = resolveRole(data.role);
-      const name =
-        typeof data.name === "string" && data.name.trim().length > 0
-          ? data.name.trim()
-          : null;
-
-      return {
-        ip: entry.id,
-        name,
-        role,
-        updatedAtIso:
-          typeof data.updatedAt === "string" ? data.updatedAt : null,
-      } satisfies WhitelistUserRecord;
-    })
-    .filter((entry) => entry.role !== "superadmin")
-    .sort((left, right) => {
-      const leftMs = getEpochMs(left.updatedAtIso) ?? 0;
-      const rightMs = getEpochMs(right.updatedAtIso) ?? 0;
-      return rightMs - leftMs;
-    });
+  void actor;
+  return [];
 };
 
 export const upsertWhitelistUser = async (
   actor: AccessControlState,
   payload: WhitelistUserUpsertPayload,
 ): Promise<void> => {
-  requireSuperAdminPermission(actor);
-
-  const app = getFirebaseApp();
-  if (!app) {
-    throw new Error("Firebase is not configured.");
-  }
-
-  const targetIp = payload.targetIp.trim();
-  if (!isValidIpAddress(targetIp)) {
-    throw new Error("Please enter a valid target IP address.");
-  }
-
-  const previousIp = (payload.previousIp ?? "").trim();
-  if (previousIp && previousIp !== targetIp && !isValidIpAddress(previousIp)) {
-    throw new Error("Please enter a valid previous IP address.");
-  }
-
-  const role = resolveRole(payload.role);
-
-  const db = getFirestore(app);
-
-  await setDoc(
-    doc(db, "whitelist", targetIp),
-    {
-      name:
-        typeof payload.name === "string" && payload.name.trim().length > 0
-          ? payload.name.trim()
-          : null,
-      role,
-      updatedAt: new Date().toISOString(),
-      updatedBy: actor.ipAddress,
-    },
-    { merge: true },
+  void actor;
+  void payload;
+  throw new Error(
+    "Whitelist user management has been removed in token-only mode.",
   );
-
-  if (previousIp && previousIp !== targetIp) {
-    await deleteDoc(doc(db, "whitelist", previousIp));
-  }
 };
 
 export const deleteWhitelistUser = async (
   actor: AccessControlState,
   targetIp: string,
 ): Promise<void> => {
-  requireSuperAdminPermission(actor);
-
-  const app = getFirebaseApp();
-  if (!app) {
-    throw new Error("Firebase is not configured.");
-  }
-
-  const normalizedIp = targetIp.trim();
-  if (!isValidIpAddress(normalizedIp)) {
-    throw new Error("Please enter a valid target IP address.");
-  }
-
-  const db = getFirestore(app);
-  await deleteDoc(doc(db, "whitelist", normalizedIp));
-  await deleteDoc(doc(db, "subscriptions", normalizedIp));
+  void actor;
+  void targetIp;
+  throw new Error(
+    "Whitelist user management has been removed in token-only mode.",
+  );
 };

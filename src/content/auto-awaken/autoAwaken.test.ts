@@ -181,6 +181,146 @@ describe("Auto-Awaken text parsing logic", () => {
     expect(findBestConfiguredStatId("def +14")).toBeNull();
     expect(findBestConfiguredStatId("defense +14")).toBe("Defense");
   });
+
+  it("should resolve Max. FP+0 and Max. HP+0 to configured FP/HP stats", () => {
+    const configuredStatIds = ["FP", "HP"];
+
+    const normalizeAwakenLabel = (value: string): string =>
+      value
+        .replace(/[|!]/g, "I")
+        .replace(/[\[\]{}()]/g, " ")
+        .replace(/\./g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+
+    const compactAwakenLabel = (value: string): string =>
+      normalizeAwakenLabel(value)
+        .replace(/[^A-Z ]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/^MAX\s+/g, "")
+        .trim();
+
+    const resolveConfiguredStatId = (label: string): string | null => {
+      const normalizedLabel = compactAwakenLabel(label);
+      if (!normalizedLabel) {
+        return null;
+      }
+
+      let best: { statId: string; score: number } | null = null;
+      for (const statId of configuredStatIds) {
+        const stat = AWAKEN_STAT_BY_ID[statId];
+        if (!stat) continue;
+
+        for (const name of stat.ocrNames) {
+          const normalizedName = compactAwakenLabel(name);
+          if (!normalizedName) continue;
+
+          let score = -1;
+          if (normalizedLabel === normalizedName) {
+            score = 9;
+          } else if (normalizedLabel.includes(normalizedName)) {
+            score = 7 + normalizedName.length / 100;
+          }
+
+          if (score > -1 && (!best || score > best.score)) {
+            best = { statId, score };
+          }
+        }
+      }
+
+      return best?.statId ?? null;
+    };
+
+    const parseLine = (
+      line: string,
+    ): { statId: string; value: number } | null => {
+      const match = line.match(
+        /([A-Za-z][A-Za-z .%]{0,48}?)\s*[+#]\s*(\d+(?:\.\d+)?)(%?)/i,
+      );
+      if (!match) return null;
+
+      const statId = resolveConfiguredStatId(match[1] ?? "");
+      const value = Number.parseFloat(match[2] ?? "");
+      if (!statId || !Number.isFinite(value)) return null;
+
+      return { statId, value };
+    };
+
+    expect(parseLine("Max. FP+0")).toEqual({ statId: "FP", value: 0 });
+    expect(parseLine("Max. HP+0")).toEqual({ statId: "HP", value: 0 });
+  });
+
+  it("should resolve Attack+0 and STA+0 for latest BoD screenshot pattern", () => {
+    const configuredStatIds = ["Attack", "STA"];
+
+    const normalizeAwakenLabel = (value: string): string =>
+      value
+        .replace(/[|!]/g, "I")
+        .replace(/[\[\]{}()]/g, " ")
+        .replace(/\./g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toUpperCase();
+
+    const compactAwakenLabel = (value: string): string =>
+      normalizeAwakenLabel(value)
+        .replace(/[^A-Z ]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .replace(/^MAX\s+/g, "")
+        .trim();
+
+    const resolveConfiguredStatId = (label: string): string | null => {
+      const normalizedLabel = compactAwakenLabel(label);
+      if (!normalizedLabel) {
+        return null;
+      }
+
+      let best: { statId: string; score: number } | null = null;
+      for (const statId of configuredStatIds) {
+        const stat = AWAKEN_STAT_BY_ID[statId];
+        if (!stat) continue;
+
+        for (const name of stat.ocrNames) {
+          const normalizedName = compactAwakenLabel(name);
+          if (!normalizedName) continue;
+
+          let score = -1;
+          if (normalizedLabel === normalizedName) {
+            score = 9;
+          } else if (normalizedLabel.includes(normalizedName)) {
+            score = 7 + normalizedName.length / 100;
+          }
+
+          if (score > -1 && (!best || score > best.score)) {
+            best = { statId, score };
+          }
+        }
+      }
+
+      return best?.statId ?? null;
+    };
+
+    const parseLine = (
+      line: string,
+    ): { statId: string; value: number } | null => {
+      const match = line.match(
+        /([A-Za-z][A-Za-z .%]{0,48}?)\s*[+#]\s*(\d+(?:\.\d+)?)(%?)/i,
+      );
+      if (!match) return null;
+
+      const statId = resolveConfiguredStatId(match[1] ?? "");
+      const value = Number.parseFloat(match[2] ?? "");
+      if (!statId || !Number.isFinite(value)) return null;
+
+      return { statId, value };
+    };
+
+    expect(parseLine("Attack+0")).toEqual({ statId: "Attack", value: 0 });
+    expect(parseLine("STA+0")).toEqual({ statId: "STA", value: 0 });
+  });
 });
 
 describe("Auto-Awaken criteria evaluation", () => {

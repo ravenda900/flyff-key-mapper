@@ -1,15 +1,19 @@
 # Firebase Access Control Setup
 
-This project uses Firestore for:
+This project now uses a token-only access model.
 
-- IP whitelist checks
-- subscription plan checks (`free`, `pro`, `elite`)
-- role-based management (`user`, `admin`, `superadmin`)
+- Access is granted by a valid subscription token.
+- Each token carries both plan and role.
+- Roles are `user`, `admin`, `superadmin`.
+- The admin panel can issue tokens for `user` and `admin` only.
+- `superadmin` is managed through Firebase Auth custom claims workflows.
 
-This project supports two access-control backends:
+Supported plans:
 
-- `spark` (default): client-side Firestore reads/writes, no Cloud Functions required
-- `blaze`: Cloud Functions callables for access resolution, claims, and token workflows
+- `free` (7 days)
+- `pro` (30 days)
+- `elite` (90 days)
+- `unlimited` (no expiry, all features)
 
 ## 1) Environment Variables
 
@@ -22,12 +26,6 @@ Set these values in your Vite environment file (`.env` or `.env.local`):
 - `VITE_FIREBASE_MESSAGING_SENDER_ID` (optional)
 - `VITE_ACCESS_CONTROL_MODE` (`spark` or `blaze`, defaults to `spark`)
 
-Quick start:
-
-1. Copy [.env.example](../.env.example) to `.env.local`.
-2. In Firebase Console, open **Project settings** > **Your apps** > **Web app config**.
-3. Paste the values into `.env.local`.
-
 Example:
 
 ```bash
@@ -39,45 +37,11 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=1234567890
 VITE_ACCESS_CONTROL_MODE=spark
 ```
 
-After editing env values, restart the Vite dev/build process.
+After editing env values, restart Vite.
 
 ## 2) Firestore Collections
 
-Before creating collections, enable Firestore in Firebase Console:
-
-1. Open **Build** > **Firestore Database**.
-2. Click **Create database** and choose a region.
-3. Use production mode if you will apply [firestore.rules](../firestore.rules).
-
-### `whitelist/{ip}`
-
-Document ID is the public IP address.
-
-Suggested fields:
-
-- `enabled`: boolean
-- `blocked`: boolean
-- `role`: `user` | `admin` | `superadmin`
-- `canGenerateTokens`: boolean
-- `updatedAt`: string (ISO timestamp)
-- `updatedBy`: string (actor IP)
-
-Notes:
-
-- Whitelisted users can access the tool even without a subscription token.
-- Whitelisted users with `canGenerateTokens=true` (or `role=superadmin`) can issue subscription tokens.
-
-### `subscriptions/{ip}`
-
-Document ID is the public IP address.
-
-Suggested fields:
-
-- `plan`: `free` | `pro` | `elite`
-- `status`: `active` | `inactive`
-- `expiresAt`: string ISO timestamp or `null`
-- `updatedAt`: string (ISO timestamp)
-- `updatedBy`: string (actor IP)
+Enable Firestore first in Firebase Console, then create:
 
 ### `subscriptionTokens/{tokenHash}`
 
@@ -86,70 +50,41 @@ Document ID is SHA-256 hash of the generated token.
 Suggested fields:
 
 - `tokenHash`: string
-- `plan`: `free` | `pro` | `elite`
+- `plan`: `free` | `pro` | `elite` | `unlimited`
+- `role`: `user` | `admin` | `superadmin`
 - `status`: `active` | `inactive`
-- `expiresAt`: string ISO timestamp
+- `expiresAt`: string ISO timestamp or `null` for `unlimited`
 - `createdAt`: string ISO timestamp
 - `createdByIp`: string
 
 ## 3) Deploy Security Rules
 
-Current default profile is Spark-friendly and allows client-side access-control reads/writes.
-
-Important:
-
-- Spark profile is easier to operate but less secure.
-- Blaze profile should use strict claim-based rules and Cloud Functions for hardened production.
-
-Rules template is in [firestore.rules](../firestore.rules).
-
-Mode profile templates:
+Rules templates:
 
 - Spark profile: [firestore.rules.spark](../firestore.rules.spark)
 - Blaze profile: [firestore.rules.blaze](../firestore.rules.blaze)
 
-Firebase CLI config file is in [firebase.json](../firebase.json).
+Default [firestore.rules](../firestore.rules) is Spark-friendly.
 
-Copy [.firebaserc.example](../.firebaserc.example) to `.firebaserc` and set your project id.
-
-Deploy using Firebase CLI:
+Deploy rules:
 
 ```bash
 npm run firebase:rules
 ```
 
-### One-Command Mode Switch
-
-Switch to Spark mode (default local/dev profile):
+Switch profile quickly:
 
 ```bash
 npm run access:mode:spark
-```
-
-Switch to Blaze mode (hardened + callable backend):
-
-```bash
 npm run access:mode:blaze
 ```
 
-What these commands do:
+These commands:
 
-1. Copy the selected template into [firestore.rules](../firestore.rules)
+1. Copy selected template into [firestore.rules](../firestore.rules)
 2. Update `.env.local` with `VITE_ACCESS_CONTROL_MODE=spark|blaze`
 
-After switching, deploy rules:
-
-```bash
-npm run firebase:rules
-```
-
-For Blaze mode, also deploy functions:
-
-```bash
-npm run firebase:functions
-```
-
-For Blaze mode only (claims + callable backend), deploy Cloud Functions once:
+For Blaze mode, also deploy Functions:
 
 ```bash
 cd functions
@@ -158,108 +93,72 @@ cd ..
 npm run firebase:functions
 ```
 
-If this is your first Firebase CLI setup in this repo:
+## 4) Bootstrap Firebase Auth Claims (Blaze)
 
-```bash
-firebase login
-copy .firebaserc.example .firebaserc
-# edit .firebaserc and set your project id
-```
+Blaze mode should enforce privileged operations by role.
 
-## 4) Bootstrap Firebase Auth Claims (Role + IP)
-
-This section is required for Blaze mode.
-
-Firestore rules expect custom Auth claims for secure role enforcement.
-
-This repo includes [scripts/set-firebase-claims.mjs](../scripts/set-firebase-claims.mjs).
-
-Set Google Application Default Credentials first:
+Set Application Default Credentials:
 
 ```bash
 # Windows PowerShell
 $env:GOOGLE_APPLICATION_CREDENTIALS="C:\path\to\service-account.json"
 ```
 
-Then assign claims:
+Assign claims:
 
 ```bash
-# set admin
 npm run firebase:claims -- --uid <firebase-uid> --role admin
-
-# set superadmin and bind allowed IP
-npm run firebase:claims -- --uid <firebase-uid> --role superadmin --ip 203.0.113.10
-
-# resolve the user by email instead of looking up UID manually
+npm run firebase:claims -- --uid <firebase-uid> --role superadmin
 npm run firebase:claims-email -- --email admin@example.com --role admin
-
-# resolve by email and bind to a specific IP
-npm run firebase:claims-email -- --email admin@example.com --role superadmin --ip 203.0.113.10
+npm run firebase:claims-email -- --email admin@example.com --role superadmin
 ```
 
-Recommended admin workflow:
+## 5) Token Workflow
 
-1. Have the target Google user sign in once so Firebase Auth creates the user.
-2. In the app's Access Control panel, set the target IP whitelist/subscription and role.
-3. Paste the target Google email into the same panel and copy the generated claims command.
-4. Run that command in PowerShell with `GOOGLE_APPLICATION_CREDENTIALS` set.
-5. Ask the target user to sign out/sign in again so their token refreshes with the new claims.
+1. Admin or superadmin opens the Admin panel.
+2. Choose role (`user` or `admin`) and plan (`free`, `pro`, `elite`, `unlimited`).
+3. Generate token and deliver it securely.
+4. Recipient enters token in `Subscription Access Token` and validates it.
+5. Access is granted only when the token is valid and active.
 
-## 4.1) Assign Claims Through UI (Superadmin)
+Behavior notes:
 
-After Cloud Functions are deployed:
+- `unlimited` tokens never expire (`expiresAt = null`) and unlock all features.
+- Revoked tokens are marked `inactive` and stop granting access immediately.
+- Token input is persisted in app settings storage.
 
-1. Open Settings -> Access Control.
-2. Enter target IP and set role as needed.
-3. Enter target Google email.
-4. Click `Assign Claims by Email (UI)`.
+### Manual Token Creation (NPM)
 
-You can also verify claims in-app:
+Use the CLI script when you need to mint a token directly, including
+`superadmin` role tokens.
 
-5. Click `Lookup Claims by Email (UI)` to view the current `role` and `ip` custom claims for that user.
+Command:
 
-## 4.2) Subscription Token Workflow
+```bash
+npm run firebase:token -- --role <user|admin|superadmin> --plan unlimited
+```
 
-1. Whitelisted issuer users ( `canGenerateTokens=true` or `role=superadmin` ) can generate tokens in Settings -> Access Control.
-2. Generated tokens are plan-bound and expire automatically by plan:
+Examples (no expiry):
 
-- `free`: 7 days
-- `pro`: 30 days
-- `elite`: 90 days
+```bash
+npm run firebase:token -- --role superadmin --plan unlimited
+npm run firebase:token -- --role admin --plan unlimited
+npm run firebase:token -- --role user --plan unlimited
+```
 
-3. Non-whitelisted users must input a valid token in `Subscription Access Token` and click `Validate Token`.
-4. Invalid or expired tokens do not grant access.
-5. Token input is persisted in IndexedDB through app settings storage.
+Notes:
 
-Security behavior:
+- Default plan is `unlimited`, so `--plan unlimited` is optional.
+- The command prints the raw token once. Store it securely.
+- This writes to `subscriptionTokens/{tokenHash}` with `status=active`.
+- Ensure `GOOGLE_APPLICATION_CREDENTIALS` is set before running the command.
 
-- In Blaze mode:
-  - Claims endpoints require a whitelisted `superadmin` requester.
-  - Token generation requires a whitelisted requester with token issuer privileges.
-  - Token validation only succeeds for active, unexpired token records.
-- In Spark mode:
-  - Access checks and token workflows run client-side against Firestore.
-  - This is operationally simpler but weaker from a security perspective.
+## 6) Security Note
 
-## 5) Important Security Note
+Spark mode is operationally convenient but not hardened.
 
-If `VITE_ACCESS_CONTROL_MODE=spark`, client-side reads/writes are intentionally enabled for easier operation without Functions.
-Do not treat Spark mode as hardened security.
+For production hardening, prefer Blaze mode with:
 
-The rules template expects authenticated users and custom auth claims:
-
-- `request.auth.token.role`
-- optional `request.auth.token.ip`
-
-If you do not have Firebase Auth + custom claims in place, do not allow client writes to admin endpoints in production.
-
-For production-hardening, use one of these approaches:
-
-- Add Firebase Auth and issue custom claims for `role` and `ip`.
-- Move admin write operations to trusted backend endpoints (Cloud Functions/your server) and keep Firestore client writes denied.
-
-## 6) Role Behavior
-
-- `user`: cannot manage whitelist/subscriptions
-- `admin`: can manage whitelist/subscriptions
-- `superadmin`: can manage whitelist/subscriptions and assign roles (including admins)
+- Firebase Auth custom claims (`role`)
+- callable-only privileged operations
+- denied direct Firestore writes for token management from clients

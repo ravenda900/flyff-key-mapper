@@ -67,7 +67,6 @@ import type {
   AccessRole,
   SubscriptionPlan,
   SubscriptionTokenRecord,
-  WhitelistUserRecord,
 } from "../../accessControl";
 import {
   BASIC_PALETTE_SHAPES,
@@ -223,33 +222,19 @@ type Props = {
   canManageAdmins?: boolean;
   canGenerateTokens?: boolean;
   hasToolAccess?: boolean;
-  whitelisted?: boolean;
   accessReason?: string | null;
   tokenExpiresAtIso?: string | null;
   accessLastCheckedAtIso?: string | null;
-  accessSource?: "none" | "whitelist" | "token";
+  accessSource?: "none" | "token";
 
-  onAdminUpsertAccess?: (payload: {
-    targetIp: string;
-    whitelisted: boolean;
-    plan: SubscriptionPlan;
-    expiresAtIso?: string | null;
-  }) => Promise<void>;
-  onSuperAdminSetRole?: (payload: {
-    targetIp: string;
-    role: AccessRole;
-  }) => Promise<void>;
-  onListWhitelistUsers?: () => Promise<WhitelistUserRecord[]>;
-  onUpsertWhitelistUser?: (payload: {
-    targetIp: string;
-    previousIp?: string | null;
-    name?: string | null;
-    role: AccessRole;
-  }) => Promise<void>;
-  onDeleteWhitelistUser?: (targetIp: string) => Promise<void>;
   onGenerateSubscriptionToken?: (payload: {
     plan: SubscriptionPlan;
-  }) => Promise<{ token: string; expiresAtIso: string }>;
+    role?: AccessRole;
+  }) => Promise<{
+    token: string;
+    role: AccessRole;
+    expiresAtIso: string | null;
+  }>;
   onListSubscriptionTokens?: () => Promise<SubscriptionTokenRecord[]>;
   onRevokeSubscriptionToken?: (tokenHash: string) => Promise<void>;
   onDeleteSubscriptionToken?: (tokenHash: string) => Promise<void>;
@@ -328,14 +313,10 @@ export const MapperDialog = ({
   canManageAdmins,
   canGenerateTokens,
   hasToolAccess,
-  whitelisted,
   accessReason,
   tokenExpiresAtIso,
   accessLastCheckedAtIso,
   accessSource,
-  onListWhitelistUsers,
-  onUpsertWhitelistUser,
-  onDeleteWhitelistUser,
   onGenerateSubscriptionToken,
   onListSubscriptionTokens,
   onRevokeSubscriptionToken,
@@ -445,7 +426,6 @@ export const MapperDialog = ({
   const effectivePlan: SubscriptionPlan = subscriptionPlan ?? "free";
   const effectiveRole: AccessRole = accessRole ?? "user";
   const effectiveHasToolAccess = hasToolAccess ?? false;
-  const effectiveWhitelisted = whitelisted ?? false;
   const isAccessGated = !effectiveHasToolAccess && !accessLoading;
   const effectiveAccessSource = accessSource ?? "none";
   const canOpenAdminPane =
@@ -1032,25 +1012,16 @@ export const MapperDialog = ({
     }
   };
 
-  const [adminPreviousIp, setAdminPreviousIp] = useState<string | null>(null);
-  const [adminTargetIp, setAdminTargetIp] = useState("");
-  const [adminName, setAdminName] = useState("");
-  const [adminRole, setAdminRole] = useState<AccessRole>("user");
-  const [whitelistUsers, setWhitelistUsers] = useState<WhitelistUserRecord[]>(
-    [],
-  );
-  const [whitelistLoading, setWhitelistLoading] = useState(false);
-  const [whitelistSaving, setWhitelistSaving] = useState(false);
-  const [deletingWhitelistIp, setDeletingWhitelistIp] = useState<string | null>(
-    null,
-  );
   const [shapeOpacityDraft, setShapeOpacityDraft] = useState<number>(
     settings.shapeOpacity ?? 1,
   );
 
   const [tokenIssuePlan, setTokenIssuePlan] =
     useState<SubscriptionPlan>("free");
+  const [tokenIssueRole, setTokenIssueRole] = useState<AccessRole>("user");
   const [generatedToken, setGeneratedToken] = useState<string | null>(null);
+  const [generatedTokenRole, setGeneratedTokenRole] =
+    useState<AccessRole | null>(null);
   const [generatedTokenExpiresAtIso, setGeneratedTokenExpiresAtIso] = useState<
     string | null
   >(null);
@@ -1066,13 +1037,16 @@ export const MapperDialog = ({
     null,
   );
   const [tokenStatusFilter, setTokenStatusFilter] = useState<
-    "all" | "active" | "expired"
+    "all" | "active" | "inactive" | "expired"
   >("all");
   const [tokenPlanFilter, setTokenPlanFilter] = useState<
     "all" | SubscriptionPlan
   >("all");
 
   const buildPlanExpiryIso = (plan: SubscriptionPlan) => {
+    if (plan === "unlimited") {
+      return null;
+    }
     const now = new Date();
     const days = plan === "elite" ? 90 : plan === "pro" ? 30 : 7;
     now.setDate(now.getDate() + days);
@@ -1138,6 +1112,9 @@ export const MapperDialog = ({
   };
 
   const getTokenStatus = (item: SubscriptionTokenRecord) => {
+    if (item.status === "inactive") {
+      return "inactive";
+    }
     return item.isExpired ? "expired" : "active";
   };
 
@@ -1154,10 +1131,6 @@ export const MapperDialog = ({
     const planOk = tokenPlanFilter === "all" || item.plan === tokenPlanFilter;
     return statusOk && planOk;
   });
-
-  const filteredWhitelistUsers = whitelistUsers.filter(
-    (item) => item.role !== "superadmin",
-  );
 
   const adminTableShellStyle: CSSProperties = {
     overflowX: "auto",
@@ -1210,103 +1183,6 @@ export const MapperDialog = ({
     );
   };
 
-  const resetWhitelistEditor = () => {
-    setAdminPreviousIp(null);
-    setAdminTargetIp("");
-    setAdminName("");
-    setAdminRole("user");
-  };
-
-  const canSubmitWhitelistUpdate =
-    canManageAdminsEffective && adminTargetIp.trim().length > 0;
-
-  const refreshWhitelistUsers = async () => {
-    if (
-      !canManageAdminsEffective ||
-      !onListWhitelistUsers ||
-      whitelistLoading
-    ) {
-      return;
-    }
-    setWhitelistLoading(true);
-    try {
-      const records = await onListWhitelistUsers();
-      setWhitelistUsers(records);
-    } catch (error) {
-      const messageText =
-        error instanceof Error ? error.message : "Unable to load whitelist.";
-      message.error(messageText);
-    } finally {
-      setWhitelistLoading(false);
-    }
-  };
-
-  const submitWhitelistUpdate = async () => {
-    if (
-      !canSubmitWhitelistUpdate ||
-      !onUpsertWhitelistUser ||
-      whitelistSaving
-    ) {
-      return;
-    }
-    setWhitelistSaving(true);
-    try {
-      await onUpsertWhitelistUser({
-        targetIp: adminTargetIp.trim(),
-        previousIp: adminPreviousIp,
-        name: adminName.trim() || null,
-        role: adminRole,
-      });
-      await refreshWhitelistUsers();
-      await onRefreshAccessControl?.();
-      message.success("Whitelist user saved.");
-      resetWhitelistEditor();
-    } catch (error) {
-      const messageText =
-        error instanceof Error
-          ? error.message
-          : "Unable to save whitelist user.";
-      message.error(messageText);
-    } finally {
-      setWhitelistSaving(false);
-    }
-  };
-
-  const editWhitelistUser = (item: WhitelistUserRecord) => {
-    setAdminPreviousIp(item.ip);
-    setAdminTargetIp(item.ip);
-    setAdminName(item.name ?? "");
-    setAdminRole(item.role);
-  };
-
-  const removeWhitelistUser = async (targetIp: string) => {
-    if (
-      !canManageAdminsEffective ||
-      !onDeleteWhitelistUser ||
-      deletingWhitelistIp
-    ) {
-      return;
-    }
-    setDeletingWhitelistIp(targetIp);
-    try {
-      await onDeleteWhitelistUser(targetIp);
-      await refreshWhitelistUsers();
-      await onRefreshAccessControl?.();
-      if (adminPreviousIp === targetIp) {
-        resetWhitelistEditor();
-      }
-      message.success("Whitelist user deleted.");
-    } catch (error) {
-      const messageText =
-        error instanceof Error
-          ? error.message
-          : "Unable to delete whitelist user.";
-      message.error(messageText);
-    } finally {
-      setDeletingWhitelistIp(null);
-    }
-  };
-
   const issueSubscriptionToken = async () => {
     if (
       !canGenerateTokensEffective ||
@@ -1319,8 +1195,10 @@ export const MapperDialog = ({
     try {
       const result = await onGenerateSubscriptionToken({
         plan: tokenIssuePlan,
+        role: tokenIssueRole,
       });
       setGeneratedToken(result.token);
+      setGeneratedTokenRole(result.role);
       setGeneratedTokenExpiresAtIso(result.expiresAtIso);
       if (onListSubscriptionTokens) {
         const refreshedTokens = await onListSubscriptionTokens();
@@ -1446,11 +1324,6 @@ export const MapperDialog = ({
       return;
     }
 
-    if (nextState.hasToolAccess && nextState.accessSource === "whitelist") {
-      message.success("Access granted via whitelist.");
-      return;
-    }
-
     message.error(nextState.reason ?? "Invalid or expired subscription token.");
   };
 
@@ -1471,13 +1344,10 @@ export const MapperDialog = ({
     if (activeDialogPane !== "admin") {
       return;
     }
-    if (canManageAdminsEffective) {
-      void refreshWhitelistUsers();
-    }
     if (canGenerateTokensEffective) {
       void refreshIssuedTokens();
     }
-  }, [activeDialogPane, canManageAdminsEffective, canGenerateTokensEffective]);
+  }, [activeDialogPane, canGenerateTokensEffective]);
 
   const activeUtilityPaneTab: UtilityTab =
     activeDialogPane === "settings" || activeDialogPane === "admin"
@@ -1886,23 +1756,21 @@ export const MapperDialog = ({
                   />
                 </Tooltip>
               )}
-              {!isAccessGated && (
-                <Tooltip title="Settings" {...dialogTooltipProps}>
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<SettingOutlined />}
-                    aria-label={
-                      activeDialogPane === "settings"
-                        ? "Close settings"
-                        : "Open settings"
-                    }
-                    onClick={() => {
-                      toggleSettingsPane();
-                    }}
-                  />
-                </Tooltip>
-              )}
+              <Tooltip title="Settings" {...dialogTooltipProps}>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<SettingOutlined />}
+                  aria-label={
+                    activeDialogPane === "settings"
+                      ? "Close settings"
+                      : "Open settings"
+                  }
+                  onClick={() => {
+                    toggleSettingsPane();
+                  }}
+                />
+              </Tooltip>
               <Tooltip title="User Manual" {...dialogTooltipProps}>
                 <Button
                   type="text"
@@ -1932,7 +1800,7 @@ export const MapperDialog = ({
             </Space>
           }
         >
-          {isAccessGated && (
+          {isAccessGated && activeDialogPane !== "settings" && (
             <div
               style={{
                 position: "absolute",
@@ -2747,643 +2615,507 @@ export const MapperDialog = ({
                       </Space>
                     </Form.Item>
 
-                    <Form.Item>
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Divider className="!fm-my-1" />
-                        <Typography.Text strong>
-                          Key Mapper Settings
-                        </Typography.Text>
-                        <Typography.Text type="secondary">
-                          Runtime behavior, visuals, and mapper-related
-                          shortcuts.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
+                    {!isAccessGated && (
+                      <>
+                        <Form.Item>
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Divider className="!fm-my-1" />
+                            <Typography.Text strong>
+                              Key Mapper Settings
+                            </Typography.Text>
+                            <Typography.Text type="secondary">
+                              Runtime behavior, visuals, and mapper-related
+                              shortcuts.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
 
-                    <Form.Item label="Strict Input Passthrough">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.strictPassthrough}
-                          disabled={isLocked}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              strictPassthrough: checked,
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          In Stop mode, gameplay input passes through unless it
-                          matches a mapper shortcut or mapped shape binding.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
+                        <Form.Item label="Strict Input Passthrough">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.strictPassthrough}
+                              disabled={isLocked}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  strictPassthrough: checked,
+                                }));
+                              }}
+                            />
+                            <Typography.Text type="secondary">
+                              In Stop mode, gameplay input passes through unless
+                              it matches a mapper shortcut or mapped shape
+                              binding.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
 
-                    <Form.Item label="Snap Line Indicators">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.showSnapIndicators}
-                          disabled={isLocked}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              showSnapIndicators: checked,
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          Shows or hides snap alignment guide lines when snap
-                          alignment is active.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
+                        <Form.Item label="Snap Line Indicators">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.showSnapIndicators}
+                              disabled={isLocked}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  showSnapIndicators: checked,
+                                }));
+                              }}
+                            />
+                            <Typography.Text type="secondary">
+                              Shows or hides snap alignment guide lines when
+                              snap alignment is active.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
 
-                    <Form.Item label="Shape Key Binding Tooltips">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.showShapeTooltips}
-                          disabled={isLocked}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              showShapeTooltips: checked,
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          Shows or hides key binding tooltips when hovering over
-                          shapes.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
+                        <Form.Item label="Shape Key Binding Tooltips">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.showShapeTooltips}
+                              disabled={isLocked}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  showShapeTooltips: checked,
+                                }));
+                              }}
+                            />
+                            <Typography.Text type="secondary">
+                              Shows or hides key binding tooltips when hovering
+                              over shapes.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
 
-                    <Form.Item label="Opacity">
-                      <Slider
-                        min={0}
-                        max={1}
-                        step={0.01}
-                        value={shapeOpacityDraft}
-                        onChange={(value) => {
-                          const nextOpacity = Number(value);
-                          setShapeOpacityDraft(nextOpacity);
-                          setSettings((prev) => ({
-                            ...prev,
-                            shapeOpacity: nextOpacity,
-                          }));
-                        }}
-                        onChangeComplete={(value) => {
-                          const nextOpacity = Number(value);
-                          setSettings((prev) => ({
-                            ...prev,
-                            shapeOpacity: nextOpacity,
-                          }));
-                        }}
-                      />
-                      <Typography.Text type="secondary">
-                        Controls visibility intensity for all shapes in the
-                        active profile.
-                      </Typography.Text>
-                    </Form.Item>
-
-                    {!effectiveWhitelisted && (
-                      <Form.Item label="Subscription Access Token">
-                        <Space
-                          direction="vertical"
-                          size={6}
-                          className="fm-w-full"
-                        >
-                          <Input
-                            value={settings.subscriptionAccessToken}
-                            placeholder="Enter subscription token"
-                            onChange={(event) => {
+                        <Form.Item label="Opacity">
+                          <Slider
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={shapeOpacityDraft}
+                            onChange={(value) => {
+                              const nextOpacity = Number(value);
+                              setShapeOpacityDraft(nextOpacity);
                               setSettings((prev) => ({
                                 ...prev,
-                                subscriptionAccessToken: event.target.value,
+                                shapeOpacity: nextOpacity,
+                              }));
+                            }}
+                            onChangeComplete={(value) => {
+                              const nextOpacity = Number(value);
+                              setSettings((prev) => ({
+                                ...prev,
+                                shapeOpacity: nextOpacity,
                               }));
                             }}
                           />
-                          <Button
-                            loading={Boolean(accessLoading)}
-                            onClick={() => {
-                              void applySubscriptionToken();
-                            }}
+                          <Typography.Text type="secondary">
+                            Controls visibility intensity for all shapes in the
+                            active profile.
+                          </Typography.Text>
+                        </Form.Item>
+
+                        <Form.Item label="Subscription Access Token">
+                          <Space
+                            direction="vertical"
+                            size={6}
+                            className="fm-w-full"
                           >
-                            Validate Token
-                          </Button>
-                          <Button
-                            onClick={() => {
-                              void clearSavedToken();
-                            }}
-                          >
-                            Clear Saved Token
-                          </Button>
-                          {effectiveAccessSource === "token" &&
-                            tokenExpiresAtIso && (
+                            <Input
+                              value={settings.subscriptionAccessToken}
+                              placeholder="Enter subscription token"
+                              onChange={(event) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  subscriptionAccessToken: event.target.value,
+                                }));
+                              }}
+                            />
+                            <Button
+                              loading={Boolean(accessLoading)}
+                              onClick={() => {
+                                void applySubscriptionToken();
+                              }}
+                            >
+                              Validate Token
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                void clearSavedToken();
+                              }}
+                            >
+                              Clear Saved Token
+                            </Button>
+                            {effectiveAccessSource === "token" &&
+                              tokenExpiresAtIso && (
+                                <Typography.Text type="secondary">
+                                  Current token expires:{" "}
+                                  {renderDateWithRemainingTooltip(
+                                    tokenExpiresAtIso,
+                                  )}
+                                </Typography.Text>
+                              )}
+                            <Typography.Text type="secondary">
+                              To use another subscription token, replace the
+                              value above and click Validate Token.
+                            </Typography.Text>
+                            {accessLastCheckedAtIso && (
                               <Typography.Text type="secondary">
-                                Current token expires:{" "}
-                                {renderDateWithRemainingTooltip(
-                                  tokenExpiresAtIso,
-                                )}
+                                Last access check:{" "}
+                                {formatTokenDate(accessLastCheckedAtIso)}
                               </Typography.Text>
                             )}
-                          <Typography.Text type="secondary">
-                            To use another subscription token, replace the token
-                            value above and click Validate Token.
-                          </Typography.Text>
-                          {accessLastCheckedAtIso && (
-                            <Typography.Text type="secondary">
-                              Last access check:{" "}
-                              {formatTokenDate(accessLastCheckedAtIso)}
-                            </Typography.Text>
-                          )}
-                        </Space>
-                      </Form.Item>
-                    )}
+                          </Space>
+                        </Form.Item>
 
-                    <Form.Item label="Toggle Dialog Shortcut">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <div
-                          className={`fm-shortcut-input-shell${settings.toggleDialogShortcut ? " fm-shortcut-input-has-value" : ""}`}
-                        >
-                          <Input
-                            className="fm-global-shortcut-input fm-toggle-dialog-shortcut-input"
-                            value={settings.toggleDialogShortcut}
-                            placeholder="Press keys"
-                            onKeyDown={(event) => {
-                              captureGlobalShortcut(
-                                event,
-                                "toggleDialogShortcut",
-                              );
-                            }}
-                          />
-                          {settings.toggleDialogShortcut && (
-                            <span
-                              className="fm-shortcut-input-overlay"
-                              aria-hidden="true"
-                            >
-                              <ShortcutKeys
-                                combo={settings.toggleDialogShortcut}
-                              />
-                            </span>
-                          )}
-                        </div>
-                        <Typography.Text type="secondary">
-                          Shows or hides the Flyff Utility dialog. Default:
-                          Alt+Shift+M.
-                        </Typography.Text>
-                        {globalShortcutErrors.toggleDialogShortcut && (
-                          <Typography.Text type="danger">
-                            {globalShortcutErrors.toggleDialogShortcut}
-                          </Typography.Text>
-                        )}
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Start/Stop Shortcut">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <div
-                          className={`fm-shortcut-input-shell${settings.toggleModeShortcut ? " fm-shortcut-input-has-value" : ""}`}
-                        >
-                          <Input
-                            className="fm-global-shortcut-input"
-                            value={settings.toggleModeShortcut}
-                            placeholder="Press keys"
-                            disabled={isLocked}
-                            onKeyDown={(event) => {
-                              captureGlobalShortcut(
-                                event,
-                                "toggleModeShortcut",
-                              );
-                            }}
-                          />
-                          {settings.toggleModeShortcut && (
-                            <span
-                              className="fm-shortcut-input-overlay"
-                              aria-hidden="true"
-                            >
-                              <ShortcutKeys
-                                combo={settings.toggleModeShortcut}
-                              />
-                            </span>
-                          )}
-                        </div>
-                        <Typography.Text type="secondary">
-                          Toggles mapper state between Edit Mode (Start) and
-                          trigger mode (Stop).
-                        </Typography.Text>
-                        {globalShortcutErrors.toggleModeShortcut && (
-                          <Typography.Text type="danger">
-                            {globalShortcutErrors.toggleModeShortcut}
-                          </Typography.Text>
-                        )}
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Focus Canvas Shortcut">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <div
-                          className={`fm-shortcut-input-shell${settings.focusCanvasShortcut ? " fm-shortcut-input-has-value" : ""}`}
-                        >
-                          <Input
-                            className="fm-global-shortcut-input"
-                            value={settings.focusCanvasShortcut}
-                            placeholder="Press keys"
-                            disabled={isLocked}
-                            onKeyDown={(event) => {
-                              captureGlobalShortcut(
-                                event,
-                                "focusCanvasShortcut",
-                              );
-                            }}
-                          />
-                          {settings.focusCanvasShortcut && (
-                            <span
-                              className="fm-shortcut-input-overlay"
-                              aria-hidden="true"
-                            >
-                              <ShortcutKeys
-                                combo={settings.focusCanvasShortcut}
-                              />
-                            </span>
-                          )}
-                        </div>
-                        <Typography.Text type="secondary">
-                          Moves focus back to the game canvas so keyboard
-                          gameplay input works immediately.
-                        </Typography.Text>
-                        {globalShortcutErrors.focusCanvasShortcut && (
-                          <Typography.Text type="danger">
-                            {globalShortcutErrors.focusCanvasShortcut}
-                          </Typography.Text>
-                        )}
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Auto-Stop (seconds)">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                        style={{ width: "100%" }}
-                      >
-                        <div className="fm-full-width-input-number-wrap">
-                          <InputNumber
-                            ref={autoStopInputRef}
-                            className="fm-full-width-input-number"
-                            min={0}
-                            step={1}
-                            value={autoStopDraftSeconds}
-                            placeholder="Disabled"
-                            style={{ width: "100%" }}
-                            onChange={(value) => {
-                              const nextValue =
-                                typeof value === "number" &&
-                                Number.isFinite(value)
-                                  ? value
-                                  : 0;
-                              setAutoStopDraftSeconds(Math.max(0, nextValue));
-                            }}
-                            onBlur={flushAutoStopDraftToSettings}
-                            onPressEnter={flushAutoStopDraftToSettings}
-                            addonAfter="s"
-                          />
-                        </div>
-                        <Typography.Text type="secondary">
-                          Script automatically stops if no activity is detected
-                          for this duration. Set 0 to disable.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="CAPTCHA Detection Action">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Select
-                          value={recaptchaActionMode}
-                          getPopupContainer={getDialogPopupContainer}
-                          dropdownStyle={PROFILE_SELECT_DROPDOWN_STYLE}
-                          options={[
-                            {
-                              value: "off",
-                              label: "Disabled",
-                            },
-                            {
-                              value: "notify-only",
-                              label: "Notify only",
-                            },
-                            {
-                              value: "stop-only",
-                              label: "Stop script only",
-                            },
-                            {
-                              value: "stop-and-notify",
-                              label: "Stop script and notify",
-                            },
-                          ]}
-                          onChange={(value) => {
-                            const nextMode = String(value);
-                            setSettings((prev) => ({
-                              ...prev,
-                              notifyOnRecaptcha:
-                                nextMode === "notify-only" ||
-                                nextMode === "stop-and-notify",
-                              stopOnRecaptcha:
-                                nextMode === "stop-only" ||
-                                nextMode === "stop-and-notify",
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          Sets what happens when a reCAPTCHA or hCaptcha element
-                          is detected.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Mobile Push Notifications (Discord Bot)">
-                      <Space
-                        direction="vertical"
-                        size={8}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.mobilePushEnabled}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              mobilePushEnabled: checked,
-                            }));
-                          }}
-                        />
-                        {settings.mobilePushEnabled && (
-                          <>
-                            <Input
-                              value={settings.mobilePushDiscordBotUrl}
-                              placeholder="Bot URL (e.g. https://your-bot.onrender.com)"
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setSettings((prev) => ({
-                                  ...prev,
-                                  mobilePushDiscordBotUrl: value,
-                                }));
-                              }}
-                            />
-                            <Input
-                              value={settings.mobilePushDiscordUserId}
-                              placeholder="Your Discord User ID"
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setSettings((prev) => ({
-                                  ...prev,
-                                  mobilePushDiscordUserId: value,
-                                }));
-                              }}
-                            />
-                            <Input.Password
-                              value={settings.mobilePushDiscordApiKey}
-                              placeholder="Discord Bot API Key"
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setSettings((prev) => ({
-                                  ...prev,
-                                  mobilePushDiscordApiKey: value,
-                                }));
-                              }}
-                            />
-                            <Space wrap>
-                              <Button
-                                onClick={() => {
-                                  void testMobilePushConnection();
-                                }}
-                                disabled={!canTestConnection}
-                                loading={isTestingConnection}
-                              >
-                                Test Connection
-                              </Button>
-                              <Button
-                                onClick={() => {
-                                  void sendTestMobilePush();
-                                }}
-                                disabled={!canSendTestPush}
-                                loading={isSendingTestPush}
-                              >
-                                Send Test Push
-                              </Button>
-                            </Space>
-                          </>
-                        )}
-                        <Typography.Text type="secondary">
-                          Sends Discord DM alerts for auto-stop and CAPTCHA
-                          detection events. Deploy the Discord bot, then enter
-                          its URL, your Discord User ID, and Bot API key above.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Sync Mouse Events Across Tabs">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.syncMouseEvents}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              syncMouseEvents: checked,
-                            }));
-                          }}
-                        />
-                        {settings.syncMouseEvents && (
-                          <Form.Item
-                            label={
-                              <Space size={6} align="center">
-                                <span>Mouse Position Sync Mode</span>
-                                <Tooltip
-                                  title={
-                                    settings.mouseSyncPositionMode === "ratio"
-                                      ? "Ratio mode keeps the synced cursor aligned when source and target Flyff windows are different sizes."
-                                      : "Actual mode works best when your Flyff windows are roughly the same size."
-                                  }
-                                  {...dialogTooltipProps}
-                                >
-                                  <QuestionOutlined />
-                                </Tooltip>
-                              </Space>
-                            }
-                            style={{ marginBottom: 0 }}
+                        <Form.Item label="Toggle Dialog Shortcut">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
                           >
-                            <Space
-                              direction="vertical"
-                              size={4}
-                              className="fm-w-full"
+                            <div
+                              className={`fm-shortcut-input-shell${settings.toggleDialogShortcut ? " fm-shortcut-input-has-value" : ""}`}
                             >
-                              <Select
-                                value={settings.mouseSyncPositionMode}
-                                getPopupContainer={(triggerNode) =>
-                                  (triggerNode.closest(
-                                    ".fm-dialog",
-                                  ) as HTMLElement | null) ?? document.body
-                                }
-                                dropdownStyle={{
-                                  ...PROFILE_SELECT_DROPDOWN_STYLE,
-                                  zIndex: 2147483647,
-                                }}
-                                options={[
-                                  {
-                                    value: "actual",
-                                    label: "Actual (pixels)",
-                                  },
-                                  {
-                                    value: "ratio",
-                                    label: "Ratio (%)",
-                                  },
-                                ]}
-                                onChange={(value) => {
-                                  setSettings((prev) => ({
-                                    ...prev,
-                                    mouseSyncPositionMode:
-                                      value === "ratio" ? "ratio" : "actual",
-                                  }));
+                              <Input
+                                className="fm-global-shortcut-input fm-toggle-dialog-shortcut-input"
+                                value={settings.toggleDialogShortcut}
+                                placeholder="Press keys"
+                                onKeyDown={(event) => {
+                                  captureGlobalShortcut(
+                                    event,
+                                    "toggleDialogShortcut",
+                                  );
                                 }}
                               />
-                              <Typography.Text type="secondary">
-                                {settings.mouseSyncPositionMode === "ratio"
-                                  ? "Ratio mode keeps the synced cursor aligned on smaller or differently sized windows."
-                                  : "Actual mode works best when your Flyff windows are about the same size."}
+                              {settings.toggleDialogShortcut && (
+                                <span
+                                  className="fm-shortcut-input-overlay"
+                                  aria-hidden="true"
+                                >
+                                  <ShortcutKeys
+                                    combo={settings.toggleDialogShortcut}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <Typography.Text type="secondary">
+                              Shows or hides the Flyff Utility dialog. Default:
+                              Alt+Shift+M.
+                            </Typography.Text>
+                            {globalShortcutErrors.toggleDialogShortcut && (
+                              <Typography.Text type="danger">
+                                {globalShortcutErrors.toggleDialogShortcut}
                               </Typography.Text>
-                            </Space>
-                          </Form.Item>
-                        )}
-                        <Typography.Text type="secondary">
-                          Mirrors mouse position, click, drag, and wheel
-                          interactions to selected Flyff tabs. Use Ratio mode
-                          when target windows have different sizes so cursor
-                          mapping remains visible.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
+                            )}
+                          </Space>
+                        </Form.Item>
 
-                    <Form.Item label="Experimental Features">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <Switch
-                          checked={settings.experimentalFeaturesEnabled}
-                          onChange={(checked) => {
-                            setSettings((prev) => ({
-                              ...prev,
-                              experimentalFeaturesEnabled: checked,
-                            }));
-                          }}
-                        />
-                        <Typography.Text type="secondary">
-                          Enables experimental utilities: Auto-Holy, Auto-Pills,
-                          and Auto-Awaken.
-                        </Typography.Text>
-                      </Space>
-                    </Form.Item>
+                        <Form.Item label="Start/Stop Shortcut">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <div
+                              className={`fm-shortcut-input-shell${settings.toggleModeShortcut ? " fm-shortcut-input-has-value" : ""}`}
+                            >
+                              <Input
+                                className="fm-global-shortcut-input"
+                                value={settings.toggleModeShortcut}
+                                placeholder="Press keys"
+                                disabled={isLocked}
+                                onKeyDown={(event) => {
+                                  captureGlobalShortcut(
+                                    event,
+                                    "toggleModeShortcut",
+                                  );
+                                }}
+                              />
+                              {settings.toggleModeShortcut && (
+                                <span
+                                  className="fm-shortcut-input-overlay"
+                                  aria-hidden="true"
+                                >
+                                  <ShortcutKeys
+                                    combo={settings.toggleModeShortcut}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <Typography.Text type="secondary">
+                              Toggles mapper state between Edit Mode (Start) and
+                              trigger mode (Stop).
+                            </Typography.Text>
+                            {globalShortcutErrors.toggleModeShortcut && (
+                              <Typography.Text type="danger">
+                                {globalShortcutErrors.toggleModeShortcut}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        </Form.Item>
 
-                    {settings.experimentalFeaturesEnabled && (
-                      <Form.Item label="Auto-Holy">
-                        <Space
-                          direction="vertical"
-                          size={6}
-                          className="fm-w-full"
-                        >
-                          <Switch
-                            checked={settings.autoHoly.enabled}
-                            onChange={(checked) => {
-                              setSettings((prev) => ({
-                                ...prev,
-                                autoHoly: {
-                                  ...prev.autoHoly,
-                                  enabled: checked,
+                        <Form.Item label="Focus Canvas Shortcut">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <div
+                              className={`fm-shortcut-input-shell${settings.focusCanvasShortcut ? " fm-shortcut-input-has-value" : ""}`}
+                            >
+                              <Input
+                                className="fm-global-shortcut-input"
+                                value={settings.focusCanvasShortcut}
+                                placeholder="Press keys"
+                                disabled={isLocked}
+                                onKeyDown={(event) => {
+                                  captureGlobalShortcut(
+                                    event,
+                                    "focusCanvasShortcut",
+                                  );
+                                }}
+                              />
+                              {settings.focusCanvasShortcut && (
+                                <span
+                                  className="fm-shortcut-input-overlay"
+                                  aria-hidden="true"
+                                >
+                                  <ShortcutKeys
+                                    combo={settings.focusCanvasShortcut}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <Typography.Text type="secondary">
+                              Moves focus back to the game canvas so keyboard
+                              gameplay input works immediately.
+                            </Typography.Text>
+                            {globalShortcutErrors.focusCanvasShortcut && (
+                              <Typography.Text type="danger">
+                                {globalShortcutErrors.focusCanvasShortcut}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="Auto-Stop (seconds)">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                            style={{ width: "100%" }}
+                          >
+                            <div className="fm-full-width-input-number-wrap">
+                              <InputNumber
+                                ref={autoStopInputRef}
+                                className="fm-full-width-input-number"
+                                min={0}
+                                step={1}
+                                value={autoStopDraftSeconds}
+                                placeholder="Disabled"
+                                style={{ width: "100%" }}
+                                onChange={(value) => {
+                                  const nextValue =
+                                    typeof value === "number" &&
+                                    Number.isFinite(value)
+                                      ? value
+                                      : 0;
+                                  setAutoStopDraftSeconds(
+                                    Math.max(0, nextValue),
+                                  );
+                                }}
+                                onBlur={flushAutoStopDraftToSettings}
+                                onPressEnter={flushAutoStopDraftToSettings}
+                                addonAfter="s"
+                              />
+                            </div>
+                            <Typography.Text type="secondary">
+                              Script automatically stops if no activity is
+                              detected for this duration. Set 0 to disable.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="CAPTCHA Detection Action">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Select
+                              value={recaptchaActionMode}
+                              getPopupContainer={getDialogPopupContainer}
+                              dropdownStyle={PROFILE_SELECT_DROPDOWN_STYLE}
+                              options={[
+                                {
+                                  value: "off",
+                                  label: "Disabled",
                                 },
-                              }));
-                            }}
-                          />
-                          {settings.autoHoly.enabled && (
-                            <>
-                              <Form.Item
-                                label="Debuff Type"
-                                style={{ marginBottom: 0 }}
-                              >
-                                <Select
-                                  value={settings.autoHoly.debuffType}
-                                  getPopupContainer={getDialogPopupContainer}
-                                  dropdownStyle={PROFILE_SELECT_DROPDOWN_STYLE}
-                                  options={[
-                                    { value: "all", label: "All" },
-                                    { value: "root", label: "Root" },
-                                    { value: "stun", label: "Stun" },
-                                  ]}
-                                  onChange={(value) => {
+                                {
+                                  value: "notify-only",
+                                  label: "Notify only",
+                                },
+                                {
+                                  value: "stop-only",
+                                  label: "Stop script only",
+                                },
+                                {
+                                  value: "stop-and-notify",
+                                  label: "Stop script and notify",
+                                },
+                              ]}
+                              onChange={(value) => {
+                                const nextMode = String(value);
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  notifyOnRecaptcha:
+                                    nextMode === "notify-only" ||
+                                    nextMode === "stop-and-notify",
+                                  stopOnRecaptcha:
+                                    nextMode === "stop-only" ||
+                                    nextMode === "stop-and-notify",
+                                }));
+                              }}
+                            />
+                            <Typography.Text type="secondary">
+                              Sets what happens when a reCAPTCHA or hCaptcha
+                              element is detected.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="Mobile Push Notifications (Discord Bot)">
+                          <Space
+                            direction="vertical"
+                            size={8}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.mobilePushEnabled}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  mobilePushEnabled: checked,
+                                }));
+                              }}
+                            />
+                            {settings.mobilePushEnabled && (
+                              <>
+                                <Input
+                                  value={settings.mobilePushDiscordBotUrl}
+                                  placeholder="Bot URL (e.g. https://your-bot.onrender.com)"
+                                  onChange={(event) => {
+                                    const value = event.target.value;
                                     setSettings((prev) => ({
                                       ...prev,
-                                      autoHoly: {
-                                        ...prev.autoHoly,
-                                        debuffType: value as AutoHolyDebuffType,
-                                      },
+                                      mobilePushDiscordBotUrl: value,
                                     }));
                                   }}
                                 />
-                              </Form.Item>
-                              <Form.Item
-                                label="Show Auto-Holy Debug Overlay"
-                                style={{ marginBottom: 0 }}
-                              >
-                                <Switch
-                                  checked={
-                                    settings.autoHoly.debugOverlayEnabled
-                                  }
-                                  onChange={(checked) => {
+                                <Input
+                                  value={settings.mobilePushDiscordUserId}
+                                  placeholder="Your Discord User ID"
+                                  onChange={(event) => {
+                                    const value = event.target.value;
                                     setSettings((prev) => ({
                                       ...prev,
-                                      autoHoly: {
-                                        ...prev.autoHoly,
-                                        debugOverlayEnabled: checked,
-                                      },
+                                      mobilePushDiscordUserId: value,
                                     }));
                                   }}
                                 />
-                              </Form.Item>
+                                <Input.Password
+                                  value={settings.mobilePushDiscordApiKey}
+                                  placeholder="Discord Bot API Key"
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    setSettings((prev) => ({
+                                      ...prev,
+                                      mobilePushDiscordApiKey: value,
+                                    }));
+                                  }}
+                                />
+                                <Space wrap>
+                                  <Button
+                                    onClick={() => {
+                                      void testMobilePushConnection();
+                                    }}
+                                    disabled={!canTestConnection}
+                                    loading={isTestingConnection}
+                                  >
+                                    Test Connection
+                                  </Button>
+                                  <Button
+                                    onClick={() => {
+                                      void sendTestMobilePush();
+                                    }}
+                                    disabled={!canSendTestPush}
+                                    loading={isSendingTestPush}
+                                  >
+                                    Send Test Push
+                                  </Button>
+                                </Space>
+                              </>
+                            )}
+                            <Typography.Text type="secondary">
+                              Sends Discord DM alerts for auto-stop and CAPTCHA
+                              detection events. Deploy the Discord bot, then
+                              enter its URL, your Discord User ID, and Bot API
+                              key above.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="Sync Mouse Events Across Tabs">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.syncMouseEvents}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  syncMouseEvents: checked,
+                                }));
+                              }}
+                            />
+                            {settings.syncMouseEvents && (
                               <Form.Item
-                                label="Debuff Reference Area"
+                                label={
+                                  <Space size={6} align="center">
+                                    <span>Mouse Position Sync Mode</span>
+                                    <Tooltip
+                                      title={
+                                        settings.mouseSyncPositionMode ===
+                                        "ratio"
+                                          ? "Ratio mode keeps the synced cursor aligned when source and target Flyff windows are different sizes."
+                                          : "Actual mode works best when your Flyff windows are roughly the same size."
+                                      }
+                                      {...dialogTooltipProps}
+                                    >
+                                      <QuestionOutlined />
+                                    </Tooltip>
+                                  </Space>
+                                }
                                 style={{ marginBottom: 0 }}
                               >
                                 <Space
@@ -3391,434 +3123,594 @@ export const MapperDialog = ({
                                   size={4}
                                   className="fm-w-full"
                                 >
-                                  <Space wrap>
-                                    <Button
-                                      onClick={() => {
-                                        if (
-                                          automationRegionCaptureTarget ===
-                                          "autoHoly"
-                                        ) {
-                                          onCancelAutomationRegionCapture();
-                                          return;
-                                        }
-
-                                        onStartAutomationRegionCapture(
-                                          "autoHoly",
-                                        );
-                                      }}
-                                      disabled={
-                                        automationRegionCaptureTarget ===
-                                        "autoPills"
-                                      }
-                                    >
-                                      {automationRegionCaptureTarget ===
-                                      "autoHoly"
-                                        ? "Cancel Capture"
-                                        : settings.autoHoly.scanRegion
-                                          ? "Recapture Region"
-                                          : "Capture Region"}
-                                    </Button>
-                                    <Button
-                                      onClick={() => {
-                                        onClearAutomationRegionCapture(
-                                          "autoHoly",
-                                        );
-                                      }}
-                                      disabled={!settings.autoHoly.scanRegion}
-                                    >
-                                      Clear Region
-                                    </Button>
-                                  </Space>
+                                  <Select
+                                    value={settings.mouseSyncPositionMode}
+                                    getPopupContainer={(triggerNode) =>
+                                      (triggerNode.closest(
+                                        ".fm-dialog",
+                                      ) as HTMLElement | null) ?? document.body
+                                    }
+                                    dropdownStyle={{
+                                      ...PROFILE_SELECT_DROPDOWN_STYLE,
+                                      zIndex: 2147483647,
+                                    }}
+                                    options={[
+                                      {
+                                        value: "actual",
+                                        label: "Actual (pixels)",
+                                      },
+                                      {
+                                        value: "ratio",
+                                        label: "Ratio (%)",
+                                      },
+                                    ]}
+                                    onChange={(value) => {
+                                      setSettings((prev) => ({
+                                        ...prev,
+                                        mouseSyncPositionMode:
+                                          value === "ratio"
+                                            ? "ratio"
+                                            : "actual",
+                                      }));
+                                    }}
+                                  />
                                   <Typography.Text type="secondary">
-                                    {automationRegionCaptureTarget ===
-                                    "autoHoly"
-                                      ? "Drag over the buff icons area on the game canvas to capture the root/stun detection zone."
-                                      : formatScanRegionSummary(
-                                          settings.autoHoly.scanRegion,
-                                        )}
+                                    {settings.mouseSyncPositionMode === "ratio"
+                                      ? "Ratio mode keeps the synced cursor aligned on smaller or differently sized windows."
+                                      : "Actual mode works best when your Flyff windows are about the same size."}
                                   </Typography.Text>
                                 </Space>
                               </Form.Item>
-                              <Form.Item
-                                label="Holy Key"
-                                style={{ marginBottom: 0 }}
-                              >
-                                <div
-                                  className={`fm-shortcut-input-shell${settings.autoHoly.holyKey ? " fm-shortcut-input-has-value" : ""}`}
-                                >
-                                  <Input
-                                    className="fm-global-shortcut-input"
-                                    value={settings.autoHoly.holyKey}
-                                    placeholder="Click or press keys"
-                                    onKeyDown={(event) => {
-                                      const captured =
-                                        buildAutoFeatureShortcut(event);
-                                      if (captured === "") {
-                                        if (event.key === "Escape") {
+                            )}
+                            <Typography.Text type="secondary">
+                              Mirrors mouse position, click, drag, and wheel
+                              interactions to selected Flyff tabs. Use Ratio
+                              mode when target windows have different sizes so
+                              cursor mapping remains visible.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="Experimental Features">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.experimentalFeaturesEnabled}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  experimentalFeaturesEnabled: checked,
+                                }));
+                              }}
+                            />
+                            <Typography.Text type="secondary">
+                              Enables experimental utilities: Auto-Holy,
+                              Auto-Pills, and Auto-Awaken.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
+
+                        {settings.experimentalFeaturesEnabled && (
+                          <Form.Item label="Auto-Holy">
+                            <Space
+                              direction="vertical"
+                              size={6}
+                              className="fm-w-full"
+                            >
+                              <Switch
+                                checked={settings.autoHoly.enabled}
+                                onChange={(checked) => {
+                                  setSettings((prev) => ({
+                                    ...prev,
+                                    autoHoly: {
+                                      ...prev.autoHoly,
+                                      enabled: checked,
+                                    },
+                                  }));
+                                }}
+                              />
+                              {settings.autoHoly.enabled && (
+                                <>
+                                  <Form.Item
+                                    label="Debuff Type"
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Select
+                                      value={settings.autoHoly.debuffType}
+                                      getPopupContainer={
+                                        getDialogPopupContainer
+                                      }
+                                      dropdownStyle={
+                                        PROFILE_SELECT_DROPDOWN_STYLE
+                                      }
+                                      options={[
+                                        { value: "all", label: "All" },
+                                        { value: "root", label: "Root" },
+                                        { value: "stun", label: "Stun" },
+                                      ]}
+                                      onChange={(value) => {
+                                        setSettings((prev) => ({
+                                          ...prev,
+                                          autoHoly: {
+                                            ...prev.autoHoly,
+                                            debuffType:
+                                              value as AutoHolyDebuffType,
+                                          },
+                                        }));
+                                      }}
+                                    />
+                                  </Form.Item>
+                                  <Form.Item
+                                    label="Show Auto-Holy Debug Overlay"
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Switch
+                                      checked={
+                                        settings.autoHoly.debugOverlayEnabled
+                                      }
+                                      onChange={(checked) => {
+                                        setSettings((prev) => ({
+                                          ...prev,
+                                          autoHoly: {
+                                            ...prev.autoHoly,
+                                            debugOverlayEnabled: checked,
+                                          },
+                                        }));
+                                      }}
+                                    />
+                                  </Form.Item>
+                                  <Form.Item
+                                    label="Debuff Reference Area"
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Space
+                                      direction="vertical"
+                                      size={4}
+                                      className="fm-w-full"
+                                    >
+                                      <Space wrap>
+                                        <Button
+                                          onClick={() => {
+                                            if (
+                                              automationRegionCaptureTarget ===
+                                              "autoHoly"
+                                            ) {
+                                              onCancelAutomationRegionCapture();
+                                              return;
+                                            }
+
+                                            onStartAutomationRegionCapture(
+                                              "autoHoly",
+                                            );
+                                          }}
+                                          disabled={
+                                            automationRegionCaptureTarget ===
+                                            "autoPills"
+                                          }
+                                        >
+                                          {automationRegionCaptureTarget ===
+                                          "autoHoly"
+                                            ? "Cancel Capture"
+                                            : settings.autoHoly.scanRegion
+                                              ? "Recapture Region"
+                                              : "Capture Region"}
+                                        </Button>
+                                        <Button
+                                          onClick={() => {
+                                            onClearAutomationRegionCapture(
+                                              "autoHoly",
+                                            );
+                                          }}
+                                          disabled={
+                                            !settings.autoHoly.scanRegion
+                                          }
+                                        >
+                                          Clear Region
+                                        </Button>
+                                      </Space>
+                                      <Typography.Text type="secondary">
+                                        {automationRegionCaptureTarget ===
+                                        "autoHoly"
+                                          ? "Drag over the buff icons area on the game canvas to capture the root/stun detection zone."
+                                          : formatScanRegionSummary(
+                                              settings.autoHoly.scanRegion,
+                                            )}
+                                      </Typography.Text>
+                                    </Space>
+                                  </Form.Item>
+                                  <Form.Item
+                                    label="Holy Key"
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <div
+                                      className={`fm-shortcut-input-shell${settings.autoHoly.holyKey ? " fm-shortcut-input-has-value" : ""}`}
+                                    >
+                                      <Input
+                                        className="fm-global-shortcut-input"
+                                        value={settings.autoHoly.holyKey}
+                                        placeholder="Click or press keys"
+                                        onKeyDown={(event) => {
+                                          const captured =
+                                            buildAutoFeatureShortcut(event);
+                                          if (captured === "") {
+                                            if (event.key === "Escape") {
+                                              setSettings((prev) => ({
+                                                ...prev,
+                                                autoHoly: {
+                                                  ...prev.autoHoly,
+                                                  holyKey: "",
+                                                },
+                                              }));
+                                            }
+                                            return;
+                                          }
                                           setSettings((prev) => ({
                                             ...prev,
                                             autoHoly: {
                                               ...prev.autoHoly,
-                                              holyKey: "",
+                                              holyKey: captured,
                                             },
                                           }));
+                                        }}
+                                        onMouseDown={(event) => {
+                                          if (
+                                            event.button !== 0 &&
+                                            event.button !== 2
+                                          )
+                                            return;
+                                          const input =
+                                            event.currentTarget as HTMLInputElement;
+                                          const wasFocused =
+                                            document.activeElement === input;
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          input.focus({ preventScroll: true });
+
+                                          if (!wasFocused) {
+                                            return;
+                                          }
+
+                                          const now = Date.now();
+                                          const prev =
+                                            holyKeyLastClickRef.current;
+                                          const isDouble =
+                                            prev.button === event.button &&
+                                            now - prev.time < 360;
+                                          holyKeyLastClickRef.current = {
+                                            button: event.button,
+                                            time: now,
+                                          };
+                                          const baseLabel =
+                                            event.button === 0
+                                              ? isDouble
+                                                ? "Double Left Click"
+                                                : "Left Click"
+                                              : isDouble
+                                                ? "Double Right Click"
+                                                : "Right Click";
+                                          const captured = [
+                                            ...buildMouseModifiers(event),
+                                            baseLabel,
+                                          ].join("+");
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoHoly: {
+                                              ...prev.autoHoly,
+                                              holyKey: captured,
+                                            },
+                                          }));
+                                        }}
+                                        onWheel={(event) => {
+                                          const input =
+                                            event.currentTarget as HTMLInputElement;
+                                          const wasFocused =
+                                            document.activeElement === input;
+                                          event.stopPropagation();
+                                          if (!wasFocused) {
+                                            input.focus({
+                                              preventScroll: true,
+                                            });
+                                            return;
+                                          }
+
+                                          const captured =
+                                            buildWheelShortcut(event);
+                                          if (!captured) return;
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoHoly: {
+                                              ...prev.autoHoly,
+                                              holyKey: captured,
+                                            },
+                                          }));
+                                        }}
+                                        onContextMenu={(event) =>
+                                          event.preventDefault()
                                         }
-                                        return;
-                                      }
-                                      setSettings((prev) => ({
-                                        ...prev,
-                                        autoHoly: {
-                                          ...prev.autoHoly,
-                                          holyKey: captured,
-                                        },
-                                      }));
-                                    }}
-                                    onMouseDown={(event) => {
-                                      if (
-                                        event.button !== 0 &&
-                                        event.button !== 2
-                                      )
-                                        return;
-                                      const input =
-                                        event.currentTarget as HTMLInputElement;
-                                      const wasFocused =
-                                        document.activeElement === input;
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      input.focus({ preventScroll: true });
-
-                                      if (!wasFocused) {
-                                        return;
-                                      }
-
-                                      const now = Date.now();
-                                      const prev = holyKeyLastClickRef.current;
-                                      const isDouble =
-                                        prev.button === event.button &&
-                                        now - prev.time < 360;
-                                      holyKeyLastClickRef.current = {
-                                        button: event.button,
-                                        time: now,
-                                      };
-                                      const baseLabel =
-                                        event.button === 0
-                                          ? isDouble
-                                            ? "Double Left Click"
-                                            : "Left Click"
-                                          : isDouble
-                                            ? "Double Right Click"
-                                            : "Right Click";
-                                      const captured = [
-                                        ...buildMouseModifiers(event),
-                                        baseLabel,
-                                      ].join("+");
-                                      setSettings((prev) => ({
-                                        ...prev,
-                                        autoHoly: {
-                                          ...prev.autoHoly,
-                                          holyKey: captured,
-                                        },
-                                      }));
-                                    }}
-                                    onWheel={(event) => {
-                                      const input =
-                                        event.currentTarget as HTMLInputElement;
-                                      const wasFocused =
-                                        document.activeElement === input;
-                                      event.stopPropagation();
-                                      if (!wasFocused) {
-                                        input.focus({ preventScroll: true });
-                                        return;
-                                      }
-
-                                      const captured =
-                                        buildWheelShortcut(event);
-                                      if (!captured) return;
-                                      setSettings((prev) => ({
-                                        ...prev,
-                                        autoHoly: {
-                                          ...prev.autoHoly,
-                                          holyKey: captured,
-                                        },
-                                      }));
-                                    }}
-                                    onContextMenu={(event) =>
-                                      event.preventDefault()
-                                    }
-                                  />
-                                  {settings.autoHoly.holyKey && (
-                                    <span
-                                      className="fm-shortcut-input-overlay"
-                                      aria-hidden="true"
-                                    >
-                                      <ShortcutKeys
-                                        combo={settings.autoHoly.holyKey}
                                       />
-                                    </span>
-                                  )}
-                                </div>
-                              </Form.Item>
-                            </>
-                          )}
-                          <Typography.Text type="secondary">
-                            Automatically uses the Scroll of Holy when a root or
-                            stun debuff is detected on screen.
-                          </Typography.Text>
-                        </Space>
-                      </Form.Item>
-                    )}
+                                      {settings.autoHoly.holyKey && (
+                                        <span
+                                          className="fm-shortcut-input-overlay"
+                                          aria-hidden="true"
+                                        >
+                                          <ShortcutKeys
+                                            combo={settings.autoHoly.holyKey}
+                                          />
+                                        </span>
+                                      )}
+                                    </div>
+                                  </Form.Item>
+                                </>
+                              )}
+                              <Typography.Text type="secondary">
+                                Automatically uses the Scroll of Holy when a
+                                root or stun debuff is detected on screen.
+                              </Typography.Text>
+                            </Space>
+                          </Form.Item>
+                        )}
 
-                    {settings.experimentalFeaturesEnabled && (
-                      <Form.Item label="Auto-Pills">
-                        <Space
-                          direction="vertical"
-                          size={6}
-                          className="fm-w-full"
-                        >
-                          <Switch
-                            checked={settings.autoPills.enabled}
-                            onChange={(checked) => {
-                              setSettings((prev) => ({
-                                ...prev,
-                                autoPills: {
-                                  ...prev.autoPills,
-                                  enabled: checked,
-                                },
-                              }));
-                            }}
-                          />
-                          {settings.autoPills.enabled && (
-                            <>
-                              <Form.Item
-                                label={`HP Threshold: ${settings.autoPills.hpThreshold}%`}
-                                style={{ marginBottom: 0 }}
-                              >
-                                <Slider
-                                  min={1}
-                                  max={99}
-                                  step={1}
-                                  value={settings.autoPills.hpThreshold}
-                                  onChange={(value) => {
-                                    setSettings((prev) => ({
-                                      ...prev,
-                                      autoPills: {
-                                        ...prev.autoPills,
-                                        hpThreshold: value,
-                                      },
-                                    }));
-                                  }}
-                                  marks={{
-                                    25: "25%",
-                                    50: "50%",
-                                    75: "75%",
-                                  }}
-                                />
-                              </Form.Item>
-                              <Form.Item
-                                label="Show HP Debug Overlay"
-                                style={{ marginBottom: 0 }}
-                              >
-                                <Switch
-                                  checked={
-                                    settings.autoPills.debugOverlayEnabled
-                                  }
-                                  onChange={(checked) => {
-                                    setSettings((prev) => ({
-                                      ...prev,
-                                      autoPills: {
-                                        ...prev.autoPills,
-                                        debugOverlayEnabled: checked,
-                                      },
-                                    }));
-                                  }}
-                                />
-                              </Form.Item>
-                              <Form.Item
-                                label="HP Reference Area"
-                                style={{ marginBottom: 0 }}
-                              >
-                                <Space
-                                  direction="vertical"
-                                  size={4}
-                                  className="fm-w-full"
-                                >
-                                  <Space wrap>
-                                    <Button
-                                      onClick={() => {
-                                        if (
-                                          automationRegionCaptureTarget ===
-                                          "autoPills"
-                                        ) {
-                                          onCancelAutomationRegionCapture();
-                                          return;
-                                        }
-
-                                        onStartAutomationRegionCapture(
-                                          "autoPills",
-                                        );
+                        {settings.experimentalFeaturesEnabled && (
+                          <Form.Item label="Auto-Pills">
+                            <Space
+                              direction="vertical"
+                              size={6}
+                              className="fm-w-full"
+                            >
+                              <Switch
+                                checked={settings.autoPills.enabled}
+                                onChange={(checked) => {
+                                  setSettings((prev) => ({
+                                    ...prev,
+                                    autoPills: {
+                                      ...prev.autoPills,
+                                      enabled: checked,
+                                    },
+                                  }));
+                                }}
+                              />
+                              {settings.autoPills.enabled && (
+                                <>
+                                  <Form.Item
+                                    label={`HP Threshold: ${settings.autoPills.hpThreshold}%`}
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Slider
+                                      min={1}
+                                      max={99}
+                                      step={1}
+                                      value={settings.autoPills.hpThreshold}
+                                      onChange={(value) => {
+                                        setSettings((prev) => ({
+                                          ...prev,
+                                          autoPills: {
+                                            ...prev.autoPills,
+                                            hpThreshold: value,
+                                          },
+                                        }));
                                       }}
-                                      disabled={
-                                        automationRegionCaptureTarget ===
-                                        "autoHoly"
+                                      marks={{
+                                        25: "25%",
+                                        50: "50%",
+                                        75: "75%",
+                                      }}
+                                    />
+                                  </Form.Item>
+                                  <Form.Item
+                                    label="Show HP Debug Overlay"
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Switch
+                                      checked={
+                                        settings.autoPills.debugOverlayEnabled
                                       }
-                                    >
-                                      {automationRegionCaptureTarget ===
-                                      "autoPills"
-                                        ? "Cancel Capture"
-                                        : settings.autoPills.scanRegion
-                                          ? "Recapture Region"
-                                          : "Capture Region"}
-                                    </Button>
-                                    <Button
-                                      onClick={() => {
-                                        onClearAutomationRegionCapture(
-                                          "autoPills",
-                                        );
+                                      onChange={(checked) => {
+                                        setSettings((prev) => ({
+                                          ...prev,
+                                          autoPills: {
+                                            ...prev.autoPills,
+                                            debugOverlayEnabled: checked,
+                                          },
+                                        }));
                                       }}
-                                      disabled={!settings.autoPills.scanRegion}
+                                    />
+                                  </Form.Item>
+                                  <Form.Item
+                                    label="HP Reference Area"
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <Space
+                                      direction="vertical"
+                                      size={4}
+                                      className="fm-w-full"
                                     >
-                                      Clear Region
-                                    </Button>
-                                  </Space>
-                                  <Typography.Text type="secondary">
-                                    {automationRegionCaptureTarget ===
-                                    "autoPills"
-                                      ? "Drag over the character window HP bar area on the game canvas to capture the HP detection zone."
-                                      : formatScanRegionSummary(
-                                          settings.autoPills.scanRegion,
-                                        )}
-                                  </Typography.Text>
-                                </Space>
-                              </Form.Item>
-                              <Form.Item
-                                label="Pill Key"
-                                style={{ marginBottom: 0 }}
-                              >
-                                <div
-                                  className={`fm-shortcut-input-shell${settings.autoPills.pillKey ? " fm-shortcut-input-has-value" : ""}`}
-                                >
-                                  <Input
-                                    className="fm-global-shortcut-input"
-                                    value={settings.autoPills.pillKey}
-                                    placeholder="Click or press keys"
-                                    onKeyDown={(event) => {
-                                      const captured =
-                                        buildAutoFeatureShortcut(event);
-                                      if (captured === "") {
-                                        if (event.key === "Escape") {
+                                      <Space wrap>
+                                        <Button
+                                          onClick={() => {
+                                            if (
+                                              automationRegionCaptureTarget ===
+                                              "autoPills"
+                                            ) {
+                                              onCancelAutomationRegionCapture();
+                                              return;
+                                            }
+
+                                            onStartAutomationRegionCapture(
+                                              "autoPills",
+                                            );
+                                          }}
+                                          disabled={
+                                            automationRegionCaptureTarget ===
+                                            "autoHoly"
+                                          }
+                                        >
+                                          {automationRegionCaptureTarget ===
+                                          "autoPills"
+                                            ? "Cancel Capture"
+                                            : settings.autoPills.scanRegion
+                                              ? "Recapture Region"
+                                              : "Capture Region"}
+                                        </Button>
+                                        <Button
+                                          onClick={() => {
+                                            onClearAutomationRegionCapture(
+                                              "autoPills",
+                                            );
+                                          }}
+                                          disabled={
+                                            !settings.autoPills.scanRegion
+                                          }
+                                        >
+                                          Clear Region
+                                        </Button>
+                                      </Space>
+                                      <Typography.Text type="secondary">
+                                        {automationRegionCaptureTarget ===
+                                        "autoPills"
+                                          ? "Drag over the character window HP bar area on the game canvas to capture the HP detection zone."
+                                          : formatScanRegionSummary(
+                                              settings.autoPills.scanRegion,
+                                            )}
+                                      </Typography.Text>
+                                    </Space>
+                                  </Form.Item>
+                                  <Form.Item
+                                    label="Pill Key"
+                                    style={{ marginBottom: 0 }}
+                                  >
+                                    <div
+                                      className={`fm-shortcut-input-shell${settings.autoPills.pillKey ? " fm-shortcut-input-has-value" : ""}`}
+                                    >
+                                      <Input
+                                        className="fm-global-shortcut-input"
+                                        value={settings.autoPills.pillKey}
+                                        placeholder="Click or press keys"
+                                        onKeyDown={(event) => {
+                                          const captured =
+                                            buildAutoFeatureShortcut(event);
+                                          if (captured === "") {
+                                            if (event.key === "Escape") {
+                                              setSettings((prev) => ({
+                                                ...prev,
+                                                autoPills: {
+                                                  ...prev.autoPills,
+                                                  pillKey: "",
+                                                },
+                                              }));
+                                            }
+                                            return;
+                                          }
                                           setSettings((prev) => ({
                                             ...prev,
                                             autoPills: {
                                               ...prev.autoPills,
-                                              pillKey: "",
+                                              pillKey: captured,
                                             },
                                           }));
+                                        }}
+                                        onMouseDown={(event) => {
+                                          if (
+                                            event.button !== 0 &&
+                                            event.button !== 2
+                                          )
+                                            return;
+                                          const input =
+                                            event.currentTarget as HTMLInputElement;
+                                          const wasFocused =
+                                            document.activeElement === input;
+                                          event.preventDefault();
+                                          event.stopPropagation();
+                                          input.focus({ preventScroll: true });
+
+                                          if (!wasFocused) {
+                                            return;
+                                          }
+
+                                          const now = Date.now();
+                                          const prev =
+                                            pillKeyLastClickRef.current;
+                                          const isDouble =
+                                            prev.button === event.button &&
+                                            now - prev.time < 360;
+                                          pillKeyLastClickRef.current = {
+                                            button: event.button,
+                                            time: now,
+                                          };
+                                          const baseLabel =
+                                            event.button === 0
+                                              ? isDouble
+                                                ? "Double Left Click"
+                                                : "Left Click"
+                                              : isDouble
+                                                ? "Double Right Click"
+                                                : "Right Click";
+                                          const captured = [
+                                            ...buildMouseModifiers(event),
+                                            baseLabel,
+                                          ].join("+");
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoPills: {
+                                              ...prev.autoPills,
+                                              pillKey: captured,
+                                            },
+                                          }));
+                                        }}
+                                        onWheel={(event) => {
+                                          const input =
+                                            event.currentTarget as HTMLInputElement;
+                                          const wasFocused =
+                                            document.activeElement === input;
+                                          event.stopPropagation();
+                                          if (!wasFocused) {
+                                            input.focus({
+                                              preventScroll: true,
+                                            });
+                                            return;
+                                          }
+
+                                          const captured =
+                                            buildWheelShortcut(event);
+                                          if (!captured) return;
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoPills: {
+                                              ...prev.autoPills,
+                                              pillKey: captured,
+                                            },
+                                          }));
+                                        }}
+                                        onContextMenu={(event) =>
+                                          event.preventDefault()
                                         }
-                                        return;
-                                      }
-                                      setSettings((prev) => ({
-                                        ...prev,
-                                        autoPills: {
-                                          ...prev.autoPills,
-                                          pillKey: captured,
-                                        },
-                                      }));
-                                    }}
-                                    onMouseDown={(event) => {
-                                      if (
-                                        event.button !== 0 &&
-                                        event.button !== 2
-                                      )
-                                        return;
-                                      const input =
-                                        event.currentTarget as HTMLInputElement;
-                                      const wasFocused =
-                                        document.activeElement === input;
-                                      event.preventDefault();
-                                      event.stopPropagation();
-                                      input.focus({ preventScroll: true });
-
-                                      if (!wasFocused) {
-                                        return;
-                                      }
-
-                                      const now = Date.now();
-                                      const prev = pillKeyLastClickRef.current;
-                                      const isDouble =
-                                        prev.button === event.button &&
-                                        now - prev.time < 360;
-                                      pillKeyLastClickRef.current = {
-                                        button: event.button,
-                                        time: now,
-                                      };
-                                      const baseLabel =
-                                        event.button === 0
-                                          ? isDouble
-                                            ? "Double Left Click"
-                                            : "Left Click"
-                                          : isDouble
-                                            ? "Double Right Click"
-                                            : "Right Click";
-                                      const captured = [
-                                        ...buildMouseModifiers(event),
-                                        baseLabel,
-                                      ].join("+");
-                                      setSettings((prev) => ({
-                                        ...prev,
-                                        autoPills: {
-                                          ...prev.autoPills,
-                                          pillKey: captured,
-                                        },
-                                      }));
-                                    }}
-                                    onWheel={(event) => {
-                                      const input =
-                                        event.currentTarget as HTMLInputElement;
-                                      const wasFocused =
-                                        document.activeElement === input;
-                                      event.stopPropagation();
-                                      if (!wasFocused) {
-                                        input.focus({ preventScroll: true });
-                                        return;
-                                      }
-
-                                      const captured =
-                                        buildWheelShortcut(event);
-                                      if (!captured) return;
-                                      setSettings((prev) => ({
-                                        ...prev,
-                                        autoPills: {
-                                          ...prev.autoPills,
-                                          pillKey: captured,
-                                        },
-                                      }));
-                                    }}
-                                    onContextMenu={(event) =>
-                                      event.preventDefault()
-                                    }
-                                  />
-                                  {settings.autoPills.pillKey && (
-                                    <span
-                                      className="fm-shortcut-input-overlay"
-                                      aria-hidden="true"
-                                    >
-                                      <ShortcutKeys
-                                        combo={settings.autoPills.pillKey}
                                       />
-                                    </span>
-                                  )}
-                                </div>
-                              </Form.Item>
-                            </>
-                          )}
-                          <Typography.Text type="secondary">
-                            Automatically uses pills when HP drops to or below
-                            the set threshold percentage. Enable HP Debug
-                            Overlay while calibrating to see live detected HP
-                            values.
-                          </Typography.Text>
-                        </Space>
-                      </Form.Item>
+                                      {settings.autoPills.pillKey && (
+                                        <span
+                                          className="fm-shortcut-input-overlay"
+                                          aria-hidden="true"
+                                        >
+                                          <ShortcutKeys
+                                            combo={settings.autoPills.pillKey}
+                                          />
+                                        </span>
+                                      )}
+                                    </div>
+                                  </Form.Item>
+                                </>
+                              )}
+                              <Typography.Text type="secondary">
+                                Automatically uses pills when HP drops to or
+                                below the set threshold percentage. Enable HP
+                                Debug Overlay while calibrating to see live
+                                detected HP values.
+                              </Typography.Text>
+                            </Space>
+                          </Form.Item>
+                        )}
+                      </>
                     )}
                   </Form>
                   {dialogFooter}
@@ -3904,195 +3796,13 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         {canManageAdminsEffective && (
-                          <Form.Item label="Whitelist User Management (Superadmin)">
-                            <Space
-                              direction="vertical"
-                              size={8}
-                              className="fm-w-full"
-                            >
-                              <Space size={8} wrap className="fm-w-full">
-                                <Input
-                                  value={adminTargetIp}
-                                  placeholder="Target IP"
-                                  onChange={(event) => {
-                                    setAdminTargetIp(event.target.value);
-                                  }}
-                                />
-                                <Input
-                                  value={adminName}
-                                  placeholder="Name (optional)"
-                                  onChange={(event) => {
-                                    setAdminName(event.target.value);
-                                  }}
-                                />
-                                <Select
-                                  value={adminRole}
-                                  options={[
-                                    { value: "user", label: "User" },
-                                    { value: "admin", label: "Admin" },
-                                  ]}
-                                  onChange={(value) => {
-                                    setAdminRole(
-                                      value === "admin" ? "admin" : "user",
-                                    );
-                                  }}
-                                />
-                              </Space>
-
-                              <Typography.Text type="secondary">
-                                Whitelisted users are granted direct access.
-                                Token generation is role-based (admin and
-                                superadmin only).
-                              </Typography.Text>
-
-                              <Typography.Text type="secondary">
-                                Showing {filteredWhitelistUsers.length}{" "}
-                                whitelist user
-                                {filteredWhitelistUsers.length === 1 ? "" : "s"}
-                                .
-                              </Typography.Text>
-
-                              <Space size={8} wrap>
-                                <Button
-                                  type="primary"
-                                  loading={whitelistSaving}
-                                  disabled={!canSubmitWhitelistUpdate}
-                                  onClick={() => {
-                                    void submitWhitelistUpdate();
-                                  }}
-                                >
-                                  {adminPreviousIp ? "Update User" : "Add User"}
-                                </Button>
-                                <Button
-                                  disabled={whitelistLoading}
-                                  onClick={() => {
-                                    void refreshWhitelistUsers();
-                                  }}
-                                >
-                                  Refresh Whitelist
-                                </Button>
-                                <Tooltip
-                                  title="Clears the editor fields and exits edit mode for the selected whitelist record."
-                                  {...dialogTooltipProps}
-                                >
-                                  <Button
-                                    onClick={() => {
-                                      resetWhitelistEditor();
-                                    }}
-                                  >
-                                    Clear Editor
-                                  </Button>
-                                </Tooltip>
-                              </Space>
-
-                              <div
-                                className="fm-w-full"
-                                style={adminTableShellStyle}
-                              >
-                                <table style={adminTableStyle}>
-                                  <thead>
-                                    <tr>
-                                      <th
-                                        align="left"
-                                        style={adminHeaderCellStyle}
-                                      >
-                                        Name
-                                      </th>
-                                      <th
-                                        align="left"
-                                        style={adminHeaderCellStyle}
-                                      >
-                                        IP
-                                      </th>
-                                      <th
-                                        align="left"
-                                        style={adminHeaderCellStyle}
-                                      >
-                                        Role
-                                      </th>
-                                      <th
-                                        align="left"
-                                        style={adminHeaderCellStyle}
-                                      >
-                                        Updated
-                                      </th>
-                                      <th
-                                        align="left"
-                                        style={adminHeaderCellStyle}
-                                      >
-                                        Actions
-                                      </th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {filteredWhitelistUsers.length === 0 ? (
-                                      <tr>
-                                        <td
-                                          colSpan={5}
-                                          style={adminBodyCellStyle}
-                                        >
-                                          <Typography.Text type="secondary">
-                                            No whitelist users found.
-                                          </Typography.Text>
-                                        </td>
-                                      </tr>
-                                    ) : (
-                                      filteredWhitelistUsers.map((item) => (
-                                        <tr key={item.ip}>
-                                          <td style={adminBodyCellStyle}>
-                                            {item.name || "-"}
-                                          </td>
-                                          <td style={adminBodyCellStyle}>
-                                            {item.ip}
-                                          </td>
-                                          <td style={adminBodyCellStyle}>
-                                            {item.role}
-                                          </td>
-                                          <td style={adminBodyCellStyle}>
-                                            {formatTokenDate(item.updatedAtIso)}
-                                          </td>
-                                          <td style={adminBodyCellStyle}>
-                                            <Space size={4}>
-                                              <Button
-                                                size="small"
-                                                onClick={() => {
-                                                  editWhitelistUser(item);
-                                                }}
-                                              >
-                                                Edit
-                                              </Button>
-                                              <Popconfirm
-                                                {...dialogPopconfirmProps}
-                                                title="Delete whitelist user?"
-                                                description={`Remove ${item.ip} from whitelist records.`}
-                                                okText="Delete"
-                                                okButtonProps={{ danger: true }}
-                                                onConfirm={() => {
-                                                  void removeWhitelistUser(
-                                                    item.ip,
-                                                  );
-                                                }}
-                                              >
-                                                <Button
-                                                  danger
-                                                  size="small"
-                                                  loading={
-                                                    deletingWhitelistIp ===
-                                                    item.ip
-                                                  }
-                                                >
-                                                  Delete
-                                                </Button>
-                                              </Popconfirm>
-                                            </Space>
-                                          </td>
-                                        </tr>
-                                      ))
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </Space>
+                          <Form.Item label="Role Issuance Rules">
+                            <Typography.Text type="secondary">
+                              Subscription-token access is role based. The admin
+                              panel can issue tokens for USER and ADMIN roles
+                              only. SUPERADMIN must be managed through auth
+                              claims tooling.
+                            </Typography.Text>
                           </Form.Item>
                         )}
 
@@ -4104,31 +3814,52 @@ export const MapperDialog = ({
                               className="fm-w-full"
                             >
                               <Typography.Text type="secondary">
-                                Generate plan-bound subscription tokens for
-                                non-whitelisted users.
+                                Generate subscription tokens with a role and
+                                plan. Unlimited plan never expires and unlocks
+                                all features.
                               </Typography.Text>
+                              <Select
+                                value={tokenIssueRole}
+                                options={[
+                                  { value: "user", label: "User" },
+                                  { value: "admin", label: "Admin" },
+                                ]}
+                                onChange={(value) => {
+                                  setTokenIssueRole(
+                                    value === "admin" ? "admin" : "user",
+                                  );
+                                }}
+                              />
                               <Select
                                 value={tokenIssuePlan}
                                 options={[
                                   { value: "free", label: "Free (7 days)" },
                                   { value: "pro", label: "Pro (30 days)" },
                                   { value: "elite", label: "Elite (90 days)" },
+                                  {
+                                    value: "unlimited",
+                                    label: "Unlimited (No expiry)",
+                                  },
                                 ]}
                                 onChange={(value) => {
                                   setTokenIssuePlan(
-                                    value === "elite"
-                                      ? "elite"
-                                      : value === "pro"
-                                        ? "pro"
-                                        : "free",
+                                    value === "unlimited"
+                                      ? "unlimited"
+                                      : value === "elite"
+                                        ? "elite"
+                                        : value === "pro"
+                                          ? "pro"
+                                          : "free",
                                   );
                                 }}
                               />
                               <Typography.Text type="secondary">
                                 Expires At (auto by plan):{" "}
-                                {renderDateWithRemainingTooltip(
-                                  buildPlanExpiryIso(tokenIssuePlan),
-                                )}
+                                {tokenIssuePlan === "unlimited"
+                                  ? "No expiry"
+                                  : renderDateWithRemainingTooltip(
+                                      buildPlanExpiryIso(tokenIssuePlan),
+                                    )}
                               </Typography.Text>
                               <Button
                                 loading={tokenIssueLoading}
@@ -4153,6 +3884,17 @@ export const MapperDialog = ({
                                   )}
                                 </Typography.Text>
                               )}
+                              {generatedTokenRole && (
+                                <Typography.Text type="secondary">
+                                  Generated token role: {generatedTokenRole}
+                                </Typography.Text>
+                              )}
+                              {!generatedTokenExpiresAtIso &&
+                                generatedToken && (
+                                  <Typography.Text type="secondary">
+                                    Generated token expiry: No expiry
+                                  </Typography.Text>
+                                )}
 
                               <Divider style={{ margin: "8px 0" }} />
 
@@ -4173,15 +3915,18 @@ export const MapperDialog = ({
                                   options={[
                                     { value: "all", label: "All Statuses" },
                                     { value: "active", label: "Active" },
+                                    { value: "inactive", label: "Inactive" },
                                     { value: "expired", label: "Expired" },
                                   ]}
                                   onChange={(value) => {
                                     setTokenStatusFilter(
                                       value === "active"
                                         ? "active"
-                                        : value === "expired"
-                                          ? "expired"
-                                          : "all",
+                                        : value === "inactive"
+                                          ? "inactive"
+                                          : value === "expired"
+                                            ? "expired"
+                                            : "all",
                                     );
                                   }}
                                 />
@@ -4193,6 +3938,7 @@ export const MapperDialog = ({
                                     { value: "free", label: "Free" },
                                     { value: "pro", label: "Pro" },
                                     { value: "elite", label: "Elite" },
+                                    { value: "unlimited", label: "Unlimited" },
                                   ]}
                                   onChange={(value) => {
                                     setTokenPlanFilter(
@@ -4202,7 +3948,9 @@ export const MapperDialog = ({
                                           ? "pro"
                                           : value === "elite"
                                             ? "elite"
-                                            : "all",
+                                            : value === "unlimited"
+                                              ? "unlimited"
+                                              : "all",
                                     );
                                   }}
                                 />
@@ -4230,6 +3978,12 @@ export const MapperDialog = ({
                                         style={adminHeaderCellStyle}
                                       >
                                         Plan
+                                      </th>
+                                      <th
+                                        align="left"
+                                        style={adminHeaderCellStyle}
+                                      >
+                                        Role
                                       </th>
                                       <th
                                         align="left"
@@ -4267,7 +4021,7 @@ export const MapperDialog = ({
                                     {filteredIssuedTokens.length === 0 ? (
                                       <tr>
                                         <td
-                                          colSpan={7}
+                                          colSpan={8}
                                           style={adminBodyCellStyle}
                                         >
                                           <Typography.Text type="secondary">
@@ -4280,7 +4034,8 @@ export const MapperDialog = ({
                                       filteredIssuedTokens.map((item) => {
                                         const effectiveStatus =
                                           getTokenStatus(item);
-                                        const canRevoke = !item.isExpired;
+                                        const canRevoke =
+                                          effectiveStatus === "active";
 
                                         return (
                                           <tr key={item.tokenHash}>
@@ -4291,20 +4046,30 @@ export const MapperDialog = ({
                                               {item.plan.toUpperCase()}
                                             </td>
                                             <td style={adminBodyCellStyle}>
+                                              {item.role.toUpperCase()}
+                                            </td>
+                                            <td style={adminBodyCellStyle}>
                                               {effectiveStatus === "active"
                                                 ? renderStateTag(
                                                     "active",
                                                     "success",
                                                   )
-                                                : renderStateTag(
-                                                    "expired",
-                                                    "warning",
-                                                  )}
+                                                : effectiveStatus === "inactive"
+                                                  ? renderStateTag(
+                                                      "inactive",
+                                                      "default",
+                                                    )
+                                                  : renderStateTag(
+                                                      "expired",
+                                                      "warning",
+                                                    )}
                                             </td>
                                             <td style={adminBodyCellStyle}>
-                                              {renderDateWithRemainingTooltip(
-                                                item.expiresAt,
-                                              )}
+                                              {item.expiresAt
+                                                ? renderDateWithRemainingTooltip(
+                                                    item.expiresAt,
+                                                  )
+                                                : "No expiry"}
                                             </td>
                                             <td style={adminBodyCellStyle}>
                                               {formatTokenDate(item.createdAt)}

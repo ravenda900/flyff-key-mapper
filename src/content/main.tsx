@@ -21,6 +21,7 @@ import {
 import { createRoot } from "react-dom/client";
 import { Rnd } from "react-rnd";
 import jsfeat from "jsfeat";
+import pixelmatch from "pixelmatch";
 import {
   getKeyboardBindingToken,
   matchesBinding,
@@ -65,19 +66,13 @@ import { ImportMappingsModal } from "./key-mapping/modals/ImportMappingsModal";
 import { DEFAULT_SETTINGS, storage } from "./storage";
 import {
   deleteSubscriptionToken,
-  deleteWhitelistUser,
   generateSubscriptionToken,
   listSubscriptionTokens,
-  listWhitelistUsers,
   revokeSubscriptionToken,
   resolveAccessControlState,
-  upsertWhitelistUser,
-  updateUserRole,
-  updateWhitelistAndSubscription,
   type AccessRole,
   type AccessControlState,
   type SubscriptionPlan,
-  type WhitelistUserRecord,
 } from "./accessControl";
 import "./styles.css";
 import type {
@@ -140,6 +135,7 @@ const loadSharedRunState = (): SharedRunState | null => {
 };
 
 const AUTO_IMAGE_SCALE_WIDTH = 800;
+const AUTO_AWAKEN_MATCH_MAX_WIDTH = 1200;
 
 const AUTO_HOLY_COOLDOWN_MS = 1200;
 const AUTO_PILLS_COOLDOWN_MS = 900;
@@ -742,11 +738,7 @@ const matchTemplateWithMatcher = (
   return findTemplateLocationWithRgb(source, template, minScore) !== null;
 };
 
-/**
- * Returns the top-left pixel position of
- * the best match inside `source`, or null when the score is below `minScore`.
- */
-const findTemplateLocationWithMatcher = (
+const findTemplateLocationWithPixelmatch = (
   source: RgbImageData,
   template: RgbImageData,
   minScore: number,
@@ -760,15 +752,113 @@ const findTemplateLocationWithMatcher = (
     return null;
   }
 
-  return findTemplateLocationWithRgb(source, template, minScore);
+  const sw = source.width;
+  const sh = source.height;
+  const tw = template.width;
+  const th = template.height;
+  const totalPixels = tw * th;
+  const searchStep = totalPixels >= 7000 ? 6 : totalPixels >= 2400 ? 5 : 3;
+  const candidate = new Uint8ClampedArray(totalPixels * 4);
+
+  const toBinary = (image: RgbImageData): Uint8ClampedArray => {
+    const out = new Uint8ClampedArray(image.width * image.height * 4);
+    for (let i = 0; i < image.width * image.height; i += 1) {
+      const r = image.rgb[i * 4];
+      const g = image.rgb[i * 4 + 1];
+      const b = image.rgb[i * 4 + 2];
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      const v = gray > 150 ? 0 : 255; // BINARY_INV like the Python flow
+      out[i * 4] = v;
+      out[i * 4 + 1] = v;
+      out[i * 4 + 2] = v;
+      out[i * 4 + 3] = 255;
+    }
+    return out;
+  };
+
+  const sourceBinary = toBinary(source);
+  const templateBinary = toBinary(template);
+
+  const scoreAt = (startX: number, startY: number): number => {
+    for (let y = 0; y < th; y += 1) {
+      const srcStart = ((startY + y) * sw + startX) * 4;
+      const srcEnd = srcStart + tw * 4;
+      candidate.set(sourceBinary.subarray(srcStart, srcEnd), y * tw * 4);
+    }
+
+    const mismatchCount = pixelmatch(
+      templateBinary,
+      candidate,
+      undefined,
+      tw,
+      th,
+      {
+        threshold: 0.18,
+        includeAA: false,
+      },
+    );
+
+    return 1 - mismatchCount / totalPixels;
+  };
+
+  let bestScore = -1;
+  let bestX = 0;
+  let bestY = 0;
+
+  for (let y = 0; y <= sh - th; y += searchStep) {
+    for (let x = 0; x <= sw - tw; x += searchStep) {
+      const score = scoreAt(x, y);
+      if (score > bestScore) {
+        bestScore = score;
+        bestX = x;
+        bestY = y;
+      }
+    }
+  }
+
+  if (searchStep > 1) {
+    const fromX = Math.max(0, bestX - searchStep);
+    const toX = Math.min(sw - tw, bestX + searchStep);
+    const fromY = Math.max(0, bestY - searchStep);
+    const toY = Math.min(sh - th, bestY + searchStep);
+
+    for (let y = fromY; y <= toY; y += 1) {
+      for (let x = fromX; x <= toX; x += 1) {
+        const score = scoreAt(x, y);
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = x;
+          bestY = y;
+        }
+      }
+    }
+  }
+
+  if (bestScore < minScore) {
+    return null;
+  }
+
+  return {
+    x: Math.round(bestX + tw / 2),
+    y: Math.round(bestY + th / 2),
+  };
 };
 
 type AwakenButtonMatch = {
   x: number;
   y: number;
-  regionLabel: "full" | "bottom" | "bottom-center";
+  regionLabel:
+    | "start-band"
+    | "full"
+    | "bottom"
+    | "bottom-center"
+    | "lower-third"
+    | "lower-third-center"
+    | "footer"
+    | "footer-center";
   scale: number;
-  templateLabel: "button_image.png" | "button_image2.png";
+  templateLabel: "button_image.png" | "button_image2.png" | null;
+  detectionSource: "template" | "text";
 };
 
 const findAwakenButtonMatch = (
@@ -788,19 +878,83 @@ const findAwakenButtonMatch = (
   const centerWidth = Math.round(regionImg.width * 0.66);
   const centerX = Math.round((regionImg.width - centerWidth) / 2);
   const bottomCenterImage =
-    cropRgbImageData(regionImg, {
+    cropRgbImageData(bottomImage, {
       x: centerX,
-      y: bottomY,
+      y: 0,
       width: centerWidth,
-      height: regionImg.height - bottomY,
+      height: bottomImage.height,
     }) ?? bottomImage;
 
+  const footerY = Math.round(regionImg.height * 0.78);
+  const footerImage =
+    cropRgbImageData(regionImg, {
+      x: 0,
+      y: footerY,
+      width: regionImg.width,
+      height: regionImg.height - footerY,
+    }) ?? bottomImage;
+  const footerCenterWidth = Math.round(regionImg.width * 0.52);
+  const footerCenterX = Math.round((regionImg.width - footerCenterWidth) / 2);
+  const footerCenterImage =
+    cropRgbImageData(footerImage, {
+      x: footerCenterX,
+      y: 0,
+      width: footerCenterWidth,
+      height: footerImage.height,
+    }) ?? footerImage;
+
+  const lowerThirdY = Math.round(regionImg.height * 0.62);
+  const lowerThirdImage =
+    cropRgbImageData(regionImg, {
+      x: 0,
+      y: lowerThirdY,
+      width: regionImg.width,
+      height: regionImg.height - lowerThirdY,
+    }) ?? bottomImage;
+  const lowerThirdCenterWidth = Math.round(regionImg.width * 0.72);
+  const lowerThirdCenterX = Math.round(
+    (regionImg.width - lowerThirdCenterWidth) / 2,
+  );
+  const lowerThirdCenterImage =
+    cropRgbImageData(lowerThirdImage, {
+      x: lowerThirdCenterX,
+      y: 0,
+      width: lowerThirdCenterWidth,
+      height: lowerThirdImage.height,
+    }) ?? lowerThirdImage;
+
+  const startBandY = Math.round(regionImg.height * 0.84);
+  const startBandHeight = Math.max(1, Math.round(regionImg.height * 0.15));
+  const startBandWidth = Math.round(regionImg.width * 0.5);
+  const startBandX = Math.round((regionImg.width - startBandWidth) / 2);
+  const startBandImage =
+    cropRgbImageData(regionImg, {
+      x: startBandX,
+      y: startBandY,
+      width: startBandWidth,
+      height: Math.min(startBandHeight, regionImg.height - startBandY),
+    }) ?? footerCenterImage;
+
   const searchRegions: Array<{
-    label: "bottom-center" | "bottom" | "full";
+    label:
+      | "start-band"
+      | "full"
+      | "bottom"
+      | "bottom-center"
+      | "lower-third"
+      | "lower-third-center"
+      | "footer"
+      | "footer-center";
     image: RgbImageData;
     offsetX: number;
     offsetY: number;
   }> = [
+    {
+      label: "start-band",
+      image: startBandImage,
+      offsetX: startBandX,
+      offsetY: startBandY,
+    },
     {
       label: "bottom-center",
       image: bottomCenterImage,
@@ -808,69 +962,87 @@ const findAwakenButtonMatch = (
       offsetY: bottomY,
     },
     {
-      label: "bottom",
-      image: bottomImage,
-      offsetX: 0,
-      offsetY: bottomY,
+      label: "footer-center",
+      image: footerCenterImage,
+      offsetX: footerCenterX,
+      offsetY: footerY,
+    },
+    { label: "footer", image: footerImage, offsetX: 0, offsetY: footerY },
+    {
+      label: "lower-third-center",
+      image: lowerThirdCenterImage,
+      offsetX: lowerThirdCenterX,
+      offsetY: lowerThirdY,
     },
     {
-      label: "full",
-      image: regionImg,
+      label: "lower-third",
+      image: lowerThirdImage,
       offsetX: 0,
-      offsetY: 0,
+      offsetY: lowerThirdY,
     },
   ];
 
-  const scales = [0.8, 0.9, 0.96, 1, 1.08, 1.16, 1.24];
+  const scales = [1, 0.98, 1.02, 0.95, 1.05, 0.9, 1.1];
+  const thresholdPasses = [0, -0.02, -0.04, -0.06];
 
-  for (const searchRegion of searchRegions) {
-    for (const scale of scales) {
-      const scaledTemplate =
-        scale === 1
-          ? buttonTemplate
-          : resizeRgbImageData(
-              buttonTemplate,
-              buttonTemplate.width * scale,
-              buttonTemplate.height * scale,
-            );
+  for (const thresholdAdjust of thresholdPasses) {
+    for (const searchRegion of searchRegions) {
+      for (const scale of scales) {
+        const scaledTemplate =
+          scale === 1
+            ? buttonTemplate
+            : resizeRgbImageData(
+                buttonTemplate,
+                buttonTemplate.width * scale,
+                buttonTemplate.height * scale,
+              );
 
-      if (!scaledTemplate) {
-        continue;
-      }
+        if (!scaledTemplate) {
+          continue;
+        }
 
-      const matcherThreshold = searchRegion.label === "full" ? 0.66 : 0.6;
-      const cvLoc = findTemplateLocationWithMatcher(
-        searchRegion.image,
-        scaledTemplate,
-        matcherThreshold,
-      );
+        const baseThreshold =
+          searchRegion.label === "start-band"
+            ? 0.9
+            : searchRegion.label === "bottom-center"
+              ? 0.88
+              : searchRegion.label === "footer-center"
+                ? 0.85
+                : searchRegion.label === "footer"
+                  ? 0.8
+                  : searchRegion.label === "lower-third-center"
+                    ? 0.78
+                    : searchRegion.label === "lower-third"
+                      ? 0.76
+                      : searchRegion.label === "bottom"
+                        ? 0.74
+                        : 0.72;
+        const matcherThreshold = Math.max(
+          0.68,
+          baseThreshold + thresholdAdjust,
+        );
+        const cvLoc = findTemplateLocationWithPixelmatch(
+          searchRegion.image,
+          scaledTemplate,
+          matcherThreshold,
+        );
 
-      if (cvLoc) {
-        return {
-          x: cvLoc.x + searchRegion.offsetX,
-          y: cvLoc.y + searchRegion.offsetY,
-          regionLabel: searchRegion.label,
-          scale,
-          templateLabel,
-        };
+        if (cvLoc) {
+          return {
+            x: cvLoc.x + searchRegion.offsetX,
+            y: cvLoc.y + searchRegion.offsetY,
+            regionLabel: searchRegion.label,
+            scale,
+            templateLabel,
+            detectionSource: "template",
+          };
+        }
       }
     }
   }
-
   return null;
 };
 
-/**
- * Locate the HP bar row in a scan image by finding the topmost band of rows
- * that contain a sufficiently wide span of red-ish pixels.
- *
- * The HP bar is the only red bar in the character status window (MP is
- * blue/teal, FP is green/orange), so this approach reliably identifies the
- * HP row regardless of:
- *  - which HP display mode is active (raw values / percentage / clean)
- *  - the current HP level
- *  - the character window size (window is resizable)
- */
 const locateHpBarRowByColor = (
   image: RgbImageData,
   minSpanFraction = 0.03,
@@ -1817,6 +1989,7 @@ function MapperApp() {
   const lastMouseMoveSyncTimeRef = useRef(0);
   const isDispatchingKeyTriggerRef = useRef(false);
   const latestAccessControlRef = useRef<AccessControlState>(accessControl);
+  const accessLockHandledRef = useRef(false);
 
   const canUseTool = accessControl.hasToolAccess;
   const canUseKeyTrigger = canUseTool && accessControl.features.keyTrigger;
@@ -1840,54 +2013,8 @@ function MapperApp() {
     [],
   );
 
-  const handleAdminUpsertAccess = useCallback(
-    async (payload: {
-      targetIp: string;
-      whitelisted: boolean;
-      plan: "free" | "pro" | "elite";
-      expiresAtIso?: string | null;
-    }) => {
-      await updateWhitelistAndSubscription(accessControl, payload);
-      await refreshAccessControl();
-    },
-    [accessControl, refreshAccessControl],
-  );
-
-  const handleSuperAdminSetRole = useCallback(
-    async (payload: { targetIp: string; role: AccessRole }) => {
-      await updateUserRole(accessControl, payload);
-      await refreshAccessControl();
-    },
-    [accessControl, refreshAccessControl],
-  );
-
-  const handleListWhitelistUsers = useCallback(async () => {
-    return listWhitelistUsers(accessControl);
-  }, [accessControl]);
-
-  const handleUpsertWhitelistUser = useCallback(
-    async (payload: {
-      targetIp: string;
-      previousIp?: string | null;
-      name?: string | null;
-      role: AccessRole;
-    }) => {
-      await upsertWhitelistUser(accessControl, payload);
-      await refreshAccessControl();
-    },
-    [accessControl, refreshAccessControl],
-  );
-
-  const handleDeleteWhitelistUser = useCallback(
-    async (targetIp: string) => {
-      await deleteWhitelistUser(accessControl, targetIp);
-      await refreshAccessControl();
-    },
-    [accessControl, refreshAccessControl],
-  );
-
   const handleGenerateSubscriptionToken = useCallback(
-    async (payload: { plan: SubscriptionPlan }) => {
+    async (payload: { plan: SubscriptionPlan; role?: AccessRole }) => {
       return generateSubscriptionToken(accessControl, payload);
     },
     [accessControl],
@@ -1927,7 +2054,7 @@ function MapperApp() {
     };
   }, [refreshAccessControl]);
 
-  // Periodically recheck access control to detect token expiry and whitelist changes.
+  // Periodically recheck access control to detect token expiry and role/plan updates.
   useEffect(() => {
     const intervalId = window.setInterval(() => {
       void refreshAccessControl();
@@ -1972,6 +2099,10 @@ function MapperApp() {
   }, [accessControl.hasToolAccess, accessControl.loading, dialogVisible]);
 
   useEffect(() => {
+    if (accessControl.loading) {
+      return;
+    }
+
     if (!canUseKeyTrigger && activeUtilityTab === "key-trigger") {
       setActiveUtilityTab("key-mapper");
       return;
@@ -1980,7 +2111,12 @@ function MapperApp() {
     if (!canUseAutoAwaken && activeUtilityTab === "auto-awaken") {
       setActiveUtilityTab("key-mapper");
     }
-  }, [activeUtilityTab, canUseAutoAwaken, canUseKeyTrigger]);
+  }, [
+    accessControl.loading,
+    activeUtilityTab,
+    canUseAutoAwaken,
+    canUseKeyTrigger,
+  ]);
 
   useEffect(() => {
     setSettings((prev) => {
@@ -1990,13 +2126,6 @@ function MapperApp() {
         next = {
           ...next,
           syncMouseEvents: false,
-        };
-      }
-
-      if (!canUseAutoAwaken && next.experimentalFeaturesEnabled) {
-        next = {
-          ...next,
-          experimentalFeaturesEnabled: false,
         };
       }
 
@@ -2043,6 +2172,8 @@ function MapperApp() {
   const [autoAwakenRunning, setAutoAwakenRunning] = useState(false);
   const [autoAwakenStatus, setAutoAwakenStatus] = useState("");
   const [autoAwakenLogs, setAutoAwakenLogs] = useState<string[]>([]);
+  const [autoAwakenTemporaryShape, setAutoAwakenTemporaryShape] =
+    useState<ShapeMapping | null>(null);
   const hpOcrWorkerInitRef = useRef<Promise<any | null> | null>(null);
   const hpOcrBusyRef = useRef(false);
   const hpOcrLastResultRef = useRef<{
@@ -2063,6 +2194,7 @@ function MapperApp() {
     y: number;
     pointerId: number;
   } | null>(null);
+  const autoAwakenTemporaryShapeClearTimerRef = useRef<number | null>(null);
   const [autoStopCountdown, setAutoStopCountdown] = useState<number | null>(
     null,
   );
@@ -2182,6 +2314,12 @@ function MapperApp() {
   const selectedShape = useMemo(
     () => shapes.find((shape) => shape.id === selectedId) ?? null,
     [selectedId, shapes],
+  );
+
+  const visibleShapes = useMemo(
+    () =>
+      autoAwakenTemporaryShape ? [...shapes, autoAwakenTemporaryShape] : shapes,
+    [autoAwakenTemporaryShape, shapes],
   );
 
   const selectSingleShape = useCallback((id: string | null) => {
@@ -5321,7 +5459,8 @@ function MapperApp() {
         const module = await import("tesseract.js");
         const worker = await module.createWorker("eng", undefined, {
           workerPath: chrome.runtime.getURL("tesseract-worker.min.js"),
-          workerBlobURL: false,
+          // Blob-backed workers avoid cross-origin SecurityError in content scripts.
+          workerBlobURL: true,
         });
         if (typeof worker.setParameters === "function") {
           await worker.setParameters({
@@ -5440,18 +5579,29 @@ function MapperApp() {
         const module = await import("tesseract.js");
         const worker = await module.createWorker("eng", undefined, {
           workerPath: chrome.runtime.getURL("tesseract-worker.min.js"),
-          workerBlobURL: false,
+          // Blob-backed workers avoid cross-origin SecurityError in content scripts.
+          workerBlobURL: true,
         });
         if (typeof worker.setParameters === "function") {
+          const singleBlockPsm =
+            typeof (module as { PSM?: { SINGLE_BLOCK?: unknown } }).PSM
+              ?.SINGLE_BLOCK === "number"
+              ? Number(
+                  (module as { PSM?: { SINGLE_BLOCK?: unknown } }).PSM
+                    ?.SINGLE_BLOCK,
+                )
+              : 6;
           await worker.setParameters({
-            tessedit_pageseg_mode: module.PSM.SINGLE_BLOCK,
+            // 6 = SINGLE_BLOCK; use numeric fallback when enum export shape changes.
+            tessedit_pageseg_mode: singleBlockPsm as any,
             tessedit_char_whitelist:
               "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+.% ",
           });
         }
         awakenOcrWorkerRef.current = worker;
         return worker;
-      } catch {
+      } catch (error) {
+        console.error("[Auto-Awaken] OCR worker init failed", error);
         return null;
       } finally {
         awakenOcrWorkerInitRef.current = null;
@@ -5465,7 +5615,69 @@ function MapperApp() {
     autoAwakenRunningRef.current = false;
     setAutoAwakenRunning(false);
     setAutoAwakenStatus("⏸️ Ready to start");
+    if (autoAwakenTemporaryShapeClearTimerRef.current !== null) {
+      window.clearTimeout(autoAwakenTemporaryShapeClearTimerRef.current);
+      autoAwakenTemporaryShapeClearTimerRef.current = null;
+    }
+    setAutoAwakenTemporaryShape(null);
   }, []);
+
+  useEffect(() => {
+    if (accessControl.loading) {
+      return;
+    }
+
+    if (accessControl.hasToolAccess) {
+      accessLockHandledRef.current = false;
+      return;
+    }
+
+    if (accessLockHandledRef.current) {
+      return;
+    }
+
+    accessLockHandledRef.current = true;
+
+    // Force-stop active runtime loops when access is revoked mid-run.
+    stopAllToggleShapeAreas();
+    clearAllKeyTriggerTimers();
+    stopAutoAwakenLoop();
+
+    if (typeof chrome !== "undefined" && chrome.runtime) {
+      void safeSendRuntimeMessage({ type: "KEY_TRIGGER_STOP_ALL" });
+    }
+
+    setSettings((prev) => {
+      if (
+        prev.editMode &&
+        !prev.autoHoly.enabled &&
+        !prev.autoPills.enabled &&
+        !prev.experimentalFeaturesEnabled &&
+        !prev.syncMouseEvents
+      ) {
+        return prev;
+      }
+
+      return {
+        ...prev,
+        editMode: true,
+        syncMouseEvents: false,
+        autoHoly: {
+          ...prev.autoHoly,
+          enabled: false,
+        },
+        autoPills: {
+          ...prev.autoPills,
+          enabled: false,
+        },
+      };
+    });
+  }, [
+    accessControl.hasToolAccess,
+    accessControl.loading,
+    clearAllKeyTriggerTimers,
+    stopAutoAwakenLoop,
+  ]);
 
   useEffect(() => {
     if (!settings.experimentalFeaturesEnabled && autoAwakenRunningRef.current) {
@@ -5475,7 +5687,17 @@ function MapperApp() {
 
   const startAutoAwakenLoop = useCallback(
     async (mode?: "reawaken") => {
-      if (!canUseAutoAwaken) {
+      let canStartAutoAwaken = canUseAutoAwaken;
+
+      if (!canStartAutoAwaken) {
+        const refreshedAccess = await refreshAccessControl(
+          latestSettingsRef.current.subscriptionAccessToken,
+        );
+        canStartAutoAwaken =
+          refreshedAccess.hasToolAccess && refreshedAccess.features.autoAwaken;
+      }
+
+      if (!canStartAutoAwaken) {
         message.warning(
           "Your current subscription plan does not include Auto-Awaken.",
         );
@@ -5489,11 +5711,12 @@ function MapperApp() {
       setAutoAwakenStatus(
         mode === "reawaken"
           ? "🔄 Re-awakening..."
-          : "🔍 Searching for button...",
+          : "🔍 Searching for Start button...",
       );
       setAutoAwakenLogs([]);
+      setAutoAwakenTemporaryShape(null);
 
-      const MAX_LOG = 200;
+      const MAX_LOG = 120;
       const addLog = (line: string) => {
         const ts = new Date().toLocaleTimeString();
         setAutoAwakenLogs((prev) => [
@@ -5504,15 +5727,16 @@ function MapperApp() {
 
       const worker = await ensureAwakenOcrWorker();
       if (!worker) {
-        setAutoAwakenStatus("OCR worker failed to init.");
+        setAutoAwakenStatus("OCR worker failed to init. Check console logs.");
         autoAwakenRunningRef.current = false;
         setAutoAwakenRunning(false);
+        setAutoAwakenTemporaryShape(null);
         return;
       }
 
-      setAutoAwakenStatus("🔍 Searching for button...");
+      setAutoAwakenStatus("🔍 Searching for Start button...");
 
-      // Load only the initial button template at startup.
+      // Load both Start button reference templates at startup.
       const buttonTemplates: Array<{
         label: "button_image.png" | "button_image2.png";
         image: RgbImageData;
@@ -5522,77 +5746,102 @@ function MapperApp() {
         const template = await loadRgbImageDataFromSrc(buttonSrc);
         buttonTemplates.push({ label: "button_image.png", image: template });
       } catch {
-        addLog(
-          "Warning: could not load button_image.png \u2013 button click disabled.",
-        );
+        addLog("Warning: could not load a Start button reference image.");
+      }
+
+      try {
+        const buttonSrc2 = chrome.runtime.getURL("button_image2.png");
+        const template2 = await loadRgbImageDataFromSrc(buttonSrc2);
+        buttonTemplates.push({ label: "button_image2.png", image: template2 });
+      } catch {
+        addLog("Warning: could not load a secondary Start button reference.");
       }
 
       if (buttonTemplates.length === 0) {
-        addLog(
-          "Warning: no button templates loaded \u2013 button click disabled.",
-        );
+        addLog("Warning: no Start button references loaded - click disabled.");
       }
 
       addLog("Automation started.");
       let waitingForButtonReappear = false;
-      let expectedReappearTemplate:
-        | "button_image.png"
-        | "button_image2.png"
-        | null = null;
-      let buttonTemplate2: RgbImageData | null = null;
-      let attemptedButtonTemplate2Load = false;
+      const pause = (ms: number) =>
+        new Promise<void>((resolve) => {
+          window.setTimeout(resolve, ms);
+        });
+      const OCR_SETTLE_MAX_POLL = 5;
+      const OCR_SETTLE_INTERVAL_MS = 280;
+      const OCR_SETTLE_REQUIRED_STABLE_COUNT = 2;
+      const CLICK_ATTEMPT_COUNT = 5;
+      const CLICK_RETRY_SETTLE_MS = 420;
+      const OCR_RETRY_COOLDOWN_MS = 1200;
+      const WAIT_POLL_IDLE_MS = 330;
+      const WAIT_POLL_DISAPPEAR_MS = 300;
+      const WAIT_POLL_REAPPEAR_MS = 330;
+      const ENABLE_FULL_REGION_OCR_LOGS = false;
+      let ocrCycleCount = 0;
+      let nextOcrAllowedAt = 0;
 
-      const ensureButtonTemplate2 = async (): Promise<boolean> => {
-        if (buttonTemplate2) {
-          return true;
-        }
-        if (attemptedButtonTemplate2Load) {
-          return false;
-        }
-        attemptedButtonTemplate2Load = true;
-        try {
-          const buttonSrc2 = chrome.runtime.getURL("button_image2.png");
-          buttonTemplate2 = await loadRgbImageDataFromSrc(buttonSrc2);
-          addLog("Loaded button_image2.png for post-reroll detection.");
-          return true;
-        } catch {
-          addLog("Warning: could not load button_image2.png for reroll cycle.");
-          return false;
-        }
-      };
+      addLog(
+        "Auto-Awaken click mode: temporary key-mapper shape trigger (non-persistent).",
+      );
 
       /**
-       * Dispatch a left-click at viewport coordinates onto the game canvas,
-       * bypassing the extension overlay.
+       * Dispatch a click using a temporary in-memory shape that never touches
+       * profiles, storage, or clipboard.
        */
-      const clickViewport = (vx: number, vy: number) => {
-        const overlayRoot = document.getElementById(ROOT_ID);
-        const prev = overlayRoot?.style.pointerEvents;
-        if (overlayRoot) overlayRoot.style.pointerEvents = "none";
+      const clickViewport = async (
+        vx: number,
+        vy: number,
+        shapeSize?: { width: number; height: number },
+      ) => {
+        const width = Math.max(14, Math.round(shapeSize?.width ?? 72));
+        const height = Math.max(10, Math.round(shapeSize?.height ?? 28));
 
-        const target =
-          (document.elementFromPoint(vx, vy) as HTMLElement | null) ??
-          (document.querySelector("canvas") as HTMLElement | null) ??
-          document.body;
+        const shapeX = Math.max(
+          0,
+          Math.min(window.innerWidth - width, Math.round(vx - width / 2)),
+        );
+        const shapeY = Math.max(
+          0,
+          Math.min(window.innerHeight - height, Math.round(vy - height / 2)),
+        );
 
-        if (overlayRoot) overlayRoot.style.pointerEvents = prev ?? "";
-
-        const commonInit = {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: vx,
-          clientY: vy,
-          button: 0,
-          buttons: 1,
+        const temporaryShape: ShapeMapping = {
+          id: `auto-awaken-temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          type: "rectangle",
+          x: shapeX,
+          y: shapeY,
+          width,
+          height,
+          rotation: 0,
+          opacity: 0.32,
+          keyBinding: "",
+          delayMs: 0,
+          triggerType: "once",
         };
-        target.dispatchEvent(new MouseEvent("mousedown", commonInit));
-        target.dispatchEvent(
-          new MouseEvent("mouseup", { ...commonInit, buttons: 0 }),
+
+        setAutoAwakenTemporaryShape(temporaryShape);
+        if (autoAwakenTemporaryShapeClearTimerRef.current !== null) {
+          window.clearTimeout(autoAwakenTemporaryShapeClearTimerRef.current);
+        }
+        autoAwakenTemporaryShapeClearTimerRef.current = window.setTimeout(
+          () => {
+            setAutoAwakenTemporaryShape((prev) =>
+              prev?.id === temporaryShape.id ? null : prev,
+            );
+            autoAwakenTemporaryShapeClearTimerRef.current = null;
+          },
+          900,
         );
-        target.dispatchEvent(
-          new MouseEvent("click", { ...commonInit, buttons: 0 }),
-        );
+
+        triggerShapeArea(temporaryShape, { x: vx, y: vy });
+
+        return {
+          tagName: "CANVAS",
+          isCanvas: true,
+          clicked: true,
+          method: "mapper-shape" as const,
+          nativeError: undefined as string | undefined,
+        };
       };
 
       const normalizeStatName = (name: string): string =>
@@ -5634,6 +5883,42 @@ function MapperApp() {
         } catch {
           return null;
         }
+      };
+
+      const buildScaledCanvasFromRgbImage = (
+        image: RgbImageData,
+        scale: number,
+      ): HTMLCanvasElement | null => {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          return null;
+        }
+
+        const bitmapCanvas = document.createElement("canvas");
+        bitmapCanvas.width = image.width;
+        bitmapCanvas.height = image.height;
+        const bitmapCtx = bitmapCanvas.getContext("2d");
+        if (!bitmapCtx) {
+          return null;
+        }
+
+        bitmapCtx.putImageData(
+          new ImageData(
+            new Uint8ClampedArray(image.rgb),
+            image.width,
+            image.height,
+          ),
+          0,
+          0,
+        );
+
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(bitmapCanvas, 0, 0, canvas.width, canvas.height);
+        return canvas;
       };
 
       const scorePanelOcrCandidate = (
@@ -5682,22 +5967,76 @@ function MapperApp() {
         return score;
       };
 
+      const normalizeAwakenOcrLine = (line: string): string =>
+        line
+          .replace(/[|!]/g, "I")
+          .replace(/[“”"'`~_^=<>]/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+
+      const extractBestAwakenStatLine = (text: string): string => {
+        const normalizedText = text.replace(/\r/g, "\n");
+        const rawLines = normalizedText
+          .split(/\n+/)
+          .map((line) => normalizeAwakenOcrLine(line))
+          .filter((line) => line.length > 0);
+
+        const candidates =
+          rawLines.length > 0 ? rawLines : [normalizeAwakenOcrLine(text)];
+
+        let bestLine = "";
+        let bestScore = -1;
+        for (const line of candidates) {
+          let score = 0;
+          if (/[A-Za-z]{3,}/.test(line)) score += 2;
+          if (/\+\s*\d+/.test(line)) score += 5;
+          if (/\d+\s*%/.test(line)) score += 4;
+          if (
+            /(attack|resist|speed|damage|block|defense|chance|max\.?\s*(hp|mp)|str|dex|int|sta)/i.test(
+              line,
+            )
+          ) {
+            score += 2;
+          }
+          if (line.length >= 6 && line.length <= 42) score += 1;
+
+          if (score > bestScore) {
+            bestScore = score;
+            bestLine = line;
+          }
+        }
+
+        return bestLine || normalizeAwakenOcrLine(text);
+      };
+
+      type AwakenOcrResult = {
+        bestText: string;
+        detectedTexts: string[];
+      };
+
       const recognizeAwakenPanelText = async (
         image: RgbImageData,
         hintNames: string[],
-      ): Promise<string> => {
+        options?: {
+          singleLine?: boolean;
+        },
+      ): Promise<AwakenOcrResult> => {
+        const ocrScale = options?.singleLine ? 5 : 3;
         const cropCanvas = document.createElement("canvas");
-        cropCanvas.width = image.width * 4;
-        cropCanvas.height = image.height * 4;
+        cropCanvas.width = image.width * ocrScale;
+        cropCanvas.height = image.height * ocrScale;
         const ctx = cropCanvas.getContext("2d");
 
         const nativeCanvas = document.createElement("canvas");
-        nativeCanvas.width = image.width * 4;
-        nativeCanvas.height = image.height * 4;
+        nativeCanvas.width = image.width * ocrScale;
+        nativeCanvas.height = image.height * ocrScale;
         const nativeCtx = nativeCanvas.getContext("2d");
 
         if (!ctx || !nativeCtx) {
-          return "";
+          return {
+            bestText: "",
+            detectedTexts: [],
+          };
         }
 
         ctx.imageSmoothingEnabled = true;
@@ -5830,16 +6169,20 @@ function MapperApp() {
           { threshold: 150, brightTextMask: false },
           { threshold: 132, brightTextMask: false },
           { threshold: 168, brightTextMask: false },
-          { threshold: null, brightTextMask: true },
         ];
 
         let bestText = "";
         let bestScore = -1;
+        const detectedTexts: string[] = [];
 
         for (const candidate of candidates) {
-          const score = scorePanelOcrCandidate(candidate, hintNames);
+          const picked = extractBestAwakenStatLine(candidate);
+          if (picked) {
+            detectedTexts.push(picked);
+          }
+          const score = scorePanelOcrCandidate(picked, hintNames);
           if (score > bestScore) {
-            bestText = candidate;
+            bestText = picked;
             bestScore = score;
           }
         }
@@ -5850,12 +6193,21 @@ function MapperApp() {
             variant.brightTextMask,
           );
           ctx.putImageData(processed, 0, 0);
-          const result = await worker.recognize(cropCanvas);
+          const result = await worker.recognize(cropCanvas, {
+            tessedit_char_whitelist:
+              "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+% .\\n",
+            preserve_interword_spaces: "1",
+            tessedit_pageseg_mode: options?.singleLine ? "7" : "6",
+          });
           const text =
             typeof result?.data?.text === "string" ? result.data.text : "";
-          const score = scorePanelOcrCandidate(text, hintNames);
+          const picked = extractBestAwakenStatLine(text);
+          if (picked) {
+            detectedTexts.push(picked);
+          }
+          const score = scorePanelOcrCandidate(picked, hintNames);
           if (score > bestScore) {
-            bestText = text;
+            bestText = picked;
             bestScore = score;
           }
           if (score >= 7) {
@@ -5863,55 +6215,160 @@ function MapperApp() {
           }
         }
 
-        return bestText;
+        return {
+          bestText,
+          detectedTexts: Array.from(
+            new Set(detectedTexts.map((text) => text.trim()).filter(Boolean)),
+          ),
+        };
       };
 
       const recognizeAwakenResultText = async (
         regionImage: RgbImageData,
         side: "left" | "right",
         hintNames: string[],
-      ): Promise<string> => {
+      ): Promise<AwakenOcrResult> => {
         const baseX = side === "left" ? 0.028 : 0.526;
-        const cropVariants = [
-          { x: baseX, y: 0.796, width: 0.448, height: 0.088 },
-          { x: baseX + 0.008, y: 0.812, width: 0.428, height: 0.068 },
-          { x: baseX + 0.014, y: 0.822, width: 0.412, height: 0.056 },
+        const focusedResultLineVariants = [
+          { x: baseX + 0.012, y: 0.86, width: 0.424, height: 0.09 },
+          { x: baseX + 0.02, y: 0.875, width: 0.408, height: 0.075 },
+          { x: baseX + 0.004, y: 0.842, width: 0.436, height: 0.108 },
+        ];
+
+        const broaderPanelVariants = [
+          { x: baseX, y: 0.79, width: 0.448, height: 0.11 },
+          { x: baseX + 0.004, y: 0.77, width: 0.44, height: 0.14 },
+          { x: baseX + 0.012, y: 0.815, width: 0.42, height: 0.085 },
         ];
 
         let bestText = "";
         let bestScore = -1;
+        const allDetectedTexts: string[] = [];
 
-        for (const variant of cropVariants) {
-          const crop = cropRgbImageData(regionImage, {
-            x: Math.max(0, Math.round(regionImage.width * variant.x)),
-            y: Math.max(0, Math.round(regionImage.height * variant.y)),
-            width: Math.max(1, Math.round(regionImage.width * variant.width)),
-            height: Math.max(
-              1,
-              Math.round(regionImage.height * variant.height),
-            ),
-          });
-          if (!crop) {
-            continue;
-          }
+        const tryVariants = async (
+          variants: Array<{
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+          }>,
+          singleLine: boolean,
+        ) => {
+          for (const variant of variants) {
+            const crop = cropRgbImageData(regionImage, {
+              x: Math.max(0, Math.round(regionImage.width * variant.x)),
+              y: Math.max(0, Math.round(regionImage.height * variant.y)),
+              width: Math.max(1, Math.round(regionImage.width * variant.width)),
+              height: Math.max(
+                1,
+                Math.round(regionImage.height * variant.height),
+              ),
+            });
+            if (!crop) {
+              continue;
+            }
 
-          const text = await recognizeAwakenPanelText(crop, hintNames);
-          const score = scorePanelOcrCandidate(text, hintNames);
-          if (score > bestScore) {
-            bestText = text;
-            bestScore = score;
+            const panelOcr = await recognizeAwakenPanelText(crop, hintNames, {
+              singleLine,
+            });
+            allDetectedTexts.push(...panelOcr.detectedTexts);
+            const text = panelOcr.bestText;
+            const scoreBoost =
+              (/\+\s*\d+/.test(text) ? 4 : 0) + (/\d+\s*%/.test(text) ? 3 : 0);
+            const score = scorePanelOcrCandidate(text, hintNames) + scoreBoost;
+            if (score > bestScore) {
+              bestText = text;
+              bestScore = score;
+            }
+            if (score >= 9) {
+              return;
+            }
           }
-          if (score >= 8) {
-            break;
-          }
+        };
+
+        await tryVariants(focusedResultLineVariants, true);
+        if (bestScore < 8) {
+          await tryVariants(broaderPanelVariants, false);
         }
 
-        return bestText;
+        return {
+          bestText,
+          detectedTexts: Array.from(
+            new Set(
+              allDetectedTexts.map((text) => text.trim()).filter(Boolean),
+            ),
+          ),
+        };
+      };
+
+      const recognizeAllAwakenTextsInRegion = async (
+        regionImage: RgbImageData,
+      ): Promise<string[]> => {
+        const regionCanvas = buildScaledCanvasFromRgbImage(regionImage, 2);
+        if (!regionCanvas) {
+          return [];
+        }
+
+        const lines: string[] = [];
+        const nativeRegionText = await detectTextWithNativeApi(regionCanvas);
+        if (nativeRegionText) {
+          nativeRegionText
+            .split(/\n+/)
+            .map((line: string) => normalizeAwakenOcrLine(line))
+            .filter(Boolean)
+            .forEach((line: string) => lines.push(line));
+        }
+
+        try {
+          const result = await worker.recognize(regionCanvas, {
+            tessedit_char_whitelist:
+              "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+% .\\n",
+            preserve_interword_spaces: "1",
+            tessedit_pageseg_mode: "6",
+          });
+
+          const rawText =
+            typeof result?.data?.text === "string" ? result.data.text : "";
+          rawText
+            .split(/\n+/)
+            .map((line: string) => normalizeAwakenOcrLine(line))
+            .filter(Boolean)
+            .forEach((line: string) => lines.push(line));
+        } catch {
+          // Keep native lines when Tesseract fails.
+        }
+
+        return Array.from(new Set(lines));
+      };
+
+      const extractAwakenValueToken = (text: string): string | null => {
+        const normalized = text.replace(/\s+/g, " ").trim();
+        if (!normalized) {
+          return null;
+        }
+
+        const plusMatch = normalized.match(/[+#]\s*\d+(?:\.\d+)?\s*%?/);
+        if (plusMatch?.[0]) {
+          return plusMatch[0].replace(/\s+/g, "");
+        }
+
+        const percentMatch = normalized.match(/\d+(?:\.\d+)?\s*%/);
+        if (percentMatch?.[0]) {
+          return percentMatch[0].replace(/\s+/g, "");
+        }
+
+        const numberMatch = normalized.match(/\d+(?:\.\d+)?/);
+        if (numberMatch?.[0]) {
+          return numberMatch[0];
+        }
+
+        return null;
       };
 
       type AwakenRegionSnapshot = {
         fullImg: RgbImageData;
         cropRect: { x: number; y: number; width: number; height: number };
+        normalizedRegion: NormalizedRect;
         regionImg: RgbImageData;
         buttonMatch: AwakenButtonMatch | null;
       };
@@ -5929,9 +6386,19 @@ function MapperApp() {
           return null;
         }
 
-        const fullImg = await loadRgbImageDataFromDataUrl(
+        const targetMatchWidth = Math.min(
+          AUTO_AWAKEN_MATCH_MAX_WIDTH,
+          Math.max(
+            900,
+            Math.round(
+              window.innerWidth *
+                Math.max(1, Math.min(window.devicePixelRatio || 1, 1.5)),
+            ),
+          ),
+        );
+        const fullImg = await loadRgbImageDataFromSrc(
           screenshot,
-          AUTO_IMAGE_SCALE_WIDTH,
+          targetMatchWidth,
         );
         const cropRect = {
           x: Math.round(scanRegion.x * fullImg.width),
@@ -5956,6 +6423,7 @@ function MapperApp() {
         return {
           fullImg,
           cropRect,
+          normalizedRegion: scanRegion,
           regionImg,
           buttonMatch,
         };
@@ -5967,6 +6435,7 @@ function MapperApp() {
         let phase: "disappear" | "reappear" | "idle" = waitingForButtonReappear
           ? "disappear"
           : "idle";
+        let missingPollCount = 0;
 
         while (autoAwakenRunningRef.current) {
           const snapshot = await captureAwakenRegionSnapshot(cfg);
@@ -5974,9 +6443,9 @@ function MapperApp() {
             if (phase === "disappear") {
               setAutoAwakenStatus("⏳ Waiting for reroll...");
             } else if (phase === "reappear") {
-              setAutoAwakenStatus("⏳ Waiting for button to reappear...");
+              setAutoAwakenStatus("⏳ Waiting for Start button to reappear...");
             } else {
-              setAutoAwakenStatus("🔍 Waiting for button...");
+              setAutoAwakenStatus("🔍 Waiting for Start button...");
             }
             await new Promise((r) => setTimeout(r, 300));
             continue;
@@ -5990,81 +6459,247 @@ function MapperApp() {
 
           if (phase === "idle") {
             if (buttonVisible) {
-              addLog("Button visible – reading current result.");
+              missingPollCount = 0;
+              addLog("Start button visible - reading current result.");
               return snapshot;
             }
-            addLog("Button not visible. Waiting for it to appear...");
+            missingPollCount += 1;
+            if (missingPollCount === 1) {
+              addLog("Start button not visible. Waiting for it to appear...");
+            } else if (missingPollCount % 12 === 0) {
+              addLog(
+                `Start template not matched yet. Retrying region screenshot match (${missingPollCount} polls).`,
+              );
+            }
             phase = "reappear";
-            setAutoAwakenStatus("🔍 Waiting for button...");
-            await new Promise((r) => setTimeout(r, 250));
+            setAutoAwakenStatus("🔍 Waiting for Start button...");
+            await new Promise((r) => setTimeout(r, WAIT_POLL_IDLE_MS));
             continue;
           }
 
           if (phase === "disappear") {
             if (!buttonVisible) {
-              addLog("Button disappeared – reroll in progress.");
+              missingPollCount = 0;
+              addLog("Start button disappeared - reroll in progress.");
               setAutoAwakenStatus("⏳ Waiting for reroll...");
               phase = "reappear";
-              await new Promise((r) => setTimeout(r, 250));
+              await new Promise((r) => setTimeout(r, WAIT_POLL_DISAPPEAR_MS));
               continue;
             }
             // Button still visible – not gone yet, keep polling
             setAutoAwakenStatus("⏳ Waiting for reroll...");
-            await new Promise((r) => setTimeout(r, 200));
+            await new Promise((r) => setTimeout(r, WAIT_POLL_DISAPPEAR_MS));
             continue;
           }
 
           // phase === "reappear"
           if (buttonVisible) {
-            if (
-              expectedReappearTemplate &&
-              snapshot.buttonMatch?.templateLabel !== expectedReappearTemplate
-            ) {
-              setAutoAwakenStatus("⏳ Waiting for button to reappear...");
-              await new Promise((r) => setTimeout(r, 250));
-              continue;
-            }
+            missingPollCount = 0;
             addLog(
-              "Button reappeared – reroll finished. Reading settled result.",
+              "Start button reappeared - reroll finished. Reading settled result.",
             );
             waitingForButtonReappear = false;
-            expectedReappearTemplate = null;
             return snapshot;
           }
 
-          setAutoAwakenStatus("⏳ Waiting for button to reappear...");
-          await new Promise((r) => setTimeout(r, 250));
+          missingPollCount += 1;
+          if (missingPollCount % 12 === 0) {
+            addLog(
+              `Still waiting for Start template. Retrying region screenshot match (${missingPollCount} polls).`,
+            );
+          }
+
+          setAutoAwakenStatus("⏳ Waiting for Start button to reappear...");
+          await new Promise((r) => setTimeout(r, WAIT_POLL_REAPPEAR_MS));
         }
 
         return null;
       };
 
-      const clickAwakenButtonFromSnapshot = (
+      const computeAwakenRegionDiff = (
+        previous: RgbImageData,
+        current: RgbImageData,
+      ): number => {
+        const width = Math.min(previous.width, current.width);
+        const height = Math.min(previous.height, current.height);
+        if (width < 4 || height < 4) {
+          return 999;
+        }
+
+        const startY = Math.max(0, Math.floor(height * 0.64));
+        const endY = Math.min(height - 1, Math.ceil(height * 0.95));
+        const stepX = Math.max(1, Math.floor(width / 44));
+        const stepY = Math.max(1, Math.floor((endY - startY + 1) / 18));
+
+        let diffSum = 0;
+        let sampleCount = 0;
+
+        for (let y = startY; y <= endY; y += stepY) {
+          for (let x = 0; x < width; x += stepX) {
+            const prevIndex = (y * previous.width + x) * 4;
+            const currIndex = (y * current.width + x) * 4;
+            const prevGray =
+              previous.rgb[prevIndex] * 0.299 +
+              previous.rgb[prevIndex + 1] * 0.587 +
+              previous.rgb[prevIndex + 2] * 0.114;
+            const currGray =
+              current.rgb[currIndex] * 0.299 +
+              current.rgb[currIndex + 1] * 0.587 +
+              current.rgb[currIndex + 2] * 0.114;
+            diffSum += Math.abs(prevGray - currGray);
+            sampleCount += 1;
+          }
+        }
+
+        return sampleCount > 0 ? diffSum / sampleCount : 999;
+      };
+
+      const waitForAwakenResultToSettle = async (
+        seedSnapshot: AwakenRegionSnapshot,
+        cfg: typeof latestSettingsRef.current.autoAwaken,
+      ): Promise<AwakenRegionSnapshot | null> => {
+        let stableCount = 0;
+        let latestSnapshot: AwakenRegionSnapshot | null = seedSnapshot;
+
+        for (
+          let pollIndex = 0;
+          pollIndex < OCR_SETTLE_MAX_POLL && autoAwakenRunningRef.current;
+          pollIndex += 1
+        ) {
+          await pause(OCR_SETTLE_INTERVAL_MS);
+          const nextSnapshot = await captureAwakenRegionSnapshot(cfg);
+          if (!nextSnapshot || !latestSnapshot) {
+            stableCount = 0;
+            latestSnapshot = nextSnapshot;
+            continue;
+          }
+
+          const regionDiff = computeAwakenRegionDiff(
+            latestSnapshot.regionImg,
+            nextSnapshot.regionImg,
+          );
+          const buttonDrift =
+            latestSnapshot.buttonMatch && nextSnapshot.buttonMatch
+              ? Math.hypot(
+                  latestSnapshot.buttonMatch.x - nextSnapshot.buttonMatch.x,
+                  latestSnapshot.buttonMatch.y - nextSnapshot.buttonMatch.y,
+                )
+              : 0;
+          const isStable = regionDiff < 5.4 && buttonDrift <= 4;
+          stableCount = isStable ? stableCount + 1 : 0;
+          latestSnapshot = nextSnapshot;
+
+          if (stableCount >= OCR_SETTLE_REQUIRED_STABLE_COUNT) {
+            return latestSnapshot;
+          }
+        }
+
+        return latestSnapshot;
+      };
+
+      const clickAwakenButtonFromSnapshot = async (
         snapshot: AwakenRegionSnapshot,
         match: AwakenButtonMatch,
         reason: "initial" | "reroll",
-      ) => {
-        const { fullImg, cropRect } = snapshot;
-        const scaleX = window.innerWidth / fullImg.width;
-        const scaleY = window.innerHeight / fullImg.height;
-        const vx = Math.round((cropRect.x + match.x) * scaleX);
-        const vy = Math.round((cropRect.y + match.y) * scaleY);
+      ): Promise<boolean> => {
+        const { cropRect, fullImg } = snapshot;
+        const scaleX = window.innerWidth / Math.max(1, fullImg.width);
+        const scaleY = window.innerHeight / Math.max(1, fullImg.height);
+        const baseX = Math.round((cropRect.x + match.x) * scaleX);
+        const baseY = Math.round((cropRect.y + match.y) * scaleY);
+        const matchedTemplate = match.templateLabel
+          ? buttonTemplates.find(
+              (template) => template.label === match.templateLabel,
+            )
+          : null;
+        const detectedButtonWidth = Math.max(
+          20,
+          Math.round(
+            (matchedTemplate?.image.width ?? 96) *
+              (match.templateLabel ? match.scale : 1) *
+              scaleX,
+          ),
+        );
+        const detectedButtonHeight = Math.max(
+          10,
+          Math.round(
+            (matchedTemplate?.image.height ?? 30) *
+              (match.templateLabel ? match.scale : 1) *
+              scaleY,
+          ),
+        );
+        const clickShapeSize = {
+          width: Math.max(24, Math.min(280, detectedButtonWidth)),
+          height: Math.max(12, Math.min(120, detectedButtonHeight)),
+        };
+        const offsetX = Math.max(2, Math.round(clickShapeSize.width * 0.2));
+        const offsetY = Math.max(2, Math.round(clickShapeSize.height * 0.2));
+        const clickPoints = [
+          { x: baseX, y: baseY },
+          { x: baseX + offsetX, y: baseY },
+          { x: baseX - offsetX, y: baseY },
+          { x: baseX, y: baseY + offsetY },
+          { x: baseX, y: baseY - offsetY },
+          { x: baseX + offsetX, y: baseY + offsetY },
+          { x: baseX - offsetX, y: baseY + offsetY },
+          { x: baseX + offsetX, y: baseY - offsetY },
+          { x: baseX - offsetX, y: baseY - offsetY },
+        ]
+          .slice(0, CLICK_ATTEMPT_COUNT)
+          .map((point) => ({
+            x: Math.max(0, Math.min(window.innerWidth - 1, point.x)),
+            y: Math.max(0, Math.min(window.innerHeight - 1, point.y)),
+          }));
+
         setAutoAwakenStatus("🔄 Re-awakening...");
-        if (reason === "initial") {
-          addLog(
-            `Initial start: clicking reroll at (${vx}, ${vy}) via ${match.templateLabel}/jsfeat/${match.regionLabel} (scale ${match.scale.toFixed(2)}) and skipping pre-existing result.`,
-          );
-        } else {
-          addLog(
-            `Stats did not match – clicking reroll at (${vx}, ${vy}) via ${match.templateLabel}/jsfeat/${match.regionLabel} (scale ${match.scale.toFixed(2)}).`,
-          );
+        for (
+          let attemptIndex = 0;
+          attemptIndex < clickPoints.length;
+          attemptIndex += 1
+        ) {
+          if (attemptIndex > 0) {
+            addLog("Retrying Start click with adjusted click point.");
+          }
+
+          const point = clickPoints[attemptIndex];
+          await clickViewport(point.x, point.y, clickShapeSize);
+
+          const shouldLogAttemptDetail = attemptIndex === 0;
+          if (shouldLogAttemptDetail) {
+            addLog(
+              `${reason === "initial" ? "Initial start" : "Stats did not match"}: Start button found at (${point.x}, ${point.y}) via ${match.detectionSource === "text" ? "Start text OCR" : "template match"}; click attempt ${attemptIndex + 1}/${clickPoints.length} using key-mapper shape trigger.`,
+            );
+          }
+
+          for (let pollIndex = 0; pollIndex < 3; pollIndex += 1) {
+            await new Promise((r) => setTimeout(r, 160));
+            const verifySnapshot = await captureAwakenRegionSnapshot(
+              latestSettingsRef.current.autoAwaken,
+            );
+            if (!verifySnapshot) {
+              continue;
+            }
+
+            if (!verifySnapshot.buttonMatch) {
+              waitingForButtonReappear = true;
+              addLog(
+                "Start button click confirmed. Waiting for Start button to disappear and reappear after click...",
+              );
+              return true;
+            }
+          }
         }
-        clickViewport(vx, vy);
-        waitingForButtonReappear = true;
-        addLog("Waiting for button to disappear and reappear after click...");
+
+        addLog(
+          "Start button remained visible after click attempts. Region screenshot match did not confirm a valid click yet; retrying.",
+        );
+        setAutoAwakenStatus("🔍 Waiting for Start button...");
+        await pause(CLICK_RETRY_SETTLE_MS);
+        return false;
       };
 
       let initialRerollTriggered = false;
+      let initialStartUnconfirmedAttempts = 0;
 
       while (autoAwakenRunningRef.current) {
         const currentSettings = latestSettingsRef.current;
@@ -6082,12 +6717,21 @@ function MapperApp() {
           continue;
         }
 
-        const { regionImg, buttonMatch } = snapshot;
+        const settledSnapshot = await waitForAwakenResultToSettle(
+          snapshot,
+          cfg,
+        );
+        if (!settledSnapshot) {
+          await pause(240);
+          continue;
+        }
+
+        const { regionImg, buttonMatch } = settledSnapshot;
         if (!buttonMatch && buttonTemplates.length > 0) {
           addLog(
-            "Button not found in region. Tried button_image.png/button_image2.png over bottom-center, bottom, and full-region search at multiple scales.",
+            "Start button not found in region. Tried button_image.png/button_image2.png template match across bottom-center, footer, lower-third, bottom, and full-region passes.",
           );
-          await new Promise((r) => setTimeout(r, 300));
+          await pause(300);
           continue;
         }
 
@@ -6096,34 +6740,42 @@ function MapperApp() {
           buttonTemplates.length > 0 &&
           buttonMatch
         ) {
-          clickAwakenButtonFromSnapshot(snapshot, buttonMatch, "initial");
-          if (await ensureButtonTemplate2()) {
-            const hasTemplate2 = buttonTemplates.some(
-              (t) => t.label === "button_image2.png",
-            );
-            if (!hasTemplate2 && buttonTemplate2) {
-              buttonTemplates.push({
-                label: "button_image2.png",
-                image: buttonTemplate2,
-              });
-            }
-            expectedReappearTemplate = "button_image2.png";
-            addLog(
-              "Initial reroll will wait for button_image2.png, then succeeding rerolls accept either button template.",
-            );
+          const initialClickStarted = await clickAwakenButtonFromSnapshot(
+            settledSnapshot,
+            buttonMatch,
+            "initial",
+          );
+          if (initialClickStarted) {
+            initialRerollTriggered = true;
+            initialStartUnconfirmedAttempts = 0;
+            nextOcrAllowedAt = Date.now() + OCR_RETRY_COOLDOWN_MS;
           } else {
-            expectedReappearTemplate = "button_image.png";
-            addLog("Falling back to button_image.png for reappear detection.");
+            initialStartUnconfirmedAttempts += 1;
+            nextOcrAllowedAt = Date.now() + OCR_RETRY_COOLDOWN_MS;
+            if (initialStartUnconfirmedAttempts % 2 === 0) {
+              addLog(
+                "Initial Start click could not be confirmed yet. Retrying Start before OCR.",
+              );
+            }
           }
-          initialRerollTriggered = true;
-          await new Promise((r) => setTimeout(r, 200));
+          await pause(420);
+          continue;
+        }
+
+        if (Date.now() < nextOcrAllowedAt) {
+          setAutoAwakenStatus("⏳ Waiting for reroll to settle...");
+          await pause(220);
           continue;
         }
 
         // ── OCR – read the bottom result box of each panel ───────────────
+        ocrCycleCount += 1;
         addLog("Reading stats from settled result...");
         let stat1OcrText = "";
         let stat2OcrText = "";
+        let stat1DetectedTexts: string[] = [];
+        let stat2DetectedTexts: string[] = [];
+        let allRegionDetectedTexts: string[] = [];
         try {
           setAutoAwakenStatus("🔍 Analyzing stats...");
 
@@ -6144,7 +6796,12 @@ function MapperApp() {
             return stat?.ocrNames ?? [];
           });
 
-          [stat1OcrText, stat2OcrText] = await Promise.all([
+          if (ENABLE_FULL_REGION_OCR_LOGS && ocrCycleCount % 3 === 1) {
+            allRegionDetectedTexts =
+              await recognizeAllAwakenTextsInRegion(regionImg);
+          }
+
+          const [stat1Result, stat2Result] = await Promise.all([
             recognizeAwakenResultText(
               regionImg,
               "left",
@@ -6156,6 +6813,11 @@ function MapperApp() {
               stat2HintNames.length > 0 ? stat2HintNames : fallbackHintNames,
             ),
           ]);
+
+          stat1OcrText = stat1Result.bestText;
+          stat2OcrText = stat2Result.bestText;
+          stat1DetectedTexts = stat1Result.detectedTexts;
+          stat2DetectedTexts = stat2Result.detectedTexts;
         } catch {
           await new Promise((r) => setTimeout(r, 800));
           continue;
@@ -6169,11 +6831,28 @@ function MapperApp() {
         ]
           .filter(Boolean)
           .join(" | ");
+        if (ENABLE_FULL_REGION_OCR_LOGS) {
+          addLog(
+            `Detected texts in full region: ${allRegionDetectedTexts.length > 0 ? allRegionDetectedTexts.join(" | ") : "(none)"}`,
+          );
+        }
         addLog(
           `OCR Stat 1: ${normalizedStat1OcrText ? `${normalizedStat1OcrText.slice(0, 80)}${normalizedStat1OcrText.length > 80 ? "..." : ""}` : "(empty)"}`,
         );
         addLog(
           `OCR Stat 2: ${normalizedStat2OcrText ? `${normalizedStat2OcrText.slice(0, 80)}${normalizedStat2OcrText.length > 80 ? "..." : ""}` : "(empty)"}`,
+        );
+        addLog(
+          `Detected texts in region (Stat 1): ${stat1DetectedTexts.length > 0 ? stat1DetectedTexts.join(" | ") : "(none)"}`,
+        );
+        addLog(
+          `Detected texts in region (Stat 2): ${stat2DetectedTexts.length > 0 ? stat2DetectedTexts.join(" | ") : "(none)"}`,
+        );
+        addLog(
+          `Extracted Stat 1 value: ${extractAwakenValueToken(normalizedStat1OcrText) ?? "(none)"}`,
+        );
+        addLog(
+          `Extracted Stat 2 value: ${extractAwakenValueToken(normalizedStat2OcrText) ?? "(none)"}`,
         );
 
         if (!normalizedOcrText) {
@@ -6184,160 +6863,154 @@ function MapperApp() {
           continue;
         }
 
-        // ── Parse detected stats (panel-first, fuzzy stat matching) ───────
+        // ── Parse detected stats (panel-first, configured-stat matching) ───
         type DetectedStat = { statId: string; value: number };
         const detected: DetectedStat[] = [];
         const configuredCriteria = [...cfg.stat1Criteria, ...cfg.stat2Criteria];
-
-        const targetStatIdByNormalizedLabel = new Map<string, string>();
-        for (const criterion of configuredCriteria) {
-          const stat = AWAKEN_STAT_BY_ID[criterion.statId];
-          if (!stat) continue;
-          targetStatIdByNormalizedLabel.set(
-            normalizeStatName(stat.label),
-            criterion.statId,
+        const configuredStatIds = Array.from(
+          new Set(configuredCriteria.map((criterion) => criterion.statId)),
+        );
+        const configuredStats = configuredStatIds
+          .map((statId) => ({ statId, stat: AWAKEN_STAT_BY_ID[statId] }))
+          .filter(
+            (
+              entry,
+            ): entry is {
+              statId: string;
+              stat: (typeof AWAKEN_STAT_BY_ID)[string];
+            } => Boolean(entry.stat),
           );
-        }
 
-        if (targetStatIdByNormalizedLabel.size === 0) {
+        if (configuredStats.length === 0) {
           addLog("No configured target stats – stopping.");
           break;
         }
 
-        const normalizeAwakenResultLabel = (value: string): string =>
+        const normalizeAwakenLabel = (value: string): string =>
           value
             .replace(/[|!]/g, "I")
-            .replace(/0/g, "O")
-            .replace(/5/g, "S")
-            .replace(/[^A-Za-z ]+/g, " ")
+            .replace(/[\[\]{}()]/g, " ")
+            .replace(/\./g, " ")
             .replace(/\s+/g, " ")
             .trim()
-            .toLowerCase();
+            .toUpperCase();
 
-        const levenshtein = (a: string, b: string): number => {
-          if (a === b) return 0;
-          if (a.length === 0) return b.length;
-          if (b.length === 0) return a.length;
+        const compactAwakenLabel = (value: string): string =>
+          normalizeAwakenLabel(value)
+            .replace(/[^A-Z ]+/g, " ")
+            .replace(/\s+/g, " ")
+            .trim()
+            .replace(/^MAX\s+/g, "")
+            .trim();
 
-          const dp = Array.from({ length: a.length + 1 }, () =>
-            new Array<number>(b.length + 1).fill(0),
-          );
-          for (let i = 0; i <= a.length; i += 1) dp[i][0] = i;
-          for (let j = 0; j <= b.length; j += 1) dp[0][j] = j;
-
-          for (let i = 1; i <= a.length; i += 1) {
-            for (let j = 1; j <= b.length; j += 1) {
-              const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-              dp[i][j] = Math.min(
-                dp[i - 1][j] + 1,
-                dp[i][j - 1] + 1,
-                dp[i - 1][j - 1] + cost,
-              );
-            }
-          }
-          return dp[a.length][b.length];
-        };
-
-        const findBestConfiguredStatId = (label: string): string | null => {
-          const normalizedLabel = normalizeAwakenResultLabel(label).replace(
-            /\s+/g,
-            "",
-          );
+        const resolveConfiguredStatId = (label: string): string | null => {
+          const normalizedLabel = compactAwakenLabel(label);
           if (!normalizedLabel) {
             return null;
           }
 
           let best: { statId: string; score: number } | null = null;
-          for (const criterion of configuredCriteria) {
-            const stat = AWAKEN_STAT_BY_ID[criterion.statId];
-            if (!stat) continue;
 
+          for (const { statId, stat } of configuredStats) {
             for (const name of stat.ocrNames) {
-              const candidate = normalizeAwakenResultLabel(name).replace(
-                /\s+/g,
-                "",
-              );
-              if (!candidate) continue;
-
-              let score = 0;
-              if (normalizedLabel === candidate) {
-                score = 1;
-              } else if (normalizedLabel.includes(candidate)) {
-                score = candidate.length / normalizedLabel.length;
-              } else {
-                const dist = levenshtein(normalizedLabel, candidate);
-                score =
-                  1 - dist / Math.max(normalizedLabel.length, candidate.length);
+              const normalizedName = compactAwakenLabel(name);
+              if (!normalizedName) {
+                continue;
               }
 
-              if (!best || score > best.score) {
-                best = { statId: criterion.statId, score };
+              let score = -1;
+              if (stat.exactMatch) {
+                if (normalizedLabel === normalizedName) {
+                  score = 10;
+                }
+              } else if (normalizedLabel === normalizedName) {
+                score = 9;
+              } else if (normalizedLabel.includes(normalizedName)) {
+                score = 7 + normalizedName.length / 100;
+              } else if (
+                normalizedName.includes(normalizedLabel) &&
+                normalizedLabel.length >= 3
+              ) {
+                score = 5;
+              }
+
+              if (score > -1 && (!best || score > best.score)) {
+                best = { statId, score };
               }
             }
           }
 
-          return best && best.score >= 0.58 ? best.statId : null;
+          return best?.statId ?? null;
         };
 
-        const parsePanelResult = (panelText: string): DetectedStat | null => {
-          const normalized = panelText.replace(/\s+/g, " ").trim();
-          if (!normalized) {
+        const parseOcrNumericValue = (raw: string): number | null => {
+          const cleaned = raw.replace(/[+%\s]/g, "").trim();
+          if (!cleaned) {
             return null;
           }
-
-          const valueMatch = normalized.match(/([+\-]?\d+(?:\.\d+)?)(%?)/);
-          if (!valueMatch) {
-            return null;
-          }
-          const value = Number.parseFloat(valueMatch[1]);
-          if (!Number.isFinite(value) || value < 0) {
-            return null;
-          }
-
-          const labelPart = normalized
-            .slice(0, Math.max(0, valueMatch.index ?? 0))
-            .replace(/[+#]+$/g, "")
-            .trim();
-          const statId = findBestConfiguredStatId(labelPart || normalized);
-          if (!statId) {
-            return null;
-          }
-
-          return { statId, value };
+          const parsed = Number.parseFloat(cleaned);
+          return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
         };
 
-        const stat1Parsed = parsePanelResult(stat1OcrText);
-        const stat2Parsed = parsePanelResult(stat2OcrText);
-        if (stat1Parsed) {
-          detected.push(stat1Parsed);
-        }
-        if (stat2Parsed) {
-          detected.push(stat2Parsed);
-        }
+        const extractDetectedStatsFromPanel = (
+          panelText: string,
+        ): DetectedStat[] => {
+          const panelHits: DetectedStat[] = [];
+          const seen = new Set<string>();
+          const normalizedText = panelText.replace(/\r/g, "").trim();
+          if (!normalizedText) {
+            return panelHits;
+          }
 
-        const fallbackPanelTexts: string[] = [];
-        if (!stat1Parsed) {
-          fallbackPanelTexts.push(stat1OcrText);
-        }
-        if (!stat2Parsed) {
-          fallbackPanelTexts.push(stat2OcrText);
-        }
+          const parseFromChunk = (chunk: string) => {
+            const patterns = [
+              /([A-Za-z][A-Za-z .%]{0,48}?)\s*[+#]\s*(\d+(?:\.\d+)?)(%?)/gi,
+              /([A-Za-z][A-Za-z .%]{0,48}?)\s+(\d+(?:\.\d+)?)\s*(%)/gi,
+            ];
 
-        const panelCombinedText = fallbackPanelTexts.join("\n");
-        const pattern =
-          /([A-Za-z][A-Za-z ]{0,40}?)\s*[+#]\s*(\d+(?:\.\d+)?)(%?)/gi;
-        for (const match of panelCombinedText.matchAll(pattern)) {
-          const detectedLabel = match[1] ?? "";
-          const numStr = match[2] ?? "";
-          const statId = targetStatIdByNormalizedLabel.get(
-            normalizeStatName(detectedLabel),
-          );
-          if (!statId) continue;
+            for (const pattern of patterns) {
+              pattern.lastIndex = 0;
+              for (const match of chunk.matchAll(pattern)) {
+                const label = (match[1] ?? "").trim();
+                const numberToken = (match[2] ?? "").trim();
+                const value = parseOcrNumericValue(numberToken);
+                if (value === null) {
+                  continue;
+                }
 
-          const value = Number.parseFloat(numStr);
-          if (!Number.isFinite(value) || value <= 0) continue;
-          detected.push({ statId, value });
-        }
+                const statId = resolveConfiguredStatId(label);
+                if (!statId) {
+                  continue;
+                }
+
+                const key = `${statId}:${value}`;
+                if (seen.has(key)) {
+                  continue;
+                }
+                seen.add(key);
+                panelHits.push({ statId, value });
+              }
+            }
+          };
+
+          const lines = normalizedText
+            .split(/\n+/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+
+          for (const line of lines) {
+            parseFromChunk(line);
+          }
+
+          if (panelHits.length === 0) {
+            parseFromChunk(normalizedText.replace(/\s+/g, " "));
+          }
+
+          return panelHits;
+        };
+
+        detected.push(...extractDetectedStatsFromPanel(stat1OcrText));
+        detected.push(...extractDetectedStatsFromPanel(stat2OcrText));
 
         const occurrencesByStat = new Map<string, number[]>();
         for (const entry of detected) {
@@ -6410,8 +7083,8 @@ function MapperApp() {
           let observedExpr = `${observed}`;
 
           if (singleSectionMode && occurrences.length >= 2) {
-            observed = occurrences[0] + occurrences[1];
-            observedExpr = `${occurrences[0]}+${occurrences[1]}=${observed}`;
+            observed = occurrences.reduce((total, value) => total + value, 0);
+            observedExpr = `${occurrences.join("+")}=${observed}`;
           }
 
           const cmp =
@@ -6434,20 +7107,35 @@ function MapperApp() {
         }
 
         if (buttonTemplates.length > 0 && buttonMatch) {
-          clickAwakenButtonFromSnapshot(snapshot, buttonMatch, "reroll");
-          // After the initial cycle, treat either button image as valid reappearance.
-          expectedReappearTemplate = null;
+          await pause(280);
+          await clickAwakenButtonFromSnapshot(
+            settledSnapshot,
+            buttonMatch,
+            "reroll",
+          );
+          nextOcrAllowedAt = Date.now() + OCR_RETRY_COOLDOWN_MS;
         }
 
-        await new Promise((r) => setTimeout(r, 200));
+        await pause(260);
       }
 
       if (autoAwakenRunningRef.current) {
         autoAwakenRunningRef.current = false;
         setAutoAwakenRunning(false);
       }
+
+      if (autoAwakenTemporaryShapeClearTimerRef.current !== null) {
+        window.clearTimeout(autoAwakenTemporaryShapeClearTimerRef.current);
+        autoAwakenTemporaryShapeClearTimerRef.current = null;
+      }
+      setAutoAwakenTemporaryShape(null);
     },
-    [captureGameplayScreenshot, ensureAwakenOcrWorker],
+    [
+      canUseAutoAwaken,
+      captureGameplayScreenshot,
+      ensureAwakenOcrWorker,
+      refreshAccessControl,
+    ],
   );
 
   // Cleanup awaken worker on unmount
@@ -11385,8 +12073,8 @@ function MapperApp() {
           <ShapeOverlay
             overlayVisible={overlayVisible}
             dialogVisible={dialogVisible}
-            shapesVisible={shapesVisible}
-            shapes={shapes}
+            shapesVisible={shapesVisible || autoAwakenTemporaryShape !== null}
+            shapes={visibleShapes}
             settings={settings}
             hasClipboardShapes={copiedShapes.length > 0}
             selectedIds={selectedIds}
@@ -11477,18 +12165,10 @@ function MapperApp() {
             canManageAdmins={accessControl.canManageAdmins}
             canGenerateTokens={accessControl.canGenerateTokens}
             hasToolAccess={accessControl.hasToolAccess}
-            whitelisted={accessControl.whitelisted}
             accessReason={accessControl.reason}
             tokenExpiresAtIso={accessControl.tokenExpiresAtIso}
             accessLastCheckedAtIso={accessLastCheckedAtIso}
             accessSource={accessControl.accessSource}
-            onAdminUpsertAccess={handleAdminUpsertAccess}
-            onSuperAdminSetRole={handleSuperAdminSetRole}
-            onListWhitelistUsers={
-              handleListWhitelistUsers as () => Promise<WhitelistUserRecord[]>
-            }
-            onUpsertWhitelistUser={handleUpsertWhitelistUser}
-            onDeleteWhitelistUser={handleDeleteWhitelistUser}
             onGenerateSubscriptionToken={handleGenerateSubscriptionToken}
             onListSubscriptionTokens={handleListSubscriptionTokens}
             onRevokeSubscriptionToken={handleRevokeSubscriptionToken}

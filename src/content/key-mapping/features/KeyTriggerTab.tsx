@@ -719,16 +719,10 @@ export const KeyTriggerTab = ({
       repeatCount: 2,
       triggerKey: "",
       executionScope: "all",
-      specificTargetTabIds:
-        availableTargetTabs[0]?.id !== undefined
-          ? [availableTargetTabs[0].id]
-          : [],
-      specificTargetTabNames:
-        availableTargetTabs[0]?.name !== undefined
-          ? [availableTargetTabs[0].name]
-          : [],
-      specificTargetTabId: availableTargetTabs[0]?.id ?? null,
-      specificTargetTabName: availableTargetTabs[0]?.name ?? null,
+      specificTargetTabIds: [],
+      specificTargetTabNames: [],
+      specificTargetTabId: null,
+      specificTargetTabName: null,
       delayMode: "sequential",
       actions: [createDefaultAction()],
     });
@@ -993,6 +987,10 @@ export const KeyTriggerTab = ({
             ),
           ),
         );
+        const effectiveSpecificTargetTabIds =
+          executionScope === "specific" ? specificTargetTabIds : [];
+        const effectiveSpecificTargetTabNames =
+          executionScope === "specific" ? specificTargetTabNames : [];
 
         return {
           ...action,
@@ -1003,8 +1001,8 @@ export const KeyTriggerTab = ({
           executionScope,
           currentTabOnly: executionScope === "current",
           otherTabsOnly: executionScope === "other",
-          specificTargetTabIds,
-          specificTargetTabNames,
+          specificTargetTabIds: effectiveSpecificTargetTabIds,
+          specificTargetTabNames: effectiveSpecificTargetTabNames,
           actionTriggerType:
             action.actionTriggerType === "repeat" ? "repeat" : "once",
           actionRepeatCount:
@@ -1030,6 +1028,10 @@ export const KeyTriggerTab = ({
         ),
       ),
     );
+    const effectiveSpecificTargetTabIds =
+      executionScope === "specific" ? specificTargetTabIds : [];
+    const effectiveSpecificTargetTabNames =
+      executionScope === "specific" ? specificTargetTabNames : [];
 
     const nextProfile: KeyTriggerProfile = {
       id: editorDraft.id,
@@ -1045,12 +1047,20 @@ export const KeyTriggerTab = ({
       executionScope,
       currentTabOnly: executionScope === "current",
       otherTabsOnly: executionScope === "other",
-      specificTargetTabIds,
-      specificTargetTabNames,
+      specificTargetTabIds: effectiveSpecificTargetTabIds,
+      specificTargetTabNames: effectiveSpecificTargetTabNames,
       specificTargetTabId:
-        specificTargetTabIds[0] ?? editorDraft.specificTargetTabId ?? null,
+        effectiveSpecificTargetTabIds[0] ??
+        (executionScope === "specific"
+          ? editorDraft.specificTargetTabId
+          : null) ??
+        null,
       specificTargetTabName:
-        specificTargetTabNames[0] ?? editorDraft.specificTargetTabName ?? null,
+        effectiveSpecificTargetTabNames[0] ??
+        (executionScope === "specific"
+          ? editorDraft.specificTargetTabName
+          : null) ??
+        null,
       delayMode: editorDraft.delayMode,
       actions: normalizedActions,
     };

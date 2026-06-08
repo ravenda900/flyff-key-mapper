@@ -251,6 +251,113 @@ const normalizeTabIds = (ids: unknown): number[] =>
     ),
   );
 
+const attachDebugger = (
+  target: chrome.debugger.Debuggee,
+  version = "1.3",
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    chrome.debugger.attach(target, version, () => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve();
+    });
+  });
+
+const detachDebugger = (target: chrome.debugger.Debuggee): Promise<void> =>
+  new Promise((resolve) => {
+    chrome.debugger.detach(target, () => {
+      resolve();
+    });
+  });
+
+const sendDebuggerMouseEvent = (
+  target: chrome.debugger.Debuggee,
+  params: {
+    type: "mouseMoved" | "mousePressed" | "mouseReleased";
+    x: number;
+    y: number;
+    button?: "none" | "left" | "middle" | "right";
+    buttons?: number;
+    clickCount?: number;
+  },
+): Promise<void> =>
+  new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand(
+      target,
+      "Input.dispatchMouseEvent",
+      params,
+      () => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve();
+      },
+    );
+  });
+
+const dispatchNativeMouseClick = async (
+  tabId: number,
+  x: number,
+  y: number,
+  movePath?: Array<{ x: number; y: number }>,
+): Promise<void> => {
+  const target: chrome.debugger.Debuggee = { tabId };
+  await attachDebugger(target);
+  try {
+    const normalizedPath = Array.isArray(movePath)
+      ? movePath.filter(
+          (point): point is { x: number; y: number } =>
+            Number.isFinite(point.x) && Number.isFinite(point.y),
+        )
+      : [];
+
+    for (const point of normalizedPath) {
+      await sendDebuggerMouseEvent(target, {
+        type: "mouseMoved",
+        x: Math.round(point.x),
+        y: Math.round(point.y),
+        button: "none",
+        buttons: 0,
+      });
+    }
+
+    await sendDebuggerMouseEvent(target, {
+      type: "mouseMoved",
+      x: Math.round(x),
+      y: Math.round(y),
+      button: "none",
+      buttons: 0,
+    });
+    await sendDebuggerMouseEvent(target, {
+      type: "mousePressed",
+      x: Math.round(x),
+      y: Math.round(y),
+      button: "left",
+      buttons: 1,
+      clickCount: 1,
+    });
+    await sendDebuggerMouseEvent(target, {
+      type: "mouseReleased",
+      x: Math.round(x),
+      y: Math.round(y),
+      button: "left",
+      buttons: 0,
+      clickCount: 1,
+    });
+  } finally {
+    await detachDebugger(target);
+  }
+};
+
+const probeNativeMouseClickSupport = async (tabId: number): Promise<void> => {
+  const target: chrome.debugger.Debuggee = { tabId };
+  await attachDebugger(target);
+  await detachDebugger(target);
+};
+
 const stopProfileToggle = (profileId: string): boolean => {
   const currentTargets = activeToggleTargets.get(profileId);
   if (!currentTargets || currentTargets.tabIds.length === 0) {
@@ -712,6 +819,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         },
       );
     });
+    return true;
+  }
+
+  if (msg.type === "DISPATCH_NATIVE_MOUSE_CLICK") {
+    const senderTabId =
+      typeof sender?.tab?.id === "number" ? sender.tab.id : null;
+    if (senderTabId === null) {
+      sendResponse({ ok: false, error: "Missing sender tab." });
+      return;
+    }
+
+    const payload = message as {
+      x?: unknown;
+      y?: unknown;
+      movePath?: Array<{ x: number; y: number }>;
+    };
+    const x = Number(payload.x);
+    const y = Number(payload.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      sendResponse({ ok: false, error: "Invalid click coordinates." });
+      return;
+    }
+
+    void dispatchNativeMouseClick(senderTabId, x, y, payload.movePath)
+      .then(() => {
+        sendResponse({ ok: true });
+      })
+      .catch((error) => {
+        const errorMessage =
+          error instanceof Error && error.message
+            ? error.message
+            : "Native click failed.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+
+    return true;
+  }
+
+  if (msg.type === "NATIVE_CLICK_HEALTHCHECK") {
+    const senderTabId =
+      typeof sender?.tab?.id === "number" ? sender.tab.id : null;
+    if (senderTabId === null) {
+      sendResponse({ ok: false, error: "Missing sender tab." });
+      return;
+    }
+
+    void probeNativeMouseClickSupport(senderTabId)
+      .then(() => {
+        sendResponse({ ok: true });
+      })
+      .catch((error) => {
+        const errorMessage =
+          error instanceof Error && error.message
+            ? error.message
+            : "Native click is unavailable for this tab.";
+        sendResponse({ ok: false, error: errorMessage });
+      });
+
     return true;
   }
 

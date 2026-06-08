@@ -77,18 +77,18 @@ const StatCriteriaSection = ({
   onChange: (section: Section, criteria: AwakenStatCriterion[]) => void;
   otherCriteria: AwakenStatCriterion[];
 }) => {
-  // stat IDs already used in THIS section (for deduplication within section)
-  const usedInSection = useMemo(
-    () => new Set(criteria.map((c) => c.statId)),
-    [criteria],
+  // stat IDs used across both sections
+  const usedAcrossSections = useMemo(
+    () => new Set([...criteria, ...otherCriteria].map((c) => c.statId)),
+    [criteria, otherCriteria],
   );
 
   const availableStats = useMemo(
     () =>
       AWAKEN_STATS.filter(
-        (s: (typeof AWAKEN_STATS)[0]) => !usedInSection.has(s.id),
+        (s: (typeof AWAKEN_STATS)[0]) => !usedAcrossSections.has(s.id),
       ),
-    [usedInSection],
+    [usedAcrossSections],
   );
 
   const addRow = useCallback(() => {
@@ -159,7 +159,7 @@ const StatCriteriaSection = ({
           // kept/changed)
           const statOptions = AWAKEN_STATS.filter(
             (s: (typeof AWAKEN_STATS)[0]) =>
-              s.id === row.statId || !usedInSection.has(s.id),
+              s.id === row.statId || !usedAcrossSections.has(s.id),
           ).map((s: (typeof AWAKEN_STATS)[0]) => ({
             value: s.id,
             label: s.label,

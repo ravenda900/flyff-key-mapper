@@ -1,0 +1,162 @@
+[
+  {
+    "id": "STR",
+    "label": "STR (+)",
+    "ocrNames": ["STR"],
+    "isPercent": false,
+    "valuesGoddess": [1, 2, 3, 4],
+    "valuesDemon": [0, 1, 2, 3, 4, 5]
+  },
+  {
+    "id": "DEX",
+    "label": "DEX (+)",
+    "ocrNames": ["DEX"],
+    "isPercent": false,
+    "valuesGoddess": [1, 2, 3, 4],
+    "valuesDemon": [0, 1, 2, 3, 4, 5]
+  },
+  {
+    "id": "INT",
+    "label": "INT (+)",
+    "ocrNames": ["INT"],
+    "isPercent": false,
+    "valuesGoddess": [1, 2, 3, 4],
+    "valuesDemon": [0, 1, 2, 3, 4, 5]
+  },
+  {
+    "id": "STA",
+    "label": "STA (+)",
+    "ocrNames": ["STA"],
+    "isPercent": false,
+    "valuesGoddess": [1, 2, 3, 4],
+    "valuesDemon": [0, 1, 2, 3, 4, 5]
+  },
+  {
+    "id": "CriticalChance",
+    "label": "Critical Chance (%)",
+    "ocrNames": ["Critical Chance %", "Critical Chance"],
+    "isPercent": true,
+    "valuesGoddess": [0.5, 1, 1.5, 2],
+    "valuesDemon": [0, 0.5, 1, 1.5, 2, 2.5]
+  },
+  {
+    "id": "CriticalDamage",
+    "label": "Critical Damage (%)",
+    "ocrNames": ["Critical Damage %", "Critical Damage"],
+    "isPercent": true,
+    "valuesGoddess": [0.5, 1, 1.5, 2],
+    "valuesDemon": [0, 0.5, 1, 1.5, 2, 2.5]
+  },
+  {
+    "id": "Speed",
+    "label": "Speed (%)",
+    "ocrNames": ["Speed %", "Speed"],
+    "isPercent": true,
+    "valuesGoddess": [1, 2],
+    "valuesDemon": [0, 1, 2, 3]
+  },
+  {
+    "id": "AttackSpeed",
+    "label": "Attack Speed (%)",
+    "ocrNames": ["Attack Speed %", "Attack Speed"],
+    "isPercent": true,
+    "valuesGoddess": [1, 2],
+    "valuesDemon": [0, 1, 2, 3]
+  },
+  {
+    "id": "CastingSpeed",
+    "label": "Casting Speed (%)",
+    "ocrNames": ["Casting Speed %", "Casting Speed"],
+    "isPercent": true,
+    "valuesGoddess": [1, 2],
+    "valuesDemon": [0, 1, 2, 3]
+  },
+  {
+    "id": "Defense",
+    "label": "Defense (+)",
+    "ocrNames": ["Defense"],
+    "isPercent": false,
+    "valuesGoddess": [2, 6, 10, 14],
+    "valuesDemon": [0, 2, 6, 10, 14, 18]
+  },
+  {
+    "id": "MagicDefense",
+    "label": "Magic Defense (+)",
+    "ocrNames": ["Magic Defense"],
+    "isPercent": false,
+    "valuesGoddess": [2, 6, 10, 14],
+    "valuesDemon": [0, 2, 6, 10, 14, 18]
+  },
+  {
+    "id": "Attack",
+    "label": "Attack (+)",
+    "ocrNames": ["Attack"],
+    "isPercent": false,
+    "valuesGoddess": [5, 9, 13, 17],
+    "valuesDemon": [0, 5, 9, 13, 17, 21]
+  },
+  {
+    "id": "HP",
+    "label": "HP (+)",
+    "ocrNames": ["HP"],
+    "isPercent": false,
+    "valuesGoddess": [12, 20, 28, 37],
+    "valuesDemon": [0, 12, 20, 28, 37, 46]
+  },
+  {
+    "id": "MP",
+    "label": "MP (+)",
+    "ocrNames": ["MP"],
+    "isPercent": false,
+    "valuesGoddess": [12, 20, 28, 37],
+    "valuesDemon": [0, 12, 20, 28, 37, 46]
+  },
+  {
+    "id": "FP",
+    "label": "FP (+)",
+    "ocrNames": ["FP"],
+    "isPercent": false,
+    "valuesGoddess": [12, 20, 28, 37],
+    "valuesDemon": [0, 12, 20, 28, 37, 46]
+  },
+  {
+    "id": "Parry",
+    "label": "Parry (%)",
+    "ocrNames": ["Parry %", "Parry"],
+    "isPercent": true,
+    "valuesGoddess": [1, 2],
+    "valuesDemon": [0, 1, 2, 3]
+  },
+  {
+    "id": "MeleeBlock",
+    "label": "Melee Block (%)",
+    "ocrNames": ["Melee Block %", "Melee Block"],
+    "isPercent": true,
+    "valuesGoddess": [1, 2],
+    "valuesDemon": [0, 1, 2, 3]
+  },
+  {
+    "id": "RangedBlock",
+    "label": "Ranged Block (%)",
+    "ocrNames": ["Ranged Block %", "Ranged Block"],
+    "isPercent": true,
+    "valuesGoddess": [1, 2],
+    "valuesDemon": [0, 1, 2, 3]
+  },
+  {
+    "id": "PvEDamage",
+    "label": "PvE Damage (+)",
+    "ocrNames": ["PvE Damage"],
+    "isPercent": false,
+    "valuesGoddess": [10, 15, 20, 25],
+    "valuesDemon": [0, 10, 15, 20, 25, 30]
+  },
+  {
+    "id": "PvEDmgResist",
+    "label": "PvE Dmg Resist (+)",
+    "ocrNames": ["PvE Dmg Resist", "PvE Damage Resist"],
+    "isPercent": false,
+    "valuesGoddess": [10, 15, 20, 25],
+    "valuesDemon": [0, 10, 15, 20, 25, 30]
+  }
+]

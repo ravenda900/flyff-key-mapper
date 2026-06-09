@@ -306,13 +306,25 @@ const createKeyTriggerProfileIdentifier = () =>
 const createKeyTriggerActionId = () =>
   `kt-action-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const normalizeSpecificTabId = (value: unknown): number | null => {
+  if (!Number.isInteger(value) || Number(value) <= 0) {
+    return null;
+  }
+
+  return Number(value);
+};
+
 const normalizeSpecificTabIds = (value: unknown): number[] => {
   if (!Array.isArray(value)) {
     return [];
   }
 
   return Array.from(
-    new Set(value.filter((entry): entry is number => Number.isFinite(entry))),
+    new Set(
+      value
+        .map((entry) => normalizeSpecificTabId(entry))
+        .filter((entry): entry is number => entry !== null),
+    ),
   );
 };
 
@@ -328,7 +340,7 @@ const normalizeSpecificTabNames = (value: unknown): string[] => {
           typeof entry === "string" && entry.trim().length > 0,
       ),
     ),
-  );
+  ).map((entry) => entry.trim());
 };
 
 const normalizeKeyTriggerAction = (value: unknown): KeyTriggerAction | null => {
@@ -425,11 +437,13 @@ const normalizeKeyTriggerProfile = (
   const specificTargetTabNames = normalizeSpecificTabNames(
     (parsed as { specificTargetTabNames?: unknown }).specificTargetTabNames,
   );
-  const legacySpecificTargetTabId = Number(parsed.specificTargetTabId);
+  const legacySpecificTargetTabId = normalizeSpecificTabId(
+    parsed.specificTargetTabId,
+  );
   const resolvedSpecificTargetTabIds =
     specificTargetTabIds.length > 0
       ? specificTargetTabIds
-      : Number.isFinite(legacySpecificTargetTabId)
+      : legacySpecificTargetTabId !== null
         ? [legacySpecificTargetTabId]
         : [];
   const resolvedSpecificTargetTabNames =
@@ -466,7 +480,8 @@ const normalizeKeyTriggerProfile = (
       parsed.executionScope === "other" ||
       parsed.executionScope === "specific"
         ? parsed.executionScope
-        : resolvedSpecificTargetTabIds.length > 0
+        : resolvedSpecificTargetTabIds.length > 0 ||
+            resolvedSpecificTargetTabNames.length > 0
           ? "specific"
           : parsed.otherTabsOnly === true
             ? "other"
@@ -479,6 +494,12 @@ const normalizeKeyTriggerProfile = (
     specificTargetTabName: resolvedSpecificTargetTabNames[0] ?? null,
     delayMode:
       parsed.delayMode === "synchronous" ? "synchronous" : "sequential",
+    lockToTab: parsed.lockToTab === true,
+    toggleOwnerTabId:
+      typeof parsed.toggleOwnerTabId === "number" &&
+      Number.isFinite(parsed.toggleOwnerTabId)
+        ? parsed.toggleOwnerTabId
+        : undefined,
     actions,
   };
 };

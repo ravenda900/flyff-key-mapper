@@ -15,6 +15,11 @@ Auto-Awaken Start-detection calibration and runtime load tuning release.
 - Updated Start-button matching tolerance/threshold passes and scale handling for more resilient template hits.
 - Updated screenshot-matching resolution cap for Auto-Awaken region snapshots to reduce heavy frame processing while preserving detection quality.
 - Updated wait-loop polling cadence for idle/disappear/reappear phases to lower CPU pressure during reroll cycles.
+- Updated auto-stop activity tracking to count only trusted real user input, so synthetic automation events no longer keep AFK countdown alive.
+- Updated Settings reset behavior to preserve Subscription Access Token and Mobile Push Notification settings; these are now cleared only by clean-slate factory reset.
+- Updated dialog tab controls so Characters/Tabs selection is available in both Key Mapper and Key Trigger panes.
+- Moved Add Key Map, Hide Shapes, and Opacity 0/100 shortcuts into the Settings pane.
+- Updated Key Mapper shape shortcut input background styling with stronger transparency so rendered content behind the input remains more visible.
 
 ### Fixed
 
@@ -23,6 +28,8 @@ Auto-Awaken Start-detection calibration and runtime load tuning release.
 - Fixed noisy full-region OCR logging impact by making full-region OCR logs opt-in and throttled.
 - Fixed running toggle-tab selection sync so unchecking a character/tab immediately stops toggle dispatch for that tab.
 - Fixed re-check behavior for active toggles so checking a character/tab immediately resumes toggle dispatch without requiring a manual retrigger.
+- Fixed Key Trigger hold-trigger profiles randomly stopping during long key holds by keeping hold-timer state stable across effect re-renders.
+- Fixed Key Trigger `Lock to this tab` persistence so profile editor state now saves/loads `lockToTab` and owner-tab fields correctly.
 
 ### Packaging
 

@@ -436,6 +436,7 @@ export const MapperDialog = ({
     canGenerateTokens ??
     (effectiveRole === "admin" || effectiveRole === "superadmin");
   const canManageAccessEffective = canManageAccess ?? canManageAdminsEffective;
+  const canIssueUnlimitedPlan = effectiveRole === "superadmin";
 
   const isLightTheme = resolvedThemePreset.appearance === "light";
 
@@ -1057,6 +1058,12 @@ export const MapperDialog = ({
     setShapeOpacityDraft(settings.shapeOpacity ?? 1);
   }, [settings.shapeOpacity]);
 
+  useEffect(() => {
+    if (!canIssueUnlimitedPlan && tokenIssuePlan === "unlimited") {
+      setTokenIssuePlan("elite");
+    }
+  }, [canIssueUnlimitedPlan, tokenIssuePlan]);
+
   const formatTokenDate = (value: string | null) => {
     if (!value) {
       return "-";
@@ -1383,7 +1390,8 @@ export const MapperDialog = ({
               color: token.colorText,
             }}
           />
-          {activeDialogPane === "key-trigger" && (
+          {(activeDialogPane === "key-trigger" ||
+            activeDialogPane === "key-mapper") && (
             <div
               style={{
                 padding: "8px 16px 8px 16px",
@@ -1414,7 +1422,8 @@ export const MapperDialog = ({
               >
                 <Typography.Text type="secondary">
                   Selection updates apply immediately while running. Checked
-                  tabs are included, unchecked tabs are excluded.
+                  tabs are included, unchecked tabs are excluded for Key Trigger
+                  and cross-tab sync targets.
                 </Typography.Text>
                 {keyTriggerCharacters.length === 0 ? (
                   <Empty
@@ -2266,136 +2275,6 @@ export const MapperDialog = ({
                         </Typography.Text>
                       </Space>
                     </Form.Item>
-
-                    <Divider className="!fm-my-2" />
-                    <Form.Item label="Add Key Map Shortcut">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <div
-                          className={`fm-shortcut-input-shell${settings.addKeyMapShortcut ? " fm-shortcut-input-has-value" : ""}`}
-                        >
-                          <Input
-                            className="fm-global-shortcut-input"
-                            value={settings.addKeyMapShortcut}
-                            placeholder="Press keys"
-                            disabled={isLocked}
-                            onKeyDown={(event) => {
-                              captureGlobalShortcut(event, "addKeyMapShortcut");
-                            }}
-                          />
-                          {settings.addKeyMapShortcut && (
-                            <span
-                              className="fm-shortcut-input-overlay"
-                              aria-hidden="true"
-                            >
-                              <ShortcutKeys
-                                combo={settings.addKeyMapShortcut}
-                              />
-                            </span>
-                          )}
-                        </div>
-                        <Typography.Text type="secondary">
-                          Shortcut used by the Add Key Map action while in Edit
-                          Mode. Default: Alt+Shift+A.
-                        </Typography.Text>
-                        {globalShortcutErrors.addKeyMapShortcut && (
-                          <Typography.Text type="danger">
-                            {globalShortcutErrors.addKeyMapShortcut}
-                          </Typography.Text>
-                        )}
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Hide Shapes Shortcut">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <div
-                          className={`fm-shortcut-input-shell${settings.toggleShapesShortcut ? " fm-shortcut-input-has-value" : ""}`}
-                        >
-                          <Input
-                            className="fm-global-shortcut-input"
-                            value={settings.toggleShapesShortcut}
-                            placeholder="Press keys"
-                            disabled={isLocked}
-                            onKeyDown={(event) => {
-                              captureGlobalShortcut(
-                                event,
-                                "toggleShapesShortcut",
-                              );
-                            }}
-                          />
-                          {settings.toggleShapesShortcut && (
-                            <span
-                              className="fm-shortcut-input-overlay"
-                              aria-hidden="true"
-                            >
-                              <ShortcutKeys
-                                combo={settings.toggleShapesShortcut}
-                              />
-                            </span>
-                          )}
-                        </div>
-                        <Typography.Text type="secondary">
-                          Shows or hides visual shape overlays without modifying
-                          profile mappings.
-                        </Typography.Text>
-                        {globalShortcutErrors.toggleShapesShortcut && (
-                          <Typography.Text type="danger">
-                            {globalShortcutErrors.toggleShapesShortcut}
-                          </Typography.Text>
-                        )}
-                      </Space>
-                    </Form.Item>
-
-                    <Form.Item label="Toggle Opacity 0/100 Shortcut">
-                      <Space
-                        direction="vertical"
-                        size={4}
-                        className="fm-w-full"
-                      >
-                        <div
-                          className={`fm-shortcut-input-shell${settings.setZeroOpacityShortcut ? " fm-shortcut-input-has-value" : ""}`}
-                        >
-                          <Input
-                            className="fm-global-shortcut-input"
-                            value={settings.setZeroOpacityShortcut}
-                            placeholder="Press keys"
-                            disabled={isLocked}
-                            onKeyDown={(event) => {
-                              captureGlobalShortcut(
-                                event,
-                                "setZeroOpacityShortcut",
-                              );
-                            }}
-                          />
-                          {settings.setZeroOpacityShortcut && (
-                            <span
-                              className="fm-shortcut-input-overlay"
-                              aria-hidden="true"
-                            >
-                              <ShortcutKeys
-                                combo={settings.setZeroOpacityShortcut}
-                              />
-                            </span>
-                          )}
-                        </div>
-                        <Typography.Text type="secondary">
-                          Toggles all shape opacity values in the active profile
-                          between 0% and 100%.
-                        </Typography.Text>
-                        {globalShortcutErrors.setZeroOpacityShortcut && (
-                          <Typography.Text type="danger">
-                            {globalShortcutErrors.setZeroOpacityShortcut}
-                          </Typography.Text>
-                        )}
-                      </Space>
-                    </Form.Item>
                   </Form>
                   {dialogFooter}
                 </div>
@@ -2738,6 +2617,10 @@ export const MapperDialog = ({
                             size={6}
                             className="fm-w-full"
                           >
+                            <Typography.Text type="warning">
+                              Preserved by Reset Settings Defaults. Cleared only
+                              by Reset Tool to Clean Slate.
+                            </Typography.Text>
                             <Input
                               value={settings.subscriptionAccessToken}
                               placeholder="Enter subscription token"
@@ -2916,6 +2799,138 @@ export const MapperDialog = ({
                           </Space>
                         </Form.Item>
 
+                        <Form.Item label="Add Key Map Shortcut">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <div
+                              className={`fm-shortcut-input-shell${settings.addKeyMapShortcut ? " fm-shortcut-input-has-value" : ""}`}
+                            >
+                              <Input
+                                className="fm-global-shortcut-input"
+                                value={settings.addKeyMapShortcut}
+                                placeholder="Press keys"
+                                disabled={isLocked}
+                                onKeyDown={(event) => {
+                                  captureGlobalShortcut(
+                                    event,
+                                    "addKeyMapShortcut",
+                                  );
+                                }}
+                              />
+                              {settings.addKeyMapShortcut && (
+                                <span
+                                  className="fm-shortcut-input-overlay"
+                                  aria-hidden="true"
+                                >
+                                  <ShortcutKeys
+                                    combo={settings.addKeyMapShortcut}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <Typography.Text type="secondary">
+                              Shortcut used by the Add Key Map action while in
+                              Edit Mode. Default: Alt+Shift+A.
+                            </Typography.Text>
+                            {globalShortcutErrors.addKeyMapShortcut && (
+                              <Typography.Text type="danger">
+                                {globalShortcutErrors.addKeyMapShortcut}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="Hide Shapes Shortcut">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <div
+                              className={`fm-shortcut-input-shell${settings.toggleShapesShortcut ? " fm-shortcut-input-has-value" : ""}`}
+                            >
+                              <Input
+                                className="fm-global-shortcut-input"
+                                value={settings.toggleShapesShortcut}
+                                placeholder="Press keys"
+                                disabled={isLocked}
+                                onKeyDown={(event) => {
+                                  captureGlobalShortcut(
+                                    event,
+                                    "toggleShapesShortcut",
+                                  );
+                                }}
+                              />
+                              {settings.toggleShapesShortcut && (
+                                <span
+                                  className="fm-shortcut-input-overlay"
+                                  aria-hidden="true"
+                                >
+                                  <ShortcutKeys
+                                    combo={settings.toggleShapesShortcut}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <Typography.Text type="secondary">
+                              Shows or hides visual shape overlays without
+                              modifying profile mappings.
+                            </Typography.Text>
+                            {globalShortcutErrors.toggleShapesShortcut && (
+                              <Typography.Text type="danger">
+                                {globalShortcutErrors.toggleShapesShortcut}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="Toggle Opacity 0/100 Shortcut">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <div
+                              className={`fm-shortcut-input-shell${settings.setZeroOpacityShortcut ? " fm-shortcut-input-has-value" : ""}`}
+                            >
+                              <Input
+                                className="fm-global-shortcut-input"
+                                value={settings.setZeroOpacityShortcut}
+                                placeholder="Press keys"
+                                disabled={isLocked}
+                                onKeyDown={(event) => {
+                                  captureGlobalShortcut(
+                                    event,
+                                    "setZeroOpacityShortcut",
+                                  );
+                                }}
+                              />
+                              {settings.setZeroOpacityShortcut && (
+                                <span
+                                  className="fm-shortcut-input-overlay"
+                                  aria-hidden="true"
+                                >
+                                  <ShortcutKeys
+                                    combo={settings.setZeroOpacityShortcut}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <Typography.Text type="secondary">
+                              Toggles all shape opacity values in the active
+                              profile between 0% and 100%.
+                            </Typography.Text>
+                            {globalShortcutErrors.setZeroOpacityShortcut && (
+                              <Typography.Text type="danger">
+                                {globalShortcutErrors.setZeroOpacityShortcut}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        </Form.Item>
+
                         <Form.Item label="Auto-Stop (seconds)">
                           <Space
                             direction="vertical"
@@ -3008,6 +3023,10 @@ export const MapperDialog = ({
                             size={8}
                             className="fm-w-full"
                           >
+                            <Typography.Text type="warning">
+                              Preserved by Reset Settings Defaults. Cleared only
+                              by Reset Tool to Clean Slate.
+                            </Typography.Text>
                             <Switch
                               checked={settings.mobilePushEnabled}
                               onChange={(checked) => {
@@ -3800,8 +3819,9 @@ export const MapperDialog = ({
                             <Typography.Text type="secondary">
                               Subscription-token access is role based. The admin
                               panel can issue tokens for USER and ADMIN roles
-                              only. SUPERADMIN must be managed through auth
-                              claims tooling.
+                              only. Unlimited plan tokens are restricted to
+                              SUPERADMIN. SUPERADMIN must be managed through
+                              auth claims tooling.
                             </Typography.Text>
                           </Form.Item>
                         )}
@@ -3836,14 +3856,19 @@ export const MapperDialog = ({
                                   { value: "free", label: "Free (7 days)" },
                                   { value: "pro", label: "Pro (30 days)" },
                                   { value: "elite", label: "Elite (90 days)" },
-                                  {
-                                    value: "unlimited",
-                                    label: "Unlimited (No expiry)",
-                                  },
+                                  ...(canIssueUnlimitedPlan
+                                    ? [
+                                        {
+                                          value: "unlimited",
+                                          label: "Unlimited (No expiry)",
+                                        },
+                                      ]
+                                    : []),
                                 ]}
                                 onChange={(value) => {
                                   setTokenIssuePlan(
-                                    value === "unlimited"
+                                    value === "unlimited" &&
+                                      canIssueUnlimitedPlan
                                       ? "unlimited"
                                       : value === "elite"
                                         ? "elite"

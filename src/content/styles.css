@@ -500,7 +500,7 @@ body {
   padding: 1px 4px;
   font-size: 9px;
   text-align: center;
-  background: color-mix(in srgb, var(--fm-theme-primary-bg) 72%, var(--fm-theme-bg-container));
+  background: color-mix(in srgb, var(--fm-theme-primary-bg) 24%, transparent);
   color: var(--fm-theme-text);
   line-height: 1.1;
 }
@@ -515,7 +515,7 @@ body {
 
 .fm-shape-selected .fm-shape-shortcut-input {
   border-color: color-mix(in srgb, var(--fm-theme-warning) 56%, var(--fm-theme-border));
-  background: color-mix(in srgb, var(--fm-theme-warning-bg) 76%, var(--fm-theme-bg-container));
+  background: color-mix(in srgb, var(--fm-theme-warning-bg) 28%, transparent);
 }
 
 .fm-shortcut-input-shell {
@@ -693,12 +693,6 @@ body {
   pointer-events: auto;
 }
 
-.fm-shape-context-label {
-  color: var(--fm-theme-text-secondary, rgba(0, 0, 0, 0.62));
-  font-size: 10px;
-  line-height: 1.2;
-}
-
 .fm-shape-context-input {
   width: 100%;
   border: 1px solid var(--fm-theme-border, #d9d9d9);
@@ -787,10 +781,6 @@ body {
   background-image: none;
   color: var(--fm-theme-text, #e5e7eb);
   box-shadow: 0 10px 28px color-mix(in srgb, var(--fm-theme-text, #e5e7eb) 24%, transparent);
-}
-
-.fm-dark .fm-shape-context-label {
-  color: var(--fm-theme-text-secondary, #9ca3af);
 }
 
 .fm-dark .fm-shape-context-input {
@@ -2655,9 +2645,12 @@ body {
 .fm-dark-theme .ant-btn:focus,
 .fm-dark .ant-btn:hover,
 .fm-dark .ant-btn:focus {
-  background: var(--fm-theme-bg-elevated) !important;
-  border-color: var(--fm-theme-primary) !important;
+  background: var(--fm-theme-pri) !important;
   color: var(--fm-theme-text) !important;
+}
+
+.ant-input-affix-wrapper {
+  z-index: 1 !important;
 }
 
 .fm-dark .fm-dialog .ant-input,
@@ -2734,7 +2727,6 @@ body {
 .fm-dark-theme .fm-confirm-modal .ant-input-affix-wrapper-focused,
 .fm-dark-theme .fm-confirm-modal .ant-select-focused .ant-select-selector {
   border-color: var(--fm-theme-primary) !important;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fm-theme-primary) 22%, transparent) !important;
 }
 
 .fm-dark .fm-dialog .ant-select-arrow,

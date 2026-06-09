@@ -157,6 +157,8 @@ const KEY_TRIGGER_SESSION_SELECTED_TAB_IDS_KEY =
   "flyff-mapper-key-trigger-selected-tabs-session-v1";
 const KEY_TRIGGER_SESSION_SELECTED_TAB_NAMES_KEY =
   "flyff-mapper-key-trigger-selected-tab-names-session-v1";
+const isValidTabId = (value: unknown): value is number =>
+  Number.isInteger(value) && Number(value) > 0;
 
 const loadSessionSelectedKeyTriggerTabIds = (): number[] => {
   if (typeof window === "undefined") {
@@ -176,7 +178,7 @@ const loadSessionSelectedKeyTriggerTabIds = (): number[] => {
       return [];
     }
 
-    return parsed.filter((id): id is number => Number.isFinite(id));
+    return parsed.filter((id): id is number => isValidTabId(id));
   } catch {
     return [];
   }
@@ -190,7 +192,7 @@ const saveSessionSelectedKeyTriggerTabIds = (ids: number[]): void => {
   try {
     window.sessionStorage.setItem(
       KEY_TRIGGER_SESSION_SELECTED_TAB_IDS_KEY,
-      JSON.stringify(ids.filter((id) => Number.isFinite(id))),
+      JSON.stringify(ids.filter((id) => isValidTabId(id))),
     );
   } catch {
     // Ignore session storage write failures.
@@ -1926,10 +1928,11 @@ function MapperApp() {
     const sessionIds = loadSessionSelectedKeyTriggerTabIds();
     const persistedIds = storage.loadKeyTriggerTargetTabIds();
     return Array.from(new Set([...sessionIds, ...persistedIds])).filter((id) =>
-      Number.isFinite(id),
+      isValidTabId(id),
     );
   });
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
+  const currentTabIdRef = useRef<number | null>(null);
   const [currentCharacterName, setCurrentCharacterName] = useState<
     string | null
   >(() => getCharacterNameFromTitle(document.title));
@@ -1982,6 +1985,29 @@ function MapperApp() {
   const shapeRedoStackRef = useRef<ShapeMapping[][]>([]);
   const rotateStartShapesRef = useRef<ShapeMapping[] | null>(null);
   const activeKeyTriggerTimersRef = useRef<Map<string, number[]>>(new Map());
+  const activeKeyTriggerToggleConfigsRef = useRef<
+    Map<
+      string,
+      {
+        actions: KeyTriggerAction[];
+        chainDepth?: number;
+        delayMode?: "sequential" | "synchronous";
+      }
+    >
+  >(new Map());
+  const activeHoldTriggerTimersRef = useRef<
+    Map<
+      string,
+      {
+        timerId: number;
+        keyCode: string;
+        ctrl: boolean;
+        alt: boolean;
+        shift: boolean;
+        meta: boolean;
+      }
+    >
+  >(new Map());
   const lastActivityRef = useRef<number>(Date.now());
   const remoteCursorRef = useRef<HTMLDivElement | null>(null);
   const remoteCursorHideTimerRef = useRef<number | null>(null);
@@ -3161,10 +3187,6 @@ function MapperApp() {
       return;
     }
 
-    if (!isPrimarySyncSourceRef.current) {
-      return;
-    }
-
     storage.saveKeyTriggerTargetTabIds(selectedKeyTriggerTabIds);
 
     if (uniqueSelectedNames.length > 0) {
@@ -3521,11 +3543,9 @@ function MapperApp() {
           }
 
           const tabIdSet = new Set(tabs.map((tab: CharacterTabInfo) => tab.id));
-          const preselected = prev.filter((id) => tabIdSet.has(id));
-          const loadedSelected = loadSessionSelectedKeyTriggerTabIds();
-          const storedSelected = storage.loadKeyTriggerTargetTabIds();
-          const toRestore = loadedSelected.filter((id) => tabIdSet.has(id));
-          const storedRestore = storedSelected.filter((id) => tabIdSet.has(id));
+          const preselected = prev.filter(
+            (id) => isValidTabId(id) && tabIdSet.has(id),
+          );
           const savedNames = new Set([
             ...loadSessionSelectedKeyTriggerTabNames(),
             ...storage.loadKeyTriggerTargetTabNames(),
@@ -3533,15 +3553,17 @@ function MapperApp() {
           const nameMatched = tabs
             .filter((tab: CharacterTabInfo) => savedNames.has(tab.name))
             .map((tab: CharacterTabInfo) => tab.id);
-          const merged = Array.from(
-            new Set([
-              ...preselected,
-              ...toRestore,
-              ...storedRestore,
-              ...nameMatched,
-            ]),
+
+          // Keep current in-memory tab selection authoritative, and only
+          // name-rematch when IDs rotated after reload/reopen.
+          const rematched = Array.from(
+            new Set([...preselected, ...nameMatched]),
           );
-          return merged.length > 0 ? merged : prev;
+          if (rematched.length > 0) {
+            return rematched;
+          }
+
+          return preselected;
         });
       },
     );
@@ -3563,6 +3585,163 @@ function MapperApp() {
     });
     activeKeyTriggerTimersRef.current.clear();
   }, []);
+
+  function startKeyTriggerToggleTimers(
+    profileId: string,
+    actions: KeyTriggerAction[],
+    chainDepth?: number,
+    delayMode?: "sequential" | "synchronous",
+  ) {
+    clearKeyTriggerProfileTimers(profileId);
+
+    const runnableActions = actions
+      .map((action) => ({
+        enabled: action.enabled !== false,
+        key: action.key.trim(),
+        delayMs: Math.max(0, Math.round(action.delayMs || 0)),
+        repeatCount:
+          action.actionTriggerType === "repeat"
+            ? normalizeKeyTriggerActionRepeatCount(action.actionRepeatCount, 2)
+            : 1,
+      }))
+      .filter((action) => action.enabled && action.key.length > 0);
+
+    if (runnableActions.length === 0) {
+      return;
+    }
+
+    const resolvedDelayMode = delayMode ?? "sequential";
+
+    if (resolvedDelayMode === "synchronous") {
+      const timerIds: number[] = [];
+      const groupedByDelay = new Map<
+        number,
+        Array<{ key: string; repeatCount: number }>
+      >();
+
+      runnableActions.forEach((action) => {
+        const existing = groupedByDelay.get(action.delayMs) ?? [];
+        groupedByDelay.set(action.delayMs, [...existing, action]);
+      });
+
+      groupedByDelay.forEach((groupActions, groupDelayMs) => {
+        const repeatIntervalMs = Math.max(120, groupDelayMs || 120);
+
+        const fireGroup = () => {
+          const immediateKeys = groupActions.map((action) => action.key);
+          dispatchKeyTriggerBindingsAtSameTiming(immediateKeys, {
+            sourceProfileId: getOriginalKeyTriggerProfileId(profileId),
+            chainDepth,
+            delayMode: resolvedDelayMode,
+          });
+
+          const maxRepeatCount = Math.max(
+            1,
+            ...groupActions.map((action) => action.repeatCount),
+          );
+          for (
+            let repeatIndex = 1;
+            repeatIndex < maxRepeatCount;
+            repeatIndex += 1
+          ) {
+            const keysAtRepeat = groupActions
+              .filter((action) => action.repeatCount > repeatIndex)
+              .map((action) => action.key);
+
+            if (keysAtRepeat.length === 0) {
+              continue;
+            }
+
+            const repeatTimerId = window.setTimeout(() => {
+              dispatchKeyTriggerBindingsAtSameTiming(keysAtRepeat, {
+                sourceProfileId: getOriginalKeyTriggerProfileId(profileId),
+                chainDepth,
+                delayMode: resolvedDelayMode,
+              });
+            }, repeatIndex * repeatIntervalMs);
+            timerIds.push(repeatTimerId);
+          }
+        };
+
+        fireGroup();
+
+        if (groupDelayMs > 0) {
+          const intervalId = window.setInterval(() => {
+            fireGroup();
+          }, groupDelayMs);
+          timerIds.push(intervalId);
+        }
+      });
+
+      if (timerIds.length > 0) {
+        activeKeyTriggerTimersRef.current.set(profileId, timerIds);
+      }
+      return;
+    }
+
+    const totalSequenceDelay = runnableActions.reduce((totalDelay, action) => {
+      return (
+        totalDelay +
+        action.delayMs +
+        (action.repeatCount - 1) * Math.max(120, action.delayMs || 120)
+      );
+    }, 0);
+    const cycleMs = Math.max(250, totalSequenceDelay + 120);
+
+    const intervalId = window.setInterval(() => {
+      scheduleKeyTriggerActions(profileId, actions, resolvedDelayMode, {
+        sourceProfileId: getOriginalKeyTriggerProfileId(profileId),
+        chainDepth,
+      });
+    }, cycleMs);
+
+    activeKeyTriggerTimersRef.current.set(profileId, [intervalId]);
+    scheduleKeyTriggerActions(profileId, actions, resolvedDelayMode, {
+      sourceProfileId: getOriginalKeyTriggerProfileId(profileId),
+      chainDepth,
+    });
+  }
+
+  useEffect(() => {
+    if (currentTabId === null) {
+      return;
+    }
+
+    const isCurrentTabSelected =
+      selectedKeyTriggerTabIds.includes(currentTabId);
+    if (isCurrentTabSelected) {
+      return;
+    }
+
+    clearAllKeyTriggerTimers();
+  }, [currentTabId, selectedKeyTriggerTabIds, clearAllKeyTriggerTimers]);
+
+  useEffect(() => {
+    if (currentTabId === null) {
+      return;
+    }
+
+    if (!selectedKeyTriggerTabIds.includes(currentTabId)) {
+      return;
+    }
+
+    if (activeKeyTriggerToggleConfigsRef.current.size === 0) {
+      return;
+    }
+
+    if (activeKeyTriggerTimersRef.current.size > 0) {
+      return;
+    }
+
+    activeKeyTriggerToggleConfigsRef.current.forEach((config, profileId) => {
+      startKeyTriggerToggleTimers(
+        profileId,
+        config.actions,
+        config.chainDepth,
+        config.delayMode,
+      );
+    });
+  }, [currentTabId, selectedKeyTriggerTabIds, startKeyTriggerToggleTimers]);
 
   useEffect(() => {
     reloadKeyTriggerCharacters();
@@ -3803,9 +3982,24 @@ function MapperApp() {
       checkSharedTimeout();
     };
 
-    const onKeyActivity = () => recordSharedActivity();
-    const onPointerActivity = () => recordSharedActivity();
-    const onMouseActivity = () => recordSharedActivity();
+    const onKeyActivity = (event: KeyboardEvent) => {
+      if (!event.isTrusted) {
+        return;
+      }
+      recordSharedActivity();
+    };
+    const onPointerActivity = (event: PointerEvent) => {
+      if (!event.isTrusted) {
+        return;
+      }
+      recordSharedActivity();
+    };
+    const onMouseActivity = (event: MouseEvent) => {
+      if (!event.isTrusted) {
+        return;
+      }
+      recordSharedActivity();
+    };
 
     recordSharedActivity(true);
     requestNotificationPermission();
@@ -3863,8 +4057,41 @@ function MapperApp() {
       "#recaptcha",
     ];
 
-    const isRecaptchaPresent = () =>
-      RECAPTCHA_SELECTORS.some((sel) => document.querySelector(sel) !== null);
+    const isCaptchaElementVisible = (element: Element): boolean => {
+      if (!(element instanceof HTMLElement || element instanceof SVGElement)) {
+        return false;
+      }
+
+      const computedStyle = window.getComputedStyle(element);
+      if (
+        computedStyle.display === "none" ||
+        computedStyle.visibility === "hidden" ||
+        computedStyle.visibility === "collapse"
+      ) {
+        return false;
+      }
+
+      const opacity = Number(computedStyle.opacity);
+      if (Number.isFinite(opacity) && opacity <= 0) {
+        return false;
+      }
+
+      if (
+        element.hasAttribute("hidden") ||
+        element.getAttribute("aria-hidden") === "true"
+      ) {
+        return false;
+      }
+
+      const rect = element.getBoundingClientRect();
+      return rect.width > 1 && rect.height > 1;
+    };
+
+    const isRecaptchaVisible = () =>
+      RECAPTCHA_SELECTORS.some((sel) => {
+        const nodes = Array.from(document.querySelectorAll(sel));
+        return nodes.some((node) => isCaptchaElementVisible(node));
+      });
 
     const tabId = autoStopTabIdRef.current;
     let signalRaised = false;
@@ -4001,12 +4228,8 @@ function MapperApp() {
       applyRecaptchaSignal(readSharedRecaptchaSignal());
     };
 
-    if (isRecaptchaPresent()) {
-      raiseRecaptchaSignal();
-    }
-
-    const observer = new MutationObserver(() => {
-      if (isRecaptchaPresent()) {
+    const evaluateRecaptchaState = () => {
+      if (isRecaptchaVisible()) {
         raiseRecaptchaSignal();
       } else if (signalRaised) {
         // CAPTCHA disappeared — reset so the next CAPTCHA occurrence can be detected
@@ -4017,15 +4240,30 @@ function MapperApp() {
           writeSharedRecaptchaSignal(getDefaultSharedRecaptchaSignal());
         }
       }
+    };
+
+    evaluateRecaptchaState();
+
+    const observer = new MutationObserver(() => {
+      evaluateRecaptchaState();
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style", "class", "hidden", "aria-hidden"],
+    });
+    const recaptchaVisibilityPoll = window.setInterval(() => {
+      evaluateRecaptchaState();
+    }, 1000);
 
     requestNotificationPermission();
     window.addEventListener("storage", onSharedRecaptchaSignal);
 
     return () => {
       observer.disconnect();
+      window.clearInterval(recaptchaVisibilityPoll);
       window.removeEventListener("storage", onSharedRecaptchaSignal);
     };
   }, [
@@ -5197,6 +5435,7 @@ function MapperApp() {
   useEffect(() => {
     if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
       setCurrentTabId(null);
+      currentTabIdRef.current = null;
       return;
     }
 
@@ -5211,12 +5450,15 @@ function MapperApp() {
           }
 
           const tabId = Number(response?.tabId);
-          setCurrentTabId(Number.isFinite(tabId) ? tabId : null);
+          const resolvedTabId = Number.isFinite(tabId) ? tabId : null;
+          setCurrentTabId(resolvedTabId);
+          currentTabIdRef.current = resolvedTabId;
         },
       );
     } catch {
       if (!cancelled) {
         setCurrentTabId(null);
+        currentTabIdRef.current = null;
       }
     }
 
@@ -7919,7 +8161,8 @@ function MapperApp() {
             ? (msg as any).tabIds
             : undefined;
           if (tabIds && tabIds.length > 0) {
-            if (currentTabId == null || !tabIds.includes(currentTabId)) {
+            const liveTabId = currentTabIdRef.current;
+            if (liveTabId == null || !tabIds.includes(liveTabId)) {
               return;
             }
           }
@@ -8038,17 +8281,10 @@ function MapperApp() {
           if (!msg.profileId) {
             return;
           }
-          // Guard: Only execute if currentTabId is in tabIds (if tabIds is provided)
-          const tabIds = Array.isArray((msg as any).tabIds)
-            ? (msg as any).tabIds
-            : undefined;
-          if (tabIds && tabIds.length > 0) {
-            if (currentTabId == null || !tabIds.includes(currentTabId)) {
-              return;
-            }
-          }
+          // No tabIds guard needed: the background always routes
+          // KEY_TRIGGER_START_TOGGLE via chrome.tabs.sendMessage(specificTabId),
+          // so only the intended tab ever receives this message.
 
-          clearKeyTriggerProfileTimers(msg.profileId);
           const actions = Array.isArray(msg.actions)
             ? msg.actions.filter((action) => action.enabled !== false)
             : [];
@@ -8071,121 +8307,18 @@ function MapperApp() {
             delayMode = "synchronous";
           }
 
-          if (delayMode === "synchronous") {
-            // For synchronous toggle: same-delay action groups fire together.
-            const timerIds: number[] = [];
-            const groupedByDelay = new Map<
-              number,
-              Array<{ key: string; repeatCount: number }>
-            >();
-
-            actions
-              .map((action) => ({
-                key: action.key.trim(),
-                delayMs: Math.max(0, Math.round(action.delayMs || 0)),
-                repeatCount:
-                  action.actionTriggerType === "repeat"
-                    ? normalizeKeyTriggerActionRepeatCount(
-                        action.actionRepeatCount,
-                        2,
-                      )
-                    : 1,
-              }))
-              .filter((action) => action.key.length > 0)
-              .forEach((action) => {
-                const existing = groupedByDelay.get(action.delayMs) ?? [];
-                groupedByDelay.set(action.delayMs, [...existing, action]);
-              });
-
-            groupedByDelay.forEach((groupActions, delayMs) => {
-              const repeatIntervalMs = Math.max(120, delayMs || 120);
-
-              const fireGroup = () => {
-                const immediateKeys = groupActions.map((action) => action.key);
-                dispatchKeyTriggerBindingsAtSameTiming(immediateKeys, {
-                  sourceProfileId: originalProfileId,
-                  chainDepth,
-                  delayMode,
-                });
-
-                const maxRepeatCount = Math.max(
-                  1,
-                  ...groupActions.map((action) => action.repeatCount),
-                );
-                for (
-                  let repeatIndex = 1;
-                  repeatIndex < maxRepeatCount;
-                  repeatIndex += 1
-                ) {
-                  const keysAtRepeat = groupActions
-                    .filter((action) => action.repeatCount > repeatIndex)
-                    .map((action) => action.key);
-
-                  if (keysAtRepeat.length === 0) {
-                    continue;
-                  }
-
-                  const repeatTimerId = window.setTimeout(() => {
-                    dispatchKeyTriggerBindingsAtSameTiming(keysAtRepeat, {
-                      sourceProfileId: originalProfileId,
-                      chainDepth,
-                      delayMode,
-                    });
-                  }, repeatIndex * repeatIntervalMs);
-                  timerIds.push(repeatTimerId);
-                }
-              };
-
-              fireGroup();
-
-              if (delayMs > 0) {
-                const intervalId = window.setInterval(() => {
-                  fireGroup();
-                }, delayMs);
-                timerIds.push(intervalId);
-              }
-            });
-
-            if (timerIds.length > 0) {
-              activeKeyTriggerTimersRef.current.set(msg.profileId, timerIds);
-            }
-          } else {
-            // For sequential toggle: cycle through all actions in sequence and repeat the cycle
-            const totalSequenceDelay = actions.reduce((totalDelay, action) => {
-              const delayMs = Math.max(0, Math.round(action.delayMs || 0));
-              const actionRepeatCount =
-                action.actionTriggerType === "repeat"
-                  ? normalizeKeyTriggerActionRepeatCount(
-                      action.actionRepeatCount,
-                      2,
-                    )
-                  : 1;
-              return (
-                totalDelay +
-                delayMs +
-                (actionRepeatCount - 1) * Math.max(120, delayMs || 120)
-              );
-            }, 0);
-            const cycleMs = Math.max(250, totalSequenceDelay + 120);
-
-            const intervalId = window.setInterval(() => {
-              scheduleKeyTriggerActions(
-                msg.profileId ?? "",
-                actions,
-                delayMode,
-                {
-                  sourceProfileId: originalProfileId,
-                  chainDepth,
-                },
-              );
-            }, cycleMs);
-
-            activeKeyTriggerTimersRef.current.set(msg.profileId, [intervalId]);
-            scheduleKeyTriggerActions(msg.profileId, actions, delayMode, {
-              sourceProfileId: originalProfileId,
-              chainDepth,
-            });
-          }
+          clearKeyTriggerProfileTimers(msg.profileId);
+          activeKeyTriggerToggleConfigsRef.current.set(msg.profileId, {
+            actions,
+            chainDepth,
+            delayMode,
+          });
+          startKeyTriggerToggleTimers(
+            msg.profileId,
+            actions,
+            chainDepth,
+            delayMode,
+          );
           return;
         }
 
@@ -8195,11 +8328,13 @@ function MapperApp() {
           }
 
           clearKeyTriggerProfileTimers(msg.profileId);
+          activeKeyTriggerToggleConfigsRef.current.delete(msg.profileId);
           return;
         }
 
         if (msg.type === "KEY_TRIGGER_STOP_ALL") {
           clearAllKeyTriggerTimers();
+          activeKeyTriggerToggleConfigsRef.current.clear();
           return;
         }
 
@@ -8529,17 +8664,7 @@ function MapperApp() {
       metaKey: boolean;
       timestamp: number;
     } | null = null;
-    const activeHoldTriggerTimers = new Map<
-      string,
-      {
-        timerId: number;
-        keyCode: string;
-        ctrl: boolean;
-        alt: boolean;
-        shift: boolean;
-        meta: boolean;
-      }
-    >();
+    const activeHoldTriggerTimers = activeHoldTriggerTimersRef.current;
 
     const getPressSignature = (event: KeyboardEvent): string => {
       return [
@@ -9298,10 +9423,6 @@ function MapperApp() {
     window.addEventListener("blur", onWindowBlur);
     return () => {
       clearPendingSequencePassThrough();
-      activeHoldTriggerTimers.forEach((entry) => {
-        window.clearInterval(entry.timerId);
-      });
-      activeHoldTriggerTimers.clear();
       window.removeEventListener("keydown", onKeyDown, { capture: true });
       window.removeEventListener("keyup", onKeyUp, { capture: true });
       window.removeEventListener("blur", onWindowBlur);
@@ -9334,6 +9455,15 @@ function MapperApp() {
     pasteCopiedShapesAt,
     toggleOverlay,
   ]);
+
+  useEffect(() => {
+    return () => {
+      activeHoldTriggerTimersRef.current.forEach((entry) => {
+        window.clearInterval(entry.timerId);
+      });
+      activeHoldTriggerTimersRef.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     if (settings.editMode) {
@@ -10202,14 +10332,22 @@ function MapperApp() {
       className: "fm-confirm-modal fm-reset-config-modal",
       title: "Reset settings defaults?",
       content:
-        "This only resets Settings values to defaults. It keeps Key Mapper profiles, shapes, shape history, copied shapes, active/selected profile per character mapping, and Key Trigger profiles unchanged.",
+        "This resets most Settings values to defaults but keeps Subscription Access Token and Mobile Push Notifications data. It also keeps Key Mapper profiles, shapes, shape history, copied shapes, active/selected profile per character mapping, and Key Trigger profiles unchanged.",
       zIndex: 2147483647,
       okText: "Reset",
       okButtonProps: { danger: true, type: "primary" },
       cancelButtonProps: { type: "default" },
       cancelText: "Cancel",
       onOk: () => {
-        const resetSettings = cloneDefaultSettings();
+        const currentSettings = latestSettingsRef.current;
+        const resetSettings = {
+          ...cloneDefaultSettings(),
+          subscriptionAccessToken: currentSettings.subscriptionAccessToken,
+          mobilePushEnabled: currentSettings.mobilePushEnabled,
+          mobilePushDiscordBotUrl: currentSettings.mobilePushDiscordBotUrl,
+          mobilePushDiscordUserId: currentSettings.mobilePushDiscordUserId,
+          mobilePushDiscordApiKey: currentSettings.mobilePushDiscordApiKey,
+        };
 
         setSettings(resetSettings);
         latestSettingsRef.current = resetSettings;
@@ -10586,7 +10724,7 @@ function MapperApp() {
 
   const exportMappings = async () => {
     const selectedKeyTriggerTabIdsUnique = Array.from(
-      new Set(selectedKeyTriggerTabIds.filter((id) => Number.isFinite(id))),
+      new Set(selectedKeyTriggerTabIds.filter((id) => isValidTabId(id))),
     );
     const selectedKeyTriggerTabNames = keyTriggerCharacters
       .filter((tab) => selectedKeyTriggerTabIds.includes(tab.id))

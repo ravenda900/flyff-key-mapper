@@ -577,6 +577,12 @@ export const generateSubscriptionToken = async (
   const plan = resolvePlan(payload.plan);
   const role = resolveRole(payload.role ?? "user");
 
+  if (plan === "unlimited" && actor.role !== "superadmin") {
+    throw new Error(
+      "Access denied. Only superadmin can generate Unlimited plan tokens.",
+    );
+  }
+
   if (ACCESS_CONTROL_MODE === "blaze") {
     const functions = getFunctions(app);
     const callable = httpsCallable<

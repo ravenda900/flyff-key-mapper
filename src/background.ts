@@ -246,7 +246,9 @@ const normalizeTabIds = (ids: unknown): number[] =>
   Array.from(
     new Set(
       Array.isArray(ids)
-        ? ids.filter((id): id is number => Number.isFinite(id))
+        ? ids.filter(
+            (id): id is number => Number.isInteger(id) && Number(id) > 0,
+          )
         : [],
     ),
   );
@@ -400,6 +402,7 @@ const startProfileToggle = (
       .sendMessage(tabId, {
         type: "KEY_TRIGGER_START_TOGGLE",
         profileId,
+        tabIds,
         actions,
         chainDepth: options?.chainDepth,
         delayMode: options?.delayMode,
@@ -612,16 +615,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     };
 
     const tabIds = normalizeTabIds(payload.tabIds);
-    const nextTabSet = new Set(tabIds);
+    const newTabSet = new Set(tabIds);
 
+    // Always stop timers on any Flyff tab that is no longer in the selection,
+    // even when activeToggleTargets is empty (e.g. after service-worker restart).
+    chrome.tabs
+      .query({})
+      .then((allTabs) => {
+        allTabs
+          .filter((tab) => isFlyffPlayTab(tab))
+          .filter(
+            (tab): tab is chrome.tabs.Tab & { id: number } =>
+              typeof tab.id === "number" && !newTabSet.has(tab.id),
+          )
+          .forEach((tab) => {
+            chrome.tabs
+              .sendMessage(tab.id, { type: "KEY_TRIGGER_STOP_ALL" })
+              .catch(() => undefined);
+          });
+      })
+      .catch(() => undefined);
+
+    // Rebind active toggle profiles to the new tab set.
     activeToggleTargets.forEach((target, profileId) => {
-      const previousTabSet = new Set(target.tabIds);
-      const tabsToStop = target.tabIds.filter(
-        (tabId) => !nextTabSet.has(tabId),
-      );
-      const tabsToStart = tabIds.filter((tabId) => !previousTabSet.has(tabId));
-
-      tabsToStop.forEach((tabId) => {
+      target.tabIds.forEach((tabId) => {
         chrome.tabs
           .sendMessage(tabId, {
             type: "KEY_TRIGGER_STOP_TOGGLE",
@@ -630,7 +647,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           .catch(() => undefined);
       });
 
-      tabsToStart.forEach((tabId) => {
+      tabIds.forEach((tabId) => {
         chrome.tabs
           .sendMessage(tabId, {
             type: "KEY_TRIGGER_START_TOGGLE",

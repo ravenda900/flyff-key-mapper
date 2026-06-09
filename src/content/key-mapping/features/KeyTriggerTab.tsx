@@ -97,6 +97,7 @@ type ProfileEditorDraft = {
   delayMode: "sequential" | "synchronous";
   actions: KeyTriggerAction[];
   lockToTab?: boolean;
+  toggleOwnerTabId?: number;
 };
 
 const normalizeRepeatCount = (value: unknown, fallback = 2): number => {
@@ -214,6 +215,8 @@ const buildWheelShortcut = (
   const direction = event.deltaY < 0 ? "Wheel Up" : "Wheel Down";
   return [...buildMouseModifiers(event), direction].join("+");
 };
+
+const WHEEL_CAPTURE_ARM_WINDOW_MS = 1500;
 
 const moveById = <T extends { id: string }>(
   items: T[],
@@ -501,6 +504,8 @@ export const KeyTriggerTab = ({
   >(null);
   const [dragProfileId, setDragProfileId] = useState<string | null>(null);
   const [dragActionId, setDragActionId] = useState<string | null>(null);
+  const isValidTabId = (value: unknown): value is number =>
+    Number.isInteger(value) && Number(value) > 0;
 
   const resolveExecutionScope = (
     draft: Pick<
@@ -534,15 +539,12 @@ export const KeyTriggerTab = ({
 
     if (
       Array.isArray(draft.specificTargetTabIds) &&
-      draft.specificTargetTabIds.length > 0
+      draft.specificTargetTabIds.some((id) => isValidTabId(id))
     ) {
       return "specific";
     }
 
-    if (
-      draft.specificTargetTabId !== undefined &&
-      draft.specificTargetTabId !== null
-    ) {
+    if (isValidTabId(draft.specificTargetTabId)) {
       return "specific";
     }
 
@@ -573,6 +575,10 @@ export const KeyTriggerTab = ({
   const actionKeyLastClickRef = useRef<
     Map<string, { button: number; time: number }>
   >(new Map());
+  const triggerWheelCaptureArmedUntilRef = useRef(0);
+  const actionWheelCaptureArmedUntilRef = useRef<Map<string, number>>(
+    new Map(),
+  );
 
   const isEditorOpen = editorDraft !== null;
 
@@ -724,6 +730,8 @@ export const KeyTriggerTab = ({
       specificTargetTabId: null,
       specificTargetTabName: null,
       delayMode: "sequential",
+      lockToTab: false,
+      toggleOwnerTabId: undefined,
       actions: [createDefaultAction()],
     });
   }, [availableTargetTabs, profiles]);
@@ -768,6 +776,12 @@ export const KeyTriggerTab = ({
             ? [profile.specificTargetTabName]
             : [],
       delayMode: profile.delayMode || "sequential",
+      lockToTab: profile.lockToTab === true,
+      toggleOwnerTabId:
+        typeof profile.toggleOwnerTabId === "number" &&
+        Number.isFinite(profile.toggleOwnerTabId)
+          ? profile.toggleOwnerTabId
+          : undefined,
       actions:
         profile.actions.length > 0
           ? profile.actions.map((action) => ({
@@ -1062,6 +1076,13 @@ export const KeyTriggerTab = ({
           : null) ??
         null,
       delayMode: editorDraft.delayMode,
+      lockToTab: editorDraft.lockToTab === true,
+      toggleOwnerTabId:
+        editorDraft.lockToTab === true &&
+        typeof editorDraft.toggleOwnerTabId === "number" &&
+        Number.isFinite(editorDraft.toggleOwnerTabId)
+          ? editorDraft.toggleOwnerTabId
+          : undefined,
       actions: normalizedActions,
     };
 
@@ -2054,6 +2075,23 @@ export const KeyTriggerTab = ({
                               </Typography.Text>
                             </div>
 
+                            {profile.triggerType === "toggle" && (
+                              <div className="fm-kt-profile-meta-row">
+                                <span className="fm-kt-profile-meta-label">
+                                  Lock:
+                                </span>
+                                <Typography.Text
+                                  type={
+                                    profile.lockToTab ? "warning" : "secondary"
+                                  }
+                                >
+                                  {profile.lockToTab
+                                    ? "This tab only"
+                                    : "Disabled"}
+                                </Typography.Text>
+                              </div>
+                            )}
+
                             <div className="fm-kt-profile-meta-row">
                               <span className="fm-kt-profile-meta-label">
                                 No. of actions:
@@ -2250,6 +2288,9 @@ export const KeyTriggerTab = ({
                             return;
                           }
 
+                          triggerWheelCaptureArmedUntilRef.current =
+                            Date.now() + WHEEL_CAPTURE_ARM_WINDOW_MS;
+
                           event.preventDefault();
                           event.stopPropagation();
 
@@ -2277,6 +2318,8 @@ export const KeyTriggerTab = ({
                         onMouseDown={(event) => {
                           if (isConfigLocked) return;
                           if (event.button !== 0 && event.button !== 2) return;
+                          triggerWheelCaptureArmedUntilRef.current =
+                            Date.now() + WHEEL_CAPTURE_ARM_WINDOW_MS;
                           const input = event.currentTarget as HTMLInputElement;
                           const wasFocused = document.activeElement === input;
                           event.preventDefault();
@@ -2316,14 +2359,22 @@ export const KeyTriggerTab = ({
                           if (isConfigLocked) return;
                           const input = event.currentTarget as HTMLInputElement;
                           const wasFocused = document.activeElement === input;
-                          event.stopPropagation();
                           if (!wasFocused) {
                             input.focus({ preventScroll: true });
                             return;
                           }
 
+                          if (
+                            Date.now() >
+                            triggerWheelCaptureArmedUntilRef.current
+                          ) {
+                            return;
+                          }
+
                           const captured = buildWheelShortcut(event);
                           if (!captured) return;
+                          event.preventDefault();
+                          event.stopPropagation();
                           setEditorDraft({
                             ...editorDraft,
                             triggerKey: captured,
@@ -2365,13 +2416,17 @@ export const KeyTriggerTab = ({
 
                       (editorDraft.specificTargetTabIds ?? []).forEach(
                         (id, index) => {
+                          if (!isValidTabId(id)) {
+                            return;
+                          }
+
                           if (
                             !availableTargetTabs.some((tab) => tab.id === id)
                           ) {
                             specificOptions.unshift({
                               label: editorDraft.specificTargetTabNames?.[index]
                                 ? `${editorDraft.specificTargetTabNames[index]} (saved)`
-                                : `Tab ${id} (saved)`,
+                                : "Saved tab",
                               value: id,
                             });
                           }
@@ -2394,11 +2449,21 @@ export const KeyTriggerTab = ({
 
                               const nextSpecificTargetTabId =
                                 nextScope === "specific"
-                                  ? (editorDraft.specificTargetTabIds?.[0] ??
-                                    editorDraft.specificTargetTabId ??
+                                  ? (editorDraft.specificTargetTabIds?.find(
+                                      (id) => isValidTabId(id),
+                                    ) ??
+                                    (isValidTabId(
+                                      editorDraft.specificTargetTabId,
+                                    )
+                                      ? editorDraft.specificTargetTabId
+                                      : null) ??
                                     availableTargetTabs[0]?.id ??
                                     null)
-                                  : (editorDraft.specificTargetTabId ?? null);
+                                  : isValidTabId(
+                                        editorDraft.specificTargetTabId,
+                                      )
+                                    ? editorDraft.specificTargetTabId
+                                    : null;
 
                               const nextSpecificTargetTabName =
                                 nextScope === "specific"
@@ -2639,6 +2704,12 @@ export const KeyTriggerTab = ({
                                             return;
                                           }
 
+                                          actionWheelCaptureArmedUntilRef.current.set(
+                                            action.id,
+                                            Date.now() +
+                                              WHEEL_CAPTURE_ARM_WINDOW_MS,
+                                          );
+
                                           event.preventDefault();
                                           event.stopPropagation();
 
@@ -2684,6 +2755,11 @@ export const KeyTriggerTab = ({
                                             event.button !== 2
                                           )
                                             return;
+                                          actionWheelCaptureArmedUntilRef.current.set(
+                                            action.id,
+                                            Date.now() +
+                                              WHEEL_CAPTURE_ARM_WINDOW_MS,
+                                          );
                                           const input =
                                             event.currentTarget as HTMLInputElement;
                                           const wasFocused =
@@ -2741,7 +2817,6 @@ export const KeyTriggerTab = ({
                                             event.currentTarget as HTMLInputElement;
                                           const wasFocused =
                                             document.activeElement === input;
-                                          event.stopPropagation();
                                           if (!wasFocused) {
                                             input.focus({
                                               preventScroll: true,
@@ -2749,9 +2824,20 @@ export const KeyTriggerTab = ({
                                             return;
                                           }
 
+                                          if (
+                                            Date.now() >
+                                            (actionWheelCaptureArmedUntilRef.current.get(
+                                              action.id,
+                                            ) ?? 0)
+                                          ) {
+                                            return;
+                                          }
+
                                           const captured =
                                             buildWheelShortcut(event);
                                           if (!captured) return;
+                                          event.preventDefault();
+                                          event.stopPropagation();
                                           setEditorDraft({
                                             ...editorDraft,
                                             actions: editorDraft.actions.map(

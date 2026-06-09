@@ -45,6 +45,15 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
 - Improved matching robustness by broadening template scale handling around Start-button passes.
 - Reduced high-frequency automation workload during reroll loops to improve in-page responsiveness.
 
+### Runtime and configuration updates
+
+- Auto-stop now tracks trusted real user input only, so automated toggle/script key dispatch no longer prevents AFK timeout.
+- Reset Settings Defaults now preserves Subscription Access Token and Mobile Push Notification settings; only clean-slate reset clears them.
+- Characters/Tabs selection is now available in both Key Mapper and Key Trigger panes.
+- Add Key Map, Hide Shapes, and Opacity 0/100 shortcuts were moved to the Settings pane.
+- Key Trigger `Lock to this tab` now persists correctly through editor save/load and storage normalization.
+- Key Mapper shape shortcut input background is more transparent so underlying rendered content is easier to inspect.
+
 ## What's new in v4.0.0
 
 ### Key Trigger running-mode updates

@@ -87,7 +87,17 @@ const getEventToken = (event: KeyboardEvent): string => {
   return event.key.toLowerCase();
 };
 
-const parseBinding = (binding: string) => {
+const parseBinding = (binding: string | null | undefined) => {
+  if (typeof binding !== "string") {
+    return {
+      ctrl: false,
+      alt: false,
+      shift: false,
+      meta: false,
+      key: undefined,
+    };
+  }
+
   const tokens = binding.split("+").map(normalizeToken).filter(Boolean);
 
   return {
@@ -107,7 +117,17 @@ const parseBinding = (binding: string) => {
   };
 };
 
-const parseActionBinding = (binding: string) => {
+const parseActionBinding = (binding: string | null | undefined) => {
+  if (typeof binding !== "string") {
+    return {
+      ctrl: false,
+      alt: false,
+      shift: false,
+      meta: false,
+      steps: [] as string[],
+    };
+  }
+
   const tokens = binding
     .split("+")
     .map(normalizeBindingStepToken)

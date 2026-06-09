@@ -141,6 +141,7 @@ const formatScanRegionSummary = (region: NormalizedRect | null): string => {
 };
 
 import { PaletteShapeIcon } from "../components/PaletteShapeIcon";
+import { ShapePaletteActionButton } from "./EasyAccessRibbon";
 import { ShortcutKeys } from "../components/ShortcutKeys";
 import { syncKeyTriggerCharacterProfileSelection } from "./profileSelectionSync";
 
@@ -2201,14 +2202,17 @@ export const MapperDialog = ({
                     </Form.Item>
 
                     <Tooltip {...dialogTooltipProps} title="Add a new key map">
-                      <Button
-                        type="dashed"
-                        block
-                        onClick={addKeyMap}
-                        disabled={isLocked}
-                      >
-                        Add Key Map
-                      </Button>
+                      <span>
+                        <ShapePaletteActionButton
+                          selectedPaletteShape={selectedPaletteShape}
+                          setSelectedPaletteShape={setSelectedPaletteShape}
+                          onAddKeyMap={addKeyMap}
+                          disabled={isLocked}
+                          buttonType="dashed"
+                          block
+                          getPopupContainer={getDialogPopupContainer}
+                        />
+                      </span>
                     </Tooltip>
 
                     <Form.Item label="Shape Palette">
@@ -2537,6 +2541,45 @@ export const MapperDialog = ({
                           </Space>
                         </Form.Item>
 
+                        <Form.Item
+                          label={
+                            <Space size={6} align="center">
+                              <span>Easy Access Arrow Button</span>
+                              <Tooltip
+                                title="Turn this off to keep the easy-access panel always visible without the left arrow control. Your last expanded or collapsed state is still remembered."
+                                {...dialogTooltipProps}
+                              >
+                                <QuestionOutlined
+                                  style={{
+                                    color: "var(--fm-theme-text-secondary)",
+                                  }}
+                                />
+                              </Tooltip>
+                            </Space>
+                          }
+                        >
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.showEasyAccessArrowButton}
+                              disabled={isLocked}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  showEasyAccessArrowButton: checked,
+                                }));
+                              }}
+                            />
+                            <Typography.Text type="secondary">
+                              When disabled, the easy-access panel stays visible
+                              and hides the left arrow toggle button.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
+
                         <Form.Item label="Snap Line Indicators">
                           <Space
                             direction="vertical"
@@ -2556,6 +2599,45 @@ export const MapperDialog = ({
                             <Typography.Text type="secondary">
                               Shows or hides snap alignment guide lines when
                               snap alignment is active.
+                            </Typography.Text>
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item
+                          label={
+                            <Space size={6} align="center">
+                              <span>Show Easy Access UI</span>
+                              <Tooltip
+                                title="Hides or shows the full easy-access area, including both the arrow button and ribbon panel."
+                                {...dialogTooltipProps}
+                              >
+                                <QuestionOutlined
+                                  style={{
+                                    color: "var(--fm-theme-text-secondary)",
+                                  }}
+                                />
+                              </Tooltip>
+                            </Space>
+                          }
+                        >
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <Switch
+                              checked={settings.showEasyAccessUi}
+                              disabled={isLocked}
+                              onChange={(checked) => {
+                                setSettings((prev) => ({
+                                  ...prev,
+                                  showEasyAccessUi: checked,
+                                }));
+                              }}
+                            />
+                            <Typography.Text type="secondary">
+                              Shows or hides the entire easy-access UI,
+                              including the arrow button and ribbon panel.
                             </Typography.Text>
                           </Space>
                         </Form.Item>
@@ -2706,6 +2788,52 @@ export const MapperDialog = ({
                             {globalShortcutErrors.toggleDialogShortcut && (
                               <Typography.Text type="danger">
                                 {globalShortcutErrors.toggleDialogShortcut}
+                              </Typography.Text>
+                            )}
+                          </Space>
+                        </Form.Item>
+
+                        <Form.Item label="Show/Hide Easy Access Shortcut">
+                          <Space
+                            direction="vertical"
+                            size={4}
+                            className="fm-w-full"
+                          >
+                            <div
+                              className={`fm-shortcut-input-shell${settings.toggleEasyAccessUiShortcut ? " fm-shortcut-input-has-value" : ""}`}
+                            >
+                              <Input
+                                className="fm-global-shortcut-input"
+                                value={settings.toggleEasyAccessUiShortcut}
+                                placeholder="Press keys"
+                                disabled={isLocked}
+                                onKeyDown={(event) => {
+                                  captureGlobalShortcut(
+                                    event,
+                                    "toggleEasyAccessUiShortcut",
+                                  );
+                                }}
+                              />
+                              {settings.toggleEasyAccessUiShortcut && (
+                                <span
+                                  className="fm-shortcut-input-overlay"
+                                  aria-hidden="true"
+                                >
+                                  <ShortcutKeys
+                                    combo={settings.toggleEasyAccessUiShortcut}
+                                  />
+                                </span>
+                              )}
+                            </div>
+                            <Typography.Text type="secondary">
+                              Toggles easy-access visibility (arrow and panel).
+                              Default: Alt+Shift+U.
+                            </Typography.Text>
+                            {globalShortcutErrors.toggleEasyAccessUiShortcut && (
+                              <Typography.Text type="danger">
+                                {
+                                  globalShortcutErrors.toggleEasyAccessUiShortcut
+                                }
                               </Typography.Text>
                             )}
                           </Space>

@@ -12,7 +12,11 @@ const POINTER_TOKEN_SET = new Set([
   "wheel down",
 ]);
 
-const normalizeShortcutForCompare = (binding: string): string => {
+const normalizeShortcutForCompare = (binding: unknown): string => {
+  if (typeof binding !== "string") {
+    return "";
+  }
+
   const parts = binding
     .split("+")
     .map((part) => part.trim().toLowerCase())
@@ -68,6 +72,7 @@ type ReservedShortcutEntry = {
 
 export type GlobalShortcutField =
   | "addKeyMapShortcut"
+  | "toggleEasyAccessUiShortcut"
   | "toggleModeShortcut"
   | "focusCanvasShortcut"
   | "toggleShapesShortcut"
@@ -79,6 +84,10 @@ const getReservedShortcutEntries = (
 ): ReservedShortcutEntry[] => [
   { binding: OVERLAY_SHORTCUT, usedBy: "Toggle Mapper" },
   { binding: settings.addKeyMapShortcut, usedBy: "Add Key Map" },
+  {
+    binding: settings.toggleEasyAccessUiShortcut,
+    usedBy: "Show/Hide Easy Access",
+  },
   { binding: settings.toggleModeShortcut, usedBy: "Start/Stop Mode" },
   { binding: settings.focusCanvasShortcut, usedBy: "Focus Canvas" },
   { binding: settings.toggleShapesShortcut, usedBy: "Show/Hide Shapes" },
@@ -104,6 +113,11 @@ export const getGlobalShortcutConflict = (
       binding: settings.addKeyMapShortcut,
       usedBy: "Add Key Map",
       field: "addKeyMapShortcut",
+    },
+    {
+      binding: settings.toggleEasyAccessUiShortcut,
+      usedBy: "Show/Hide Easy Access",
+      field: "toggleEasyAccessUiShortcut",
     },
     {
       binding: settings.toggleModeShortcut,

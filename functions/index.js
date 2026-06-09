@@ -12,6 +12,7 @@ const VALID_PLANS = new Set(["free", "pro", "elite", "unlimited"]);
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TOKEN_BYTE_LENGTH = 24;
 const TOKEN_COLLECTION = "subscriptionTokens";
+const TOKEN_MAX_BOUND_USERS = 3;
 
 const PLAN_DURATION_DAYS = {
   free: 7,
@@ -218,6 +219,169 @@ const buildTokenValidationResult = (data) => {
   };
 };
 
+const normalizeBoundIps = (boundIps, boundIp) => {
+  const candidates = Array.isArray(boundIps)
+    ? boundIps
+    : typeof boundIp === "string"
+      ? [boundIp]
+      : [];
+
+  const unique = [];
+  for (const entry of candidates) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+
+    const trimmed = entry.trim();
+    if (!trimmed || unique.includes(trimmed)) {
+      continue;
+    }
+
+    unique.push(trimmed);
+  }
+
+  return unique;
+};
+
+const validateTokenForRequester = async ({ db, tokenHash, requesterIp }) => {
+  const tokenRef = db.collection(TOKEN_COLLECTION).doc(tokenHash);
+  const snapshot = await tokenRef.get();
+
+  if (!snapshot.exists) {
+    return {
+      valid: false,
+      plan: "free",
+      role: "user",
+      expiresAtIso: null,
+      reason: "Invalid subscription token.",
+    };
+  }
+
+  const baseResult = buildTokenValidationResult(snapshot.data() ?? null);
+  if (!baseResult.valid) {
+    return baseResult;
+  }
+
+  const tokenData = snapshot.data() ?? {};
+  const plan = resolvePlan(tokenData.plan);
+
+  if (plan === "unlimited") {
+    return baseResult;
+  }
+
+  if (!requesterIp) {
+    return {
+      valid: false,
+      plan: "free",
+      role: "user",
+      expiresAtIso: baseResult.expiresAtIso,
+      reason:
+        "Unable to verify user identity for this subscription token. Please retry when your public IP is available.",
+    };
+  }
+
+  const boundIps = normalizeBoundIps(tokenData.boundIps, tokenData.boundIp);
+  if (
+    !boundIps.includes(requesterIp) &&
+    boundIps.length >= TOKEN_MAX_BOUND_USERS
+  ) {
+    return {
+      valid: false,
+      plan: "free",
+      role: "user",
+      expiresAtIso: baseResult.expiresAtIso,
+      reason: "This subscription token has reached its maximum of 3 users.",
+    };
+  }
+
+  try {
+    await db.runTransaction(async (transaction) => {
+      const txSnapshot = await transaction.get(tokenRef);
+      if (!txSnapshot.exists) {
+        throw new Error("TOKEN_NOT_FOUND");
+      }
+
+      const txData = txSnapshot.data() ?? {};
+      const txResult = buildTokenValidationResult(txData);
+      if (!txResult.valid) {
+        throw new Error(`TOKEN_INVALID:${txResult.reason ?? "UNKNOWN"}`);
+      }
+
+      const txPlan = resolvePlan(txData.plan);
+      if (txPlan === "unlimited") {
+        return;
+      }
+
+      const boundIps = normalizeBoundIps(txData.boundIps, txData.boundIp);
+
+      const nowIso = new Date().toISOString();
+      if (!boundIps.includes(requesterIp)) {
+        if (boundIps.length >= TOKEN_MAX_BOUND_USERS) {
+          throw new Error("TOKEN_USER_LIMIT_REACHED");
+        }
+
+        const updatedBoundIps = [...boundIps, requesterIp];
+        transaction.update(tokenRef, {
+          boundIps: updatedBoundIps,
+          boundIp: updatedBoundIps[0] ?? null,
+          boundAt: nowIso,
+          lastValidatedAt: nowIso,
+        });
+        return;
+      }
+
+      transaction.update(tokenRef, {
+        lastValidatedAt: nowIso,
+      });
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "TOKEN_BINDING_FAILED";
+
+    if (message === "TOKEN_USER_LIMIT_REACHED") {
+      return {
+        valid: false,
+        plan: "free",
+        role: "user",
+        expiresAtIso: baseResult.expiresAtIso,
+        reason: "This subscription token has reached its maximum of 3 users.",
+      };
+    }
+
+    if (message.startsWith("TOKEN_INVALID:")) {
+      return {
+        valid: false,
+        plan: "free",
+        role: "user",
+        expiresAtIso: baseResult.expiresAtIso,
+        reason:
+          message.slice("TOKEN_INVALID:".length) ||
+          "Subscription token is invalid.",
+      };
+    }
+
+    if (message === "TOKEN_NOT_FOUND") {
+      return {
+        valid: false,
+        plan: "free",
+        role: "user",
+        expiresAtIso: null,
+        reason: "Invalid subscription token.",
+      };
+    }
+
+    return {
+      valid: false,
+      plan: "free",
+      role: "user",
+      expiresAtIso: baseResult.expiresAtIso,
+      reason: "Unable to validate subscription token at this time.",
+    };
+  }
+
+  return baseResult;
+};
+
 export const assignClaimsByEmail = onCall({ cors: true }, async (request) => {
   const email =
     typeof request.data?.email === "string"
@@ -366,19 +530,17 @@ export const validateSubscriptionToken = onCall(
 
     const tokenHash = hashToken(token);
     const db = getFirestore();
-    const snapshot = await db.collection(TOKEN_COLLECTION).doc(tokenHash).get();
+    const actorIp =
+      typeof request.data?.requesterIp === "string"
+        ? request.data.requesterIp.trim()
+        : "";
+    const requesterIp = resolveRequesterIp(request, actorIp);
 
-    if (!snapshot.exists) {
-      return {
-        valid: false,
-        plan: "free",
-        role: "user",
-        expiresAtIso: null,
-        reason: "Invalid subscription token.",
-      };
-    }
-
-    return buildTokenValidationResult(snapshot.data() ?? null);
+    return validateTokenForRequester({
+      db,
+      tokenHash,
+      requesterIp,
+    });
   },
 );
 
@@ -414,22 +576,11 @@ export const resolveAccessControl = onCall({ cors: true }, async (request) => {
   const tokenValidation = subscriptionToken
     ? await (async () => {
         const tokenHash = hashToken(subscriptionToken);
-        const tokenSnapshot = await db
-          .collection(TOKEN_COLLECTION)
-          .doc(tokenHash)
-          .get();
-
-        if (!tokenSnapshot.exists) {
-          return {
-            valid: false,
-            plan: "free",
-            role: "user",
-            expiresAtIso: null,
-            reason: "Invalid subscription token.",
-          };
-        }
-
-        return buildTokenValidationResult(tokenSnapshot.data() ?? null);
+        return validateTokenForRequester({
+          db,
+          tokenHash,
+          requesterIp,
+        });
       })()
     : {
         valid: false,

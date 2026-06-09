@@ -63,6 +63,7 @@ import {
   type GlobalShortcutField,
 } from "./key-mapping/shortcutBinding";
 import { ImportMappingsModal } from "./key-mapping/modals/ImportMappingsModal";
+import { EasyAccessRibbon } from "./key-mapping/features/EasyAccessRibbon";
 import { DEFAULT_SETTINGS, storage } from "./storage";
 import {
   deleteSubscriptionToken,
@@ -1512,6 +1513,7 @@ const buildDuplicateProfileName = (
 
 const GLOBAL_SHORTCUT_FIELDS: GlobalShortcutField[] = [
   "addKeyMapShortcut",
+  "toggleEasyAccessUiShortcut",
   "toggleModeShortcut",
   "focusCanvasShortcut",
   "toggleShapesShortcut",
@@ -1521,6 +1523,7 @@ const GLOBAL_SHORTCUT_FIELDS: GlobalShortcutField[] = [
 
 const GLOBAL_SHORTCUT_LABELS: Record<GlobalShortcutField, string> = {
   addKeyMapShortcut: "Add Key Map",
+  toggleEasyAccessUiShortcut: "Show/Hide Easy Access",
   toggleModeShortcut: "Start/Stop Mode",
   focusCanvasShortcut: "Focus Canvas",
   toggleShapesShortcut: "Show/Hide Shapes",
@@ -1885,6 +1888,8 @@ function MapperApp() {
   const [selectedPaletteShape, setSelectedPaletteShape] = useState<ShapeType>(
     initialUiState.selectedPaletteShape,
   );
+  const [easyAccessRibbonExpanded, setEasyAccessRibbonExpanded] =
+    useState<boolean>(initialUiState.easyAccessRibbonExpanded === true);
   const [activeUtilityTab, setActiveUtilityTab] = useState<UtilityTab>(
     initialUiState.selectedUtilityTab,
   );
@@ -3113,8 +3118,14 @@ function MapperApp() {
       selectedPaletteShape,
       dialogRect,
       selectedUtilityTab: activeUtilityTab,
+      easyAccessRibbonExpanded,
     });
-  }, [activeUtilityTab, dialogRect, selectedPaletteShape]);
+  }, [
+    activeUtilityTab,
+    dialogRect,
+    easyAccessRibbonExpanded,
+    selectedPaletteShape,
+  ]);
 
   useEffect(() => {
     if (suppressNextSharedRunStateSaveRef.current) {
@@ -3443,6 +3454,11 @@ function MapperApp() {
           prev === nextUiState.selectedUtilityTab
             ? prev
             : nextUiState.selectedUtilityTab,
+        );
+        setEasyAccessRibbonExpanded((prev) =>
+          prev === (nextUiState.easyAccessRibbonExpanded === true)
+            ? prev
+            : nextUiState.easyAccessRibbonExpanded === true,
         );
         return;
       }
@@ -9005,6 +9021,10 @@ function MapperApp() {
         event,
         settings.setZeroOpacityShortcut,
       );
+      const isToggleEasyAccessUi = matchesBinding(
+        event,
+        settings.toggleEasyAccessUiShortcut,
+      );
       const isAddKeyMapShortcut = matchesBinding(
         event,
         settings.addKeyMapShortcut,
@@ -9075,6 +9095,16 @@ function MapperApp() {
                 shapeOpacity: nextOpacity,
               },
         );
+        return;
+      }
+
+      if (!isInputTarget && isToggleEasyAccessUi && !event.repeat) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSettings((prev) => ({
+          ...prev,
+          showEasyAccessUi: !prev.showEasyAccessUi,
+        }));
         return;
       }
 
@@ -9443,6 +9473,7 @@ function MapperApp() {
     keyTriggerProfiles,
     settings.strictPassthrough,
     settings.setZeroOpacityShortcut,
+    settings.toggleEasyAccessUiShortcut,
     settings.toggleModeShortcut,
     settings.toggleShapesShortcut,
     settings.toggleDialogShortcut,
@@ -10435,6 +10466,7 @@ function MapperApp() {
           selectedPaletteShape: "rectangle",
           dialogRect: { ...DEFAULT_DIALOG_RECT },
           selectedUtilityTab: "key-mapper",
+          easyAccessRibbonExpanded: false,
         });
         storage.saveKeyTriggerState({
           selectedPresetId: defaultPresetId,
@@ -10758,6 +10790,7 @@ function MapperApp() {
         selectedPaletteShape,
         dialogRect,
         selectedUtilityTab: activeUtilityTab,
+        easyAccessRibbonExpanded,
       },
       keyTriggerProfiles,
       keyTriggerPresets,
@@ -10945,6 +10978,11 @@ function MapperApp() {
           strictPassthrough:
             importedSettings?.strictPassthrough ??
             baseSettings.strictPassthrough,
+          showEasyAccessUi:
+            importedSettings?.showEasyAccessUi ?? baseSettings.showEasyAccessUi,
+          showEasyAccessArrowButton:
+            importedSettings?.showEasyAccessArrowButton ??
+            baseSettings.showEasyAccessArrowButton,
           syncMouseEvents:
             importedSettings?.syncMouseEvents ?? baseSettings.syncMouseEvents,
           mouseSyncPositionMode:
@@ -10958,6 +10996,11 @@ function MapperApp() {
               ? importedSettings.addKeyMapShortcut.trim() ||
                 baseSettings.addKeyMapShortcut
               : baseSettings.addKeyMapShortcut,
+          toggleEasyAccessUiShortcut:
+            typeof importedSettings?.toggleEasyAccessUiShortcut === "string"
+              ? importedSettings.toggleEasyAccessUiShortcut.trim() ||
+                baseSettings.toggleEasyAccessUiShortcut
+              : baseSettings.toggleEasyAccessUiShortcut,
           toggleModeShortcut:
             typeof importedSettings?.toggleModeShortcut === "string"
               ? importedSettings.toggleModeShortcut.trim() ||
@@ -12259,6 +12302,21 @@ function MapperApp() {
             } as CSSProperties
           }
         >
+          <EasyAccessRibbon
+            visible={overlayVisible && settings.showEasyAccessUi}
+            settings={settings}
+            keyTriggerCharacters={keyTriggerCharacters}
+            selectedKeyTriggerTabIds={selectedKeyTriggerTabIds}
+            onSelectedKeyTriggerTabIdsChange={setSelectedKeyTriggerTabIds}
+            toggleMode={toggleMode}
+            addKeyMap={addKeyMap}
+            selectedPaletteShape={selectedPaletteShape}
+            setSelectedPaletteShape={setSelectedPaletteShape}
+            handleThemeChange={handleThemeChange}
+            expanded={easyAccessRibbonExpanded}
+            onExpandedChange={setEasyAccessRibbonExpanded}
+          />
+
           <ShapeOverlay
             overlayVisible={overlayVisible}
             dialogVisible={dialogVisible}

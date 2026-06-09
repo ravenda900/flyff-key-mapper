@@ -8,6 +8,7 @@ import {
   getDocs,
   getFirestore,
   query,
+  runTransaction,
   setDoc,
   updateDoc,
   where,
@@ -148,6 +149,7 @@ const FIREBASE_CONFIG = {
 };
 
 const TOKEN_COLLECTION = "subscriptionTokens";
+const TOKEN_MAX_BOUND_USERS = 3;
 const ACCESS_CONTROL_MODE =
   ((import.meta.env.VITE_ACCESS_CONTROL_MODE as string | undefined) ?? "spark")
     .trim()
@@ -275,6 +277,30 @@ const isValidIpAddress = (value: string): boolean => {
   return ipv4.test(trimmed) || ipv6.test(trimmed);
 };
 
+const normalizeBoundIps = (boundIps: unknown, boundIp: unknown): string[] => {
+  const candidates = Array.isArray(boundIps)
+    ? boundIps
+    : typeof boundIp === "string"
+      ? [boundIp]
+      : [];
+
+  const unique: string[] = [];
+  for (const entry of candidates) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+
+    const trimmed = entry.trim();
+    if (!isValidIpAddress(trimmed) || unique.includes(trimmed)) {
+      continue;
+    }
+
+    unique.push(trimmed);
+  }
+
+  return unique;
+};
+
 const requireSuperAdminPermission = (actor: AccessControlState) => {
   if (!actor.hasToolAccess || !actor.canManageAdmins) {
     throw new Error(
@@ -350,6 +376,7 @@ const addDaysIso = (days: number): string => {
 const validateSubscriptionTokenDirect = async (
   app: ReturnType<typeof getFirebaseApp>,
   token: string,
+  requesterIp?: string,
 ): Promise<TokenValidationResult> => {
   if (!app) {
     return {
@@ -374,7 +401,8 @@ const validateSubscriptionTokenDirect = async (
 
   const db = getFirestore(app);
   const tokenHash = await hashToken(trimmedToken);
-  const snapshot = await getDoc(doc(db, TOKEN_COLLECTION, tokenHash));
+  const tokenRef = doc(db, TOKEN_COLLECTION, tokenHash);
+  const snapshot = await getDoc(tokenRef);
   if (!snapshot.exists()) {
     return {
       valid: false,
@@ -390,14 +418,27 @@ const validateSubscriptionTokenDirect = async (
     role?: unknown;
     status?: unknown;
     expiresAt?: unknown;
+    boundIps?: unknown;
+    boundIp?: unknown;
   };
   const plan = resolvePlan(data.plan);
   const role = resolveRole(data.role);
+  const status = resolveTokenStatus(data.status);
   const expiresAtMs = getEpochMs(data.expiresAt);
   const expiresAtIso =
     typeof data.expiresAt === "string" && data.expiresAt.trim().length > 0
       ? data.expiresAt
       : null;
+
+  if (status !== "active") {
+    return {
+      valid: false,
+      plan: "free",
+      role: "user",
+      expiresAtIso,
+      reason: "Subscription token is inactive.",
+    };
+  }
 
   if (
     plan !== "unlimited" &&
@@ -410,6 +451,133 @@ const validateSubscriptionTokenDirect = async (
       expiresAtIso,
       reason: "Subscription token has expired.",
     };
+  }
+
+  // Expiring tokens can be used by up to TOKEN_MAX_BOUND_USERS unique users.
+  if (plan !== "unlimited") {
+    const normalizedRequesterIp =
+      typeof requesterIp === "string" ? requesterIp.trim() : "";
+
+    if (!isValidIpAddress(normalizedRequesterIp)) {
+      return {
+        valid: false,
+        plan: "free",
+        role: "user",
+        expiresAtIso,
+        reason:
+          "Unable to verify user identity for this subscription token. Please retry when your public IP is available.",
+      };
+    }
+
+    const boundIps = normalizeBoundIps(data.boundIps, data.boundIp);
+
+    if (
+      !boundIps.includes(normalizedRequesterIp) &&
+      boundIps.length >= TOKEN_MAX_BOUND_USERS
+    ) {
+      return {
+        valid: false,
+        plan: "free",
+        role: "user",
+        expiresAtIso,
+        reason: "This subscription token has reached its maximum of 3 users.",
+      };
+    }
+
+    try {
+      await runTransaction(db, async (transaction) => {
+        const freshSnapshot = await transaction.get(tokenRef);
+        if (!freshSnapshot.exists()) {
+          throw new Error("TOKEN_NOT_FOUND");
+        }
+
+        const freshData = freshSnapshot.data() as {
+          plan?: unknown;
+          expiresAt?: unknown;
+          boundIps?: unknown;
+          boundIp?: unknown;
+        };
+        const freshPlan = resolvePlan(freshData.plan);
+        const freshExpiresAtMs = getEpochMs(freshData.expiresAt);
+
+        if (
+          freshPlan !== "unlimited" &&
+          (freshExpiresAtMs === null || Date.now() > freshExpiresAtMs)
+        ) {
+          throw new Error("TOKEN_EXPIRED");
+        }
+
+        if (freshPlan === "unlimited") {
+          return;
+        }
+
+        const freshBoundIps = normalizeBoundIps(
+          freshData.boundIps,
+          freshData.boundIp,
+        );
+
+        const nowIso = new Date().toISOString();
+        if (!freshBoundIps.includes(normalizedRequesterIp)) {
+          if (freshBoundIps.length >= TOKEN_MAX_BOUND_USERS) {
+            throw new Error("TOKEN_USER_LIMIT_REACHED");
+          }
+
+          const updatedBoundIps = [...freshBoundIps, normalizedRequesterIp];
+          transaction.update(tokenRef, {
+            boundIps: updatedBoundIps,
+            boundIp: updatedBoundIps[0] ?? null,
+            boundAt: nowIso,
+            lastValidatedAt: nowIso,
+          });
+          return;
+        }
+
+        transaction.update(tokenRef, {
+          lastValidatedAt: nowIso,
+        });
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "TOKEN_BIND_VALIDATION_FAILED";
+
+      if (message === "TOKEN_USER_LIMIT_REACHED") {
+        return {
+          valid: false,
+          plan: "free",
+          role: "user",
+          expiresAtIso,
+          reason: "This subscription token has reached its maximum of 3 users.",
+        };
+      }
+
+      if (message === "TOKEN_EXPIRED") {
+        return {
+          valid: false,
+          plan: "free",
+          role: "user",
+          expiresAtIso,
+          reason: "Subscription token has expired.",
+        };
+      }
+
+      if (message === "TOKEN_NOT_FOUND") {
+        return {
+          valid: false,
+          plan: "free",
+          role: "user",
+          expiresAtIso,
+          reason: "Invalid subscription token.",
+        };
+      }
+
+      return {
+        valid: false,
+        plan: "free",
+        role: "user",
+        expiresAtIso,
+        reason: "Unable to validate subscription token at this time.",
+      };
+    }
   }
 
   return {
@@ -502,6 +670,7 @@ export const resolveAccessControlState = async (options?: {
     const tokenValidation = await validateSubscriptionTokenDirect(
       app,
       options?.subscriptionToken ?? "",
+      ipAddress,
     );
 
     if (tokenValidation.valid) {

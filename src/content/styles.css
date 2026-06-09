@@ -923,6 +923,182 @@ body {
   transform: translate(-1px, -1px);
 }
 
+
+.fm-easy-access-ribbon {
+  position: fixed;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  z-index: 2147483645;
+  display: flex;
+  align-items: center;
+  pointer-events: auto;
+}
+
+.fm-easy-access-ribbon-toggle {
+  width: 28px;
+  height: 68px;
+  border-radius: 0 13px 13px 0;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--fm-theme-text) 20%, transparent);
+  border-color: color-mix(in srgb, var(--fm-theme-border) 80%, transparent);
+  background-color: var(--fm-theme-primary, #1677ff);
+  background: linear-gradient(
+    180deg,
+    var(--fm-theme-primary),
+    color-mix(in srgb, var(--fm-theme-primary) 72%, black)
+  );
+}
+
+.fm-easy-access-ribbon-toggle:hover,
+.fm-easy-access-ribbon-toggle:focus-visible {
+  background-color: var(--fm-theme-primary, #1677ff) !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--fm-theme-primary) 92%, white),
+    color-mix(in srgb, var(--fm-theme-primary) 82%, black)
+  ) !important;
+}
+
+.fm-easy-access-ribbon-toggle:active {
+  background-color: var(--fm-theme-primary, #1677ff) !important;
+}
+
+.fm-easy-access-ribbon-panel {
+  width: 246px;
+  max-height: min(70vh, 700px);
+  margin-left: 0;
+  padding: 9px;
+  border-radius: 0 15px 15px 0;
+  border: 1px solid var(--fm-theme-border);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--fm-theme-text) 20%, transparent);
+  background: var(--fm-theme-bg-container);
+  overflow: auto;
+}
+
+.fm-easy-access-ribbon-open .fm-easy-access-ribbon-toggle {
+  border-right-width: 0;
+  border-radius: 0 0 0 0;
+}
+
+.fm-easy-access-ribbon-open .fm-easy-access-ribbon-panel {
+  border-left-width: 0;
+}
+
+.fm-easy-access-ribbon-header,
+.fm-easy-access-ribbon-section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+}
+
+.fm-easy-access-ribbon-header .ant-typography strong,
+.fm-easy-access-ribbon-section > .ant-typography strong {
+  font-size: 12px;
+}
+
+.fm-easy-access-ribbon-header .fm-easy-access-ribbon-subtitle {
+  font-size: 11px;
+}
+
+.fm-easy-access-ribbon-subtitle,
+.fm-easy-access-ribbon-footer {
+  line-height: 1.35;
+}
+
+.fm-easy-access-ribbon-section {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--fm-theme-border-secondary);
+}
+
+.fm-easy-access-ribbon-tab-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 200px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.fm-easy-access-ribbon-tab-label {
+  display: inline-flex;
+  max-width: 144px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fm-easy-access-ribbon .ant-btn {
+  height: 28px;
+  padding-inline: 8px;
+}
+
+.fm-easy-access-ribbon .ant-btn-sm {
+  height: 26px;
+  padding-inline: 6px;
+}
+
+.fm-shape-palette-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 220px;
+}
+
+.fm-shape-palette-popover-tile {
+  height: 78px;
+  padding: 8px 6px;
+  border-radius: 12px;
+  border: 1px solid var(--fm-theme-border);
+  background: var(--fm-theme-bg-container);
+  color: var(--fm-theme-text);
+}
+
+.fm-shape-palette-popover-tile:hover,
+.fm-shape-palette-popover-tile:focus-visible {
+  border-color: var(--fm-theme-primary);
+  color: var(--fm-theme-primary);
+}
+
+.fm-shape-palette-popover-tile-selected {
+  border-color: var(--fm-theme-primary) !important;
+  background: var(--fm-theme-primary-bg) !important;
+  color: var(--fm-theme-primary) !important;
+}
+
+.fm-shape-palette-popover-label {
+  font-size: 11px;
+  line-height: 1.1;
+}
+
+.fm-easy-access-ribbon-select-dropdown {
+  z-index: 2147483647 !important;
+}
+
+.fm-easy-access-ribbon-select-dropdown.ant-select-dropdown {
+  background: var(--fm-theme-bg-container) !important;
+  border: 1px solid var(--fm-theme-border) !important;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--fm-theme-text) 18%, transparent) !important;
+}
+
+.fm-easy-access-ribbon-select-dropdown .rc-virtual-list-holder,
+.fm-easy-access-ribbon-select-dropdown .rc-virtual-list-holder-inner,
+.fm-easy-access-ribbon-select-dropdown .ant-empty {
+  background: var(--fm-theme-bg-container) !important;
+}
+
+.fm-easy-access-ribbon-select-dropdown .ant-select-item {
+  color: var(--fm-theme-text) !important;
+}
+
+.fm-easy-access-ribbon-select-dropdown .ant-select-item-option-active,
+.fm-easy-access-ribbon-select-dropdown .ant-select-item-option-selected {
+  background: var(--fm-theme-fill) !important;
+}
+
 .fm-corner-indicator-tr {
   justify-self: end;
   align-self: start;

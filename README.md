@@ -51,8 +51,25 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
 - Reset Settings Defaults now preserves Subscription Access Token and Mobile Push Notification settings; only clean-slate reset clears them.
 - Characters/Tabs selection is now available in both Key Mapper and Key Trigger panes.
 - Add Key Map, Hide Shapes, and Opacity 0/100 shortcuts were moved to the Settings pane.
+- Added a dedicated Show/Hide Easy Access shortcut setting (default: Alt+Shift+U).
+- Added a dedicated Show Easy Access UI setting to fully hide/show the ribbon area.
+- Added a dedicated Easy Access Arrow Button setting and helper tooltips in Settings.
 - Key Trigger `Lock to this tab` now persists correctly through editor save/load and storage normalization.
 - Key Mapper shape shortcut input background is more transparent so underlying rendered content is easier to inspect.
+
+### Easy Access ribbon updates
+
+- Added a left-side Easy Access ribbon with shared controls for Start/Stop Script, Add Key Map, Characters/Tabs selection, and Theme.
+- Added persisted ribbon expand/collapse state so open/closed preference is restored across reloads.
+- Added right-click shape palette selection on Add Key Map while preserving left-click immediate add behavior.
+- Added shape-switch guidance tooltip for Add Key Map in Easy Access.
+- Improved ribbon visual consistency with dialog theme surfaces.
+- Improved arrow-button interaction styling and hover-state background stability.
+
+### Stability fixes
+
+- Hardened shortcut parsing to safely handle undefined or malformed shortcut values from stale imports/storage.
+- Fixed Easy Access theme dropdown selection behavior by using an interactive popup container in the ribbon layer.
 
 ## What's new in v4.0.0
 

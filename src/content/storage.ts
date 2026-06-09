@@ -187,6 +187,22 @@ const DEFAULT_DIALOG_RECT: DialogRect = {
   height: 540,
 };
 
+const normalizeUiState = (value: unknown): MapperUiState => {
+  const parsed =
+    typeof value === "object" && value ? (value as Partial<MapperUiState>) : {};
+
+  return {
+    selectedPaletteShape: isShapeType(parsed.selectedPaletteShape)
+      ? parsed.selectedPaletteShape
+      : "rectangle",
+    dialogRect: normalizeDialogRect(parsed.dialogRect),
+    selectedUtilityTab: isUtilityTab(parsed.selectedUtilityTab)
+      ? parsed.selectedUtilityTab
+      : "key-mapper",
+    easyAccessRibbonExpanded: parsed.easyAccessRibbonExpanded === true,
+  };
+};
+
 const isShapeType = (value: unknown): value is ShapeType =>
   [
     "rectangle",
@@ -607,7 +623,10 @@ export const DEFAULT_SETTINGS: MapperSettings = {
   syncMouseEvents: false,
   mouseSyncPositionMode: "actual" as MouseSyncPositionMode,
   strictPassthrough: true,
+  showEasyAccessUi: true,
+  showEasyAccessArrowButton: true,
   addKeyMapShortcut: "Alt+Shift+A",
+  toggleEasyAccessUiShortcut: "Alt+Shift+U",
   toggleModeShortcut: "Alt+Shift+S",
   focusCanvasShortcut: "Alt+Shift+F",
   toggleShapesShortcut: "Alt+Shift+H",
@@ -646,6 +665,8 @@ export const DEFAULT_SETTINGS: MapperSettings = {
 
 const GLOBAL_SETTINGS_FIELDS = [
   "strictPassthrough",
+  "showEasyAccessUi",
+  "showEasyAccessArrowButton",
   "showSnapIndicators",
   "showShapeTooltips",
   "shapeOpacity",
@@ -720,8 +741,16 @@ const normalizeSettings = (
     parsed?.mouseSyncPositionMode === "ratio" ? "ratio" : "actual",
   strictPassthrough:
     parsed?.strictPassthrough ?? DEFAULT_SETTINGS.strictPassthrough,
+  showEasyAccessUi:
+    parsed?.showEasyAccessUi ?? DEFAULT_SETTINGS.showEasyAccessUi,
+  showEasyAccessArrowButton:
+    parsed?.showEasyAccessArrowButton ??
+    DEFAULT_SETTINGS.showEasyAccessArrowButton,
   addKeyMapShortcut:
     parsed?.addKeyMapShortcut ?? DEFAULT_SETTINGS.addKeyMapShortcut,
+  toggleEasyAccessUiShortcut:
+    parsed?.toggleEasyAccessUiShortcut ??
+    DEFAULT_SETTINGS.toggleEasyAccessUiShortcut,
   toggleModeShortcut:
     parsed?.toggleModeShortcut ?? DEFAULT_SETTINGS.toggleModeShortcut,
   focusCanvasShortcut:
@@ -1008,18 +1037,7 @@ const applyIncomingStorageSync = (message: StorageSyncMessage) => {
   }
 
   if (message.key === UI_STATE_KEY) {
-    if (typeof message.value === "object" && message.value) {
-      const value = message.value as MapperUiState;
-      uiStateCache = {
-        selectedPaletteShape: isShapeType(value.selectedPaletteShape)
-          ? value.selectedPaletteShape
-          : "rectangle",
-        dialogRect: normalizeDialogRect(value.dialogRect),
-        selectedUtilityTab: isUtilityTab(value.selectedUtilityTab)
-          ? value.selectedUtilityTab
-          : "key-mapper",
-      };
-    }
+    uiStateCache = normalizeUiState(message.value);
     return;
   }
 
@@ -1408,6 +1426,7 @@ const hydrateCachesFromIndexedDb = async () => {
     broadcastStorageSync({ key: SETTINGS_KEY, value: settingsCache });
   }
   if (uiState) uiStateCache = uiState;
+  if (uiState) uiStateCache = normalizeUiState(uiState);
   if (keyTriggerState) {
     keyTriggerStateCache = normalizeKeyTriggerState(keyTriggerState);
   }
@@ -1541,11 +1560,12 @@ const migrateLegacyStorageToIndexedDb = async () => {
     });
   }
   if (legacyUiState !== null) {
-    await idbSet("uiState", UI_STATE_KEY, legacyUiState);
+    const migratedUiState = normalizeUiState(legacyUiState);
+    await idbSet("uiState", UI_STATE_KEY, migratedUiState);
     migratedEntries.push({
       store: "uiState",
       key: UI_STATE_KEY,
-      value: legacyUiState,
+      value: migratedUiState,
     });
   }
   if (legacyKeyTrigger !== null) {
@@ -1807,15 +1827,7 @@ export const storage = {
   },
 
   saveUiState(state: MapperUiState): void {
-    uiStateCache = {
-      selectedPaletteShape: isShapeType(state.selectedPaletteShape)
-        ? state.selectedPaletteShape
-        : "rectangle",
-      dialogRect: normalizeDialogRect(state.dialogRect),
-      selectedUtilityTab: isUtilityTab(state.selectedUtilityTab)
-        ? state.selectedUtilityTab
-        : "key-mapper",
-    };
+    uiStateCache = normalizeUiState(state);
     void idbSet("uiState", UI_STATE_KEY, uiStateCache).catch(() => undefined);
     broadcastStorageSync({ key: UI_STATE_KEY, value: uiStateCache });
   },

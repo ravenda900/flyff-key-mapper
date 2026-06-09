@@ -7,6 +7,11 @@ Auto-Awaken Start-detection calibration and runtime load tuning release.
 ### Added
 
 - Added a focused `start-band` template search region in Auto-Awaken to prioritize the most likely Start-button area before broader fallback passes.
+- Added a left-side Easy Access ribbon with quick controls for Start/Stop Script, Add Key Map, Characters/Tabs selection, and Theme switching.
+- Added persisted Easy Access ribbon expanded/collapsed state in UI-state storage.
+- Added Settings controls for Easy Access Arrow Button visibility and full Easy Access UI visibility.
+- Added a configurable global shortcut to toggle full Easy Access UI visibility (default: Alt+Shift+U).
+- Added in-context tooltips for Easy Access settings and shape switching guidance on Add Key Map.
 
 ### Changed
 
@@ -19,6 +24,8 @@ Auto-Awaken Start-detection calibration and runtime load tuning release.
 - Updated Settings reset behavior to preserve Subscription Access Token and Mobile Push Notification settings; these are now cleared only by clean-slate factory reset.
 - Updated dialog tab controls so Characters/Tabs selection is available in both Key Mapper and Key Trigger panes.
 - Moved Add Key Map, Hide Shapes, and Opacity 0/100 shortcuts into the Settings pane.
+- Updated Easy Access Add Key Map behavior so left click adds immediately and right click opens shape palette selection.
+- Updated Easy Access panel visuals to align with Flyff Utility dialog theme surfaces.
 - Updated Key Mapper shape shortcut input background styling with stronger transparency so rendered content behind the input remains more visible.
 
 ### Fixed
@@ -30,6 +37,9 @@ Auto-Awaken Start-detection calibration and runtime load tuning release.
 - Fixed re-check behavior for active toggles so checking a character/tab immediately resumes toggle dispatch without requiring a manual retrigger.
 - Fixed Key Trigger hold-trigger profiles randomly stopping during long key holds by keeping hold-timer state stable across effect re-renders.
 - Fixed Key Trigger `Lock to this tab` persistence so profile editor state now saves/loads `lockToTab` and owner-tab fields correctly.
+- Fixed Easy Access theme dropdown option selection by correcting popup-container layering behavior.
+- Fixed Easy Access arrow button hover state occasionally appearing transparent.
+- Fixed runtime shortcut parsing crashes caused by undefined shortcut values (`Cannot read properties of undefined (reading 'split')`).
 
 ### Packaging
 

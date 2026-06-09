@@ -6,14 +6,23 @@ const notificationSeenByKey = new Map();
 
 const activeToggleTargets = new Map();
 
+const normalizeTabIds = (ids) =>
+  Array.from(
+    new Set(
+      Array.isArray(ids)
+        ? ids.filter((id) => Number.isInteger(id) && Number(id) > 0)
+        : [],
+    ),
+  );
+
 const stopProfileToggle = (profileId) => {
   const currentTargets = activeToggleTargets.get(profileId);
-  if (!currentTargets || currentTargets.length === 0) {
+  if (!currentTargets || currentTargets.tabIds.length === 0) {
     activeToggleTargets.delete(profileId);
     return false;
   }
 
-  currentTargets.forEach((tabId) => {
+  currentTargets.tabIds.forEach((tabId) => {
     chrome.tabs
       .sendMessage(tabId, {
         type: "KEY_TRIGGER_STOP_TOGGLE",
@@ -26,13 +35,19 @@ const stopProfileToggle = (profileId) => {
   return true;
 };
 
-const startProfileToggle = (profileId, tabIds, actions) => {
-  activeToggleTargets.set(profileId, tabIds);
+const startProfileToggle = (profileId, tabIds, actions, options) => {
+  activeToggleTargets.set(profileId, {
+    tabIds,
+    ownerTabId: options?.ownerTabId ?? null,
+    actions,
+  });
+
   tabIds.forEach((tabId) => {
     chrome.tabs
       .sendMessage(tabId, {
         type: "KEY_TRIGGER_START_TOGGLE",
         profileId,
+        tabIds,
         actions,
       })
       .catch(() => undefined);
@@ -365,9 +380,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
+    const senderTabId =
+      typeof sender?.tab?.id === "number" ? sender.tab.id : null;
+
     const currentTargets = activeToggleTargets.get(message.profileId);
-    if (currentTargets && currentTargets.length > 0) {
-      currentTargets.forEach((tabId) => {
+    if (currentTargets && currentTargets.tabIds.length > 0) {
+      if (
+        currentTargets.ownerTabId !== null &&
+        currentTargets.ownerTabId !== senderTabId
+      ) {
+        sendResponse({ ok: true, active: true });
+        return;
+      }
+
+      currentTargets.tabIds.forEach((tabId) => {
         chrome.tabs
           .sendMessage(tabId, {
             type: "KEY_TRIGGER_STOP_TOGGLE",
@@ -380,24 +406,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    const tabIds = Array.isArray(message.tabIds)
-      ? message.tabIds.filter((id) => Number.isFinite(id))
-      : [];
+    const tabIds = normalizeTabIds(message.tabIds);
     const actions = Array.isArray(message.actions)
       ? message.actions.filter(
           (action) => typeof action === "object" && action !== null,
         )
       : [];
 
-    activeToggleTargets.set(message.profileId, tabIds);
-    tabIds.forEach((tabId) => {
-      chrome.tabs
-        .sendMessage(tabId, {
-          type: "KEY_TRIGGER_START_TOGGLE",
-          profileId: message.profileId,
-          actions,
-        })
-        .catch(() => undefined);
+    startProfileToggle(message.profileId, tabIds, actions, {
+      ownerTabId: message.lockToTab === true ? senderTabId : null,
     });
 
     sendResponse({ ok: true, active: true });
@@ -420,9 +437,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
 
-    const tabIds = Array.isArray(message.tabIds)
-      ? message.tabIds.filter((id) => Number.isFinite(id))
-      : [];
+    const tabIds = normalizeTabIds(message.tabIds);
 
     let hasActiveProfile = false;
     let hasStartedProfile = false;
@@ -435,7 +450,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         : [];
 
       const targets = activeToggleTargets.get(profile.profileId);
-      const isActive = Array.isArray(targets) && targets.length > 0;
+      const isActive = !!targets && targets.tabIds.length > 0;
 
       if (isActive) {
         hasActiveProfile =

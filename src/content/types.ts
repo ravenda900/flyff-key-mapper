@@ -81,7 +81,10 @@ export interface MapperSettings {
   syncMouseEvents: boolean;
   mouseSyncPositionMode: MouseSyncPositionMode;
   strictPassthrough: boolean;
+  showEasyAccessUi: boolean;
+  showEasyAccessArrowButton: boolean;
   addKeyMapShortcut: string;
+  toggleEasyAccessUiShortcut: string;
   toggleModeShortcut: string;
   focusCanvasShortcut: string;
   toggleShapesShortcut: string;
@@ -123,6 +126,7 @@ export interface MapperUiState {
   selectedPaletteShape: ShapeType;
   dialogRect: DialogRect;
   selectedUtilityTab: UtilityTab;
+  easyAccessRibbonExpanded?: boolean;
 }
 
 export interface KeyTriggerAction {

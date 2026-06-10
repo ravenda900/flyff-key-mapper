@@ -1,5 +1,27 @@
 # Flyff Mapper Release Notes
 
+## v4.1.1 (2026-06-10)
+
+Key Trigger lock ownership hardening and first-start toggle tab-selection reliability release.
+
+### Changed
+
+- Updated lock-to-tab toggle behavior to enforce single-owner control for active locked profile instances.
+- Updated locked toggle ownership flow so only the owning trigger tab can turn an active locked toggle off.
+- Updated background tab-selection sync handling with user-initiated precedence to reduce first-start stale selection overwrite races.
+- Updated active-toggle reconciliation behavior to keep scoped profile instances stable while applying tab selection changes.
+
+### Fixed
+
+- Fixed a regression where lock-enabled toggle profiles could fail to start after trigger key press.
+- Fixed lock takeover behavior where another tab could re-trigger and seize lock on an already active locked toggle instance.
+- Fixed first-start scenario where unchecking a non-trigger tab did not immediately stop toggle actions on that tab.
+
+### Packaging
+
+- Package version updated to 4.1.1.
+- Manifest extension version updated to 4.1.1.
+
 ## v4.1.0 (2026-06-09)
 
 Auto-Awaken Start-detection calibration and runtime load tuning release.

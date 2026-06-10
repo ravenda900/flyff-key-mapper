@@ -338,6 +338,7 @@ export const MapperDialog = ({
   const [shouldFocusAutoStop, setShouldFocusAutoStop] = useState(false);
   const [isSendingTestPush, setIsSendingTestPush] = useState(false);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [settingsSearchQuery, setSettingsSearchQuery] = useState("");
   const [profileCreateName, setProfileCreateName] = useState("");
   const [profileCreateOpen, setProfileCreateOpen] = useState(false);
   const [profileRenameName, setProfileRenameName] = useState("");
@@ -358,6 +359,7 @@ export const MapperDialog = ({
   } | null>(null);
   const lastUtilityTabRef = useRef<UtilityTab>(activeUtilityTab);
   const autoStopInputRef = useRef<any>(null);
+  const settingsAnchorRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const profileCreateInputRef = useRef<import("antd").InputRef | null>(null);
   const profileRenameInputRef = useRef<import("antd").InputRef | null>(null);
   const autoStopDebounceTimerRef = useRef<number | null>(null);
@@ -440,6 +442,146 @@ export const MapperDialog = ({
   const canIssueUnlimitedPlan = effectiveRole === "superadmin";
 
   const isLightTheme = resolvedThemePreset.appearance === "light";
+
+  const setSettingsAnchor =
+    (id: string) =>
+    (node: HTMLDivElement | null): void => {
+      settingsAnchorRefs.current[id] = node;
+    };
+
+  const scrollToSettingsAnchor = (id: string) => {
+    const target = settingsAnchorRefs.current[id];
+    if (!target) {
+      return;
+    }
+
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  const settingsSearchEntries: Array<{
+    id: string;
+    label: string;
+    keywords: string[];
+  }> = [
+    {
+      id: "factory-reset",
+      label: "Factory Reset",
+      keywords: ["factory", "reset", "clean slate", "delete"],
+    },
+    {
+      id: "theme",
+      label: "Theme",
+      keywords: ["theme", "appearance", "light", "dark"],
+    },
+    {
+      id: "strict-passthrough",
+      label: "Strict Input Passthrough",
+      keywords: ["strict", "passthrough", "input"],
+    },
+    {
+      id: "easy-access-arrow",
+      label: "Easy Access Arrow Button",
+      keywords: ["easy access", "arrow", "ribbon", "button"],
+    },
+    {
+      id: "easy-access-ui",
+      label: "Show Easy Access UI",
+      keywords: ["easy access", "ui", "panel", "show", "hide"],
+    },
+    {
+      id: "toggle-easy-access-shortcut",
+      label: "Show/Hide Easy Access Shortcut",
+      keywords: ["easy access", "shortcut", "toggle", "hotkey"],
+    },
+    {
+      id: "toggle-dialog-shortcut",
+      label: "Toggle Dialog Shortcut",
+      keywords: ["dialog", "shortcut", "open", "close"],
+    },
+    {
+      id: "auto-stop",
+      label: "Auto-Stop (seconds)",
+      keywords: ["auto stop", "timeout", "seconds", "idle"],
+    },
+    {
+      id: "captcha-detection",
+      label: "CAPTCHA Detection Action",
+      keywords: ["captcha", "recaptcha", "notify", "stop"],
+    },
+    {
+      id: "mobile-push",
+      label: "Mobile Push Notifications",
+      keywords: ["mobile", "push", "discord", "notification"],
+    },
+    {
+      id: "sync-mouse",
+      label: "Sync Mouse Events Across Tabs",
+      keywords: ["sync", "mouse", "tabs", "ratio", "actual"],
+    },
+    {
+      id: "experimental-features",
+      label: "Experimental Features",
+      keywords: ["experimental", "auto holy", "auto pills", "auto awaken"],
+    },
+    {
+      id: "auto-holy",
+      label: "Auto-Holy",
+      keywords: ["auto holy", "holy", "root", "stun"],
+    },
+    {
+      id: "auto-holy-debuff",
+      label: "Auto-Holy Debuff Type",
+      keywords: ["auto holy", "debuff", "root", "stun"],
+    },
+    {
+      id: "auto-holy-region",
+      label: "Auto-Holy Debuff Reference Area",
+      keywords: ["auto holy", "region", "capture", "reference area"],
+    },
+    {
+      id: "auto-holy-key",
+      label: "Auto-Holy Key",
+      keywords: ["auto holy", "holy key", "shortcut", "hotkey"],
+    },
+    {
+      id: "auto-pills",
+      label: "Auto-Pills",
+      keywords: ["auto pills", "pills", "hp"],
+    },
+    {
+      id: "auto-pills-threshold",
+      label: "Auto-Pills HP Threshold",
+      keywords: ["auto pills", "hp threshold", "threshold"],
+    },
+    {
+      id: "auto-pills-region",
+      label: "Auto-Pills HP Reference Area",
+      keywords: ["auto pills", "region", "capture", "reference area"],
+    },
+    {
+      id: "auto-pills-key",
+      label: "Auto-Pills Key",
+      keywords: ["auto pills", "pill key", "shortcut", "hotkey"],
+    },
+  ];
+
+  const normalizedSettingsSearchQuery = settingsSearchQuery
+    .trim()
+    .toLowerCase();
+  const filteredSettingsSearchEntries =
+    normalizedSettingsSearchQuery.length === 0
+      ? []
+      : settingsSearchEntries.filter((entry) => {
+          if (
+            entry.label.toLowerCase().includes(normalizedSettingsSearchQuery)
+          ) {
+            return true;
+          }
+
+          return entry.keywords.some((keyword) =>
+            keyword.toLowerCase().includes(normalizedSettingsSearchQuery),
+          );
+        });
 
   const dialogThemeVars: CSSProperties = {
     "--fm-theme-bg-base": resolvedThemePreset.token.colorBgBase,
@@ -2454,6 +2596,57 @@ export const MapperDialog = ({
                       </Space>
                     </Form.Item>
 
+                    <Form.Item label="Find Setting">
+                      <Space
+                        direction="vertical"
+                        size={6}
+                        className="fm-w-full"
+                      >
+                        <Input.Search
+                          allowClear
+                          placeholder="Search settings (e.g. easy access, shortcut, auto-stop)"
+                          value={settingsSearchQuery}
+                          onChange={(event) => {
+                            setSettingsSearchQuery(event.target.value);
+                          }}
+                          onSearch={() => {
+                            const firstMatch = filteredSettingsSearchEntries[0];
+                            if (!firstMatch) {
+                              return;
+                            }
+                            scrollToSettingsAnchor(firstMatch.id);
+                          }}
+                        />
+                        {normalizedSettingsSearchQuery.length > 0 && (
+                          <>
+                            {filteredSettingsSearchEntries.length > 0 ? (
+                              <Space wrap>
+                                {filteredSettingsSearchEntries
+                                  .slice(0, 8)
+                                  .map((entry) => (
+                                    <Button
+                                      key={entry.id}
+                                      size="small"
+                                      type="default"
+                                      onClick={() => {
+                                        scrollToSettingsAnchor(entry.id);
+                                      }}
+                                    >
+                                      {entry.label}
+                                    </Button>
+                                  ))}
+                              </Space>
+                            ) : (
+                              <Typography.Text type="secondary">
+                                No matching settings found.
+                              </Typography.Text>
+                            )}
+                          </>
+                        )}
+                      </Space>
+                    </Form.Item>
+
+                    <div ref={setSettingsAnchor("factory-reset")} />
                     <Form.Item label="Factory Reset">
                       <Space
                         direction="vertical"
@@ -2476,6 +2669,7 @@ export const MapperDialog = ({
                       </Space>
                     </Form.Item>
 
+                    <div ref={setSettingsAnchor("theme")} />
                     <Form.Item label="Theme">
                       <Space
                         direction="vertical"
@@ -2518,6 +2712,7 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="Strict Input Passthrough">
+                          <div ref={setSettingsAnchor("strict-passthrough")} />
                           <Space
                             direction="vertical"
                             size={4}
@@ -2558,6 +2753,7 @@ export const MapperDialog = ({
                             </Space>
                           }
                         >
+                          <div ref={setSettingsAnchor("easy-access-arrow")} />
                           <Space
                             direction="vertical"
                             size={4}
@@ -2620,6 +2816,7 @@ export const MapperDialog = ({
                             </Space>
                           }
                         >
+                          <div ref={setSettingsAnchor("easy-access-ui")} />
                           <Space
                             direction="vertical"
                             size={4}
@@ -2751,6 +2948,9 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="Toggle Dialog Shortcut">
+                          <div
+                            ref={setSettingsAnchor("toggle-dialog-shortcut")}
+                          />
                           <Space
                             direction="vertical"
                             size={4}
@@ -2794,6 +2994,11 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="Show/Hide Easy Access Shortcut">
+                          <div
+                            ref={setSettingsAnchor(
+                              "toggle-easy-access-shortcut",
+                            )}
+                          />
                           <Space
                             direction="vertical"
                             size={4}
@@ -3060,6 +3265,7 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="Auto-Stop (seconds)">
+                          <div ref={setSettingsAnchor("auto-stop")} />
                           <Space
                             direction="vertical"
                             size={4}
@@ -3098,6 +3304,7 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="CAPTCHA Detection Action">
+                          <div ref={setSettingsAnchor("captcha-detection")} />
                           <Space
                             direction="vertical"
                             size={4}
@@ -3146,6 +3353,7 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="Mobile Push Notifications (Discord Bot)">
+                          <div ref={setSettingsAnchor("mobile-push")} />
                           <Space
                             direction="vertical"
                             size={8}
@@ -3231,6 +3439,7 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="Sync Mouse Events Across Tabs">
+                          <div ref={setSettingsAnchor("sync-mouse")} />
                           <Space
                             direction="vertical"
                             size={4}
@@ -3319,6 +3528,9 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         <Form.Item label="Experimental Features">
+                          <div
+                            ref={setSettingsAnchor("experimental-features")}
+                          />
                           <Space
                             direction="vertical"
                             size={4}
@@ -3341,521 +3553,559 @@ export const MapperDialog = ({
                         </Form.Item>
 
                         {settings.experimentalFeaturesEnabled && (
-                          <Form.Item label="Auto-Holy">
-                            <Space
-                              direction="vertical"
-                              size={6}
-                              className="fm-w-full"
-                            >
-                              <Switch
-                                checked={settings.autoHoly.enabled}
-                                onChange={(checked) => {
-                                  setSettings((prev) => ({
-                                    ...prev,
-                                    autoHoly: {
-                                      ...prev.autoHoly,
-                                      enabled: checked,
-                                    },
-                                  }));
-                                }}
-                              />
-                              {settings.autoHoly.enabled && (
-                                <>
-                                  <Form.Item
-                                    label="Debuff Type"
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <Select
-                                      value={settings.autoHoly.debuffType}
-                                      getPopupContainer={
-                                        getDialogPopupContainer
-                                      }
-                                      dropdownStyle={
-                                        PROFILE_SELECT_DROPDOWN_STYLE
-                                      }
-                                      options={[
-                                        { value: "all", label: "All" },
-                                        { value: "root", label: "Root" },
-                                        { value: "stun", label: "Stun" },
-                                      ]}
-                                      onChange={(value) => {
-                                        setSettings((prev) => ({
-                                          ...prev,
-                                          autoHoly: {
-                                            ...prev.autoHoly,
-                                            debuffType:
-                                              value as AutoHolyDebuffType,
-                                          },
-                                        }));
-                                      }}
-                                    />
-                                  </Form.Item>
-                                  <Form.Item
-                                    label="Show Auto-Holy Debug Overlay"
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <Switch
-                                      checked={
-                                        settings.autoHoly.debugOverlayEnabled
-                                      }
-                                      onChange={(checked) => {
-                                        setSettings((prev) => ({
-                                          ...prev,
-                                          autoHoly: {
-                                            ...prev.autoHoly,
-                                            debugOverlayEnabled: checked,
-                                          },
-                                        }));
-                                      }}
-                                    />
-                                  </Form.Item>
-                                  <Form.Item
-                                    label="Debuff Reference Area"
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <Space
-                                      direction="vertical"
-                                      size={4}
-                                      className="fm-w-full"
+                          <>
+                            <div ref={setSettingsAnchor("auto-holy")} />
+                            <Form.Item label="Auto-Holy">
+                              <Space
+                                direction="vertical"
+                                size={6}
+                                className="fm-w-full"
+                              >
+                                <Switch
+                                  checked={settings.autoHoly.enabled}
+                                  onChange={(checked) => {
+                                    setSettings((prev) => ({
+                                      ...prev,
+                                      autoHoly: {
+                                        ...prev.autoHoly,
+                                        enabled: checked,
+                                      },
+                                    }));
+                                  }}
+                                />
+                                {settings.autoHoly.enabled && (
+                                  <>
+                                    <Form.Item
+                                      label="Debuff Type"
+                                      style={{ marginBottom: 0 }}
                                     >
-                                      <Space wrap>
-                                        <Button
-                                          onClick={() => {
-                                            if (
-                                              automationRegionCaptureTarget ===
-                                              "autoHoly"
-                                            ) {
-                                              onCancelAutomationRegionCapture();
-                                              return;
-                                            }
+                                      <div
+                                        ref={setSettingsAnchor(
+                                          "auto-holy-debuff",
+                                        )}
+                                      />
+                                      <Select
+                                        value={settings.autoHoly.debuffType}
+                                        getPopupContainer={
+                                          getDialogPopupContainer
+                                        }
+                                        dropdownStyle={
+                                          PROFILE_SELECT_DROPDOWN_STYLE
+                                        }
+                                        options={[
+                                          { value: "all", label: "All" },
+                                          { value: "root", label: "Root" },
+                                          { value: "stun", label: "Stun" },
+                                        ]}
+                                        onChange={(value) => {
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoHoly: {
+                                              ...prev.autoHoly,
+                                              debuffType:
+                                                value as AutoHolyDebuffType,
+                                            },
+                                          }));
+                                        }}
+                                      />
+                                    </Form.Item>
+                                    <Form.Item
+                                      label="Show Auto-Holy Debug Overlay"
+                                      style={{ marginBottom: 0 }}
+                                    >
+                                      <Switch
+                                        checked={
+                                          settings.autoHoly.debugOverlayEnabled
+                                        }
+                                        onChange={(checked) => {
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoHoly: {
+                                              ...prev.autoHoly,
+                                              debugOverlayEnabled: checked,
+                                            },
+                                          }));
+                                        }}
+                                      />
+                                    </Form.Item>
+                                    <Form.Item
+                                      label="Debuff Reference Area"
+                                      style={{ marginBottom: 0 }}
+                                    >
+                                      <div
+                                        ref={setSettingsAnchor(
+                                          "auto-holy-region",
+                                        )}
+                                      />
+                                      <Space
+                                        direction="vertical"
+                                        size={4}
+                                        className="fm-w-full"
+                                      >
+                                        <Space wrap>
+                                          <Button
+                                            onClick={() => {
+                                              if (
+                                                automationRegionCaptureTarget ===
+                                                "autoHoly"
+                                              ) {
+                                                onCancelAutomationRegionCapture();
+                                                return;
+                                              }
 
-                                            onStartAutomationRegionCapture(
-                                              "autoHoly",
-                                            );
-                                          }}
-                                          disabled={
-                                            automationRegionCaptureTarget ===
-                                            "autoPills"
-                                          }
-                                        >
+                                              onStartAutomationRegionCapture(
+                                                "autoHoly",
+                                              );
+                                            }}
+                                            disabled={
+                                              automationRegionCaptureTarget ===
+                                              "autoPills"
+                                            }
+                                          >
+                                            {automationRegionCaptureTarget ===
+                                            "autoHoly"
+                                              ? "Cancel Capture"
+                                              : settings.autoHoly.scanRegion
+                                                ? "Recapture Region"
+                                                : "Capture Region"}
+                                          </Button>
+                                          <Button
+                                            onClick={() => {
+                                              onClearAutomationRegionCapture(
+                                                "autoHoly",
+                                              );
+                                            }}
+                                            disabled={
+                                              !settings.autoHoly.scanRegion
+                                            }
+                                          >
+                                            Clear Region
+                                          </Button>
+                                        </Space>
+                                        <Typography.Text type="secondary">
                                           {automationRegionCaptureTarget ===
                                           "autoHoly"
-                                            ? "Cancel Capture"
-                                            : settings.autoHoly.scanRegion
-                                              ? "Recapture Region"
-                                              : "Capture Region"}
-                                        </Button>
-                                        <Button
-                                          onClick={() => {
-                                            onClearAutomationRegionCapture(
-                                              "autoHoly",
-                                            );
-                                          }}
-                                          disabled={
-                                            !settings.autoHoly.scanRegion
-                                          }
-                                        >
-                                          Clear Region
-                                        </Button>
+                                            ? "Drag over the buff icons area on the game canvas to capture the root/stun detection zone."
+                                            : formatScanRegionSummary(
+                                                settings.autoHoly.scanRegion,
+                                              )}
+                                        </Typography.Text>
                                       </Space>
-                                      <Typography.Text type="secondary">
-                                        {automationRegionCaptureTarget ===
-                                        "autoHoly"
-                                          ? "Drag over the buff icons area on the game canvas to capture the root/stun detection zone."
-                                          : formatScanRegionSummary(
-                                              settings.autoHoly.scanRegion,
-                                            )}
-                                      </Typography.Text>
-                                    </Space>
-                                  </Form.Item>
-                                  <Form.Item
-                                    label="Holy Key"
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <div
-                                      className={`fm-shortcut-input-shell${settings.autoHoly.holyKey ? " fm-shortcut-input-has-value" : ""}`}
+                                    </Form.Item>
+                                    <Form.Item
+                                      label="Holy Key"
+                                      style={{ marginBottom: 0 }}
                                     >
-                                      <Input
-                                        className="fm-global-shortcut-input"
-                                        value={settings.autoHoly.holyKey}
-                                        placeholder="Click or press keys"
-                                        onKeyDown={(event) => {
-                                          const captured =
-                                            buildAutoFeatureShortcut(event);
-                                          if (captured === "") {
-                                            if (event.key === "Escape") {
-                                              setSettings((prev) => ({
-                                                ...prev,
-                                                autoHoly: {
-                                                  ...prev.autoHoly,
-                                                  holyKey: "",
-                                                },
-                                              }));
+                                      <div
+                                        ref={setSettingsAnchor("auto-holy-key")}
+                                      />
+                                      <div
+                                        className={`fm-shortcut-input-shell${settings.autoHoly.holyKey ? " fm-shortcut-input-has-value" : ""}`}
+                                      >
+                                        <Input
+                                          className="fm-global-shortcut-input"
+                                          value={settings.autoHoly.holyKey}
+                                          placeholder="Click or press keys"
+                                          onKeyDown={(event) => {
+                                            const captured =
+                                              buildAutoFeatureShortcut(event);
+                                            if (captured === "") {
+                                              if (event.key === "Escape") {
+                                                setSettings((prev) => ({
+                                                  ...prev,
+                                                  autoHoly: {
+                                                    ...prev.autoHoly,
+                                                    holyKey: "",
+                                                  },
+                                                }));
+                                              }
+                                              return;
                                             }
-                                            return;
-                                          }
-                                          setSettings((prev) => ({
-                                            ...prev,
-                                            autoHoly: {
-                                              ...prev.autoHoly,
-                                              holyKey: captured,
-                                            },
-                                          }));
-                                        }}
-                                        onMouseDown={(event) => {
-                                          if (
-                                            event.button !== 0 &&
-                                            event.button !== 2
-                                          )
-                                            return;
-                                          const input =
-                                            event.currentTarget as HTMLInputElement;
-                                          const wasFocused =
-                                            document.activeElement === input;
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          input.focus({ preventScroll: true });
-
-                                          if (!wasFocused) {
-                                            return;
-                                          }
-
-                                          const now = Date.now();
-                                          const prev =
-                                            holyKeyLastClickRef.current;
-                                          const isDouble =
-                                            prev.button === event.button &&
-                                            now - prev.time < 360;
-                                          holyKeyLastClickRef.current = {
-                                            button: event.button,
-                                            time: now,
-                                          };
-                                          const baseLabel =
-                                            event.button === 0
-                                              ? isDouble
-                                                ? "Double Left Click"
-                                                : "Left Click"
-                                              : isDouble
-                                                ? "Double Right Click"
-                                                : "Right Click";
-                                          const captured = [
-                                            ...buildMouseModifiers(event),
-                                            baseLabel,
-                                          ].join("+");
-                                          setSettings((prev) => ({
-                                            ...prev,
-                                            autoHoly: {
-                                              ...prev.autoHoly,
-                                              holyKey: captured,
-                                            },
-                                          }));
-                                        }}
-                                        onWheel={(event) => {
-                                          const input =
-                                            event.currentTarget as HTMLInputElement;
-                                          const wasFocused =
-                                            document.activeElement === input;
-                                          event.stopPropagation();
-                                          if (!wasFocused) {
+                                            setSettings((prev) => ({
+                                              ...prev,
+                                              autoHoly: {
+                                                ...prev.autoHoly,
+                                                holyKey: captured,
+                                              },
+                                            }));
+                                          }}
+                                          onMouseDown={(event) => {
+                                            if (
+                                              event.button !== 0 &&
+                                              event.button !== 2
+                                            )
+                                              return;
+                                            const input =
+                                              event.currentTarget as HTMLInputElement;
+                                            const wasFocused =
+                                              document.activeElement === input;
+                                            event.preventDefault();
+                                            event.stopPropagation();
                                             input.focus({
                                               preventScroll: true,
                                             });
-                                            return;
-                                          }
 
-                                          const captured =
-                                            buildWheelShortcut(event);
-                                          if (!captured) return;
-                                          setSettings((prev) => ({
-                                            ...prev,
-                                            autoHoly: {
-                                              ...prev.autoHoly,
-                                              holyKey: captured,
-                                            },
-                                          }));
-                                        }}
-                                        onContextMenu={(event) =>
-                                          event.preventDefault()
-                                        }
-                                      />
-                                      {settings.autoHoly.holyKey && (
-                                        <span
-                                          className="fm-shortcut-input-overlay"
-                                          aria-hidden="true"
-                                        >
-                                          <ShortcutKeys
-                                            combo={settings.autoHoly.holyKey}
-                                          />
-                                        </span>
-                                      )}
-                                    </div>
-                                  </Form.Item>
-                                </>
-                              )}
-                              <Typography.Text type="secondary">
-                                Automatically uses the Scroll of Holy when a
-                                root or stun debuff is detected on screen.
-                              </Typography.Text>
-                            </Space>
-                          </Form.Item>
+                                            if (!wasFocused) {
+                                              return;
+                                            }
+
+                                            const now = Date.now();
+                                            const prev =
+                                              holyKeyLastClickRef.current;
+                                            const isDouble =
+                                              prev.button === event.button &&
+                                              now - prev.time < 360;
+                                            holyKeyLastClickRef.current = {
+                                              button: event.button,
+                                              time: now,
+                                            };
+                                            const baseLabel =
+                                              event.button === 0
+                                                ? isDouble
+                                                  ? "Double Left Click"
+                                                  : "Left Click"
+                                                : isDouble
+                                                  ? "Double Right Click"
+                                                  : "Right Click";
+                                            const captured = [
+                                              ...buildMouseModifiers(event),
+                                              baseLabel,
+                                            ].join("+");
+                                            setSettings((prev) => ({
+                                              ...prev,
+                                              autoHoly: {
+                                                ...prev.autoHoly,
+                                                holyKey: captured,
+                                              },
+                                            }));
+                                          }}
+                                          onWheel={(event) => {
+                                            const input =
+                                              event.currentTarget as HTMLInputElement;
+                                            const wasFocused =
+                                              document.activeElement === input;
+                                            event.stopPropagation();
+                                            if (!wasFocused) {
+                                              input.focus({
+                                                preventScroll: true,
+                                              });
+                                              return;
+                                            }
+
+                                            const captured =
+                                              buildWheelShortcut(event);
+                                            if (!captured) return;
+                                            setSettings((prev) => ({
+                                              ...prev,
+                                              autoHoly: {
+                                                ...prev.autoHoly,
+                                                holyKey: captured,
+                                              },
+                                            }));
+                                          }}
+                                          onContextMenu={(event) =>
+                                            event.preventDefault()
+                                          }
+                                        />
+                                        {settings.autoHoly.holyKey && (
+                                          <span
+                                            className="fm-shortcut-input-overlay"
+                                            aria-hidden="true"
+                                          >
+                                            <ShortcutKeys
+                                              combo={settings.autoHoly.holyKey}
+                                            />
+                                          </span>
+                                        )}
+                                      </div>
+                                    </Form.Item>
+                                  </>
+                                )}
+                                <Typography.Text type="secondary">
+                                  Automatically uses the Scroll of Holy when a
+                                  root or stun debuff is detected on screen.
+                                </Typography.Text>
+                              </Space>
+                            </Form.Item>
+                          </>
                         )}
 
                         {settings.experimentalFeaturesEnabled && (
-                          <Form.Item label="Auto-Pills">
-                            <Space
-                              direction="vertical"
-                              size={6}
-                              className="fm-w-full"
-                            >
-                              <Switch
-                                checked={settings.autoPills.enabled}
-                                onChange={(checked) => {
-                                  setSettings((prev) => ({
-                                    ...prev,
-                                    autoPills: {
-                                      ...prev.autoPills,
-                                      enabled: checked,
-                                    },
-                                  }));
-                                }}
-                              />
-                              {settings.autoPills.enabled && (
-                                <>
-                                  <Form.Item
-                                    label={`HP Threshold: ${settings.autoPills.hpThreshold}%`}
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <Slider
-                                      min={1}
-                                      max={99}
-                                      step={1}
-                                      value={settings.autoPills.hpThreshold}
-                                      onChange={(value) => {
-                                        setSettings((prev) => ({
-                                          ...prev,
-                                          autoPills: {
-                                            ...prev.autoPills,
-                                            hpThreshold: value,
-                                          },
-                                        }));
-                                      }}
-                                      marks={{
-                                        25: "25%",
-                                        50: "50%",
-                                        75: "75%",
-                                      }}
-                                    />
-                                  </Form.Item>
-                                  <Form.Item
-                                    label="Show HP Debug Overlay"
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <Switch
-                                      checked={
-                                        settings.autoPills.debugOverlayEnabled
-                                      }
-                                      onChange={(checked) => {
-                                        setSettings((prev) => ({
-                                          ...prev,
-                                          autoPills: {
-                                            ...prev.autoPills,
-                                            debugOverlayEnabled: checked,
-                                          },
-                                        }));
-                                      }}
-                                    />
-                                  </Form.Item>
-                                  <Form.Item
-                                    label="HP Reference Area"
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <Space
-                                      direction="vertical"
-                                      size={4}
-                                      className="fm-w-full"
+                          <>
+                            <div ref={setSettingsAnchor("auto-pills")} />
+                            <Form.Item label="Auto-Pills">
+                              <Space
+                                direction="vertical"
+                                size={6}
+                                className="fm-w-full"
+                              >
+                                <Switch
+                                  checked={settings.autoPills.enabled}
+                                  onChange={(checked) => {
+                                    setSettings((prev) => ({
+                                      ...prev,
+                                      autoPills: {
+                                        ...prev.autoPills,
+                                        enabled: checked,
+                                      },
+                                    }));
+                                  }}
+                                />
+                                {settings.autoPills.enabled && (
+                                  <>
+                                    <Form.Item
+                                      label={`HP Threshold: ${settings.autoPills.hpThreshold}%`}
+                                      style={{ marginBottom: 0 }}
                                     >
-                                      <Space wrap>
-                                        <Button
-                                          onClick={() => {
-                                            if (
-                                              automationRegionCaptureTarget ===
-                                              "autoPills"
-                                            ) {
-                                              onCancelAutomationRegionCapture();
-                                              return;
-                                            }
+                                      <div
+                                        ref={setSettingsAnchor(
+                                          "auto-pills-threshold",
+                                        )}
+                                      />
+                                      <Slider
+                                        min={1}
+                                        max={99}
+                                        step={1}
+                                        value={settings.autoPills.hpThreshold}
+                                        onChange={(value) => {
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoPills: {
+                                              ...prev.autoPills,
+                                              hpThreshold: value,
+                                            },
+                                          }));
+                                        }}
+                                        marks={{
+                                          25: "25%",
+                                          50: "50%",
+                                          75: "75%",
+                                        }}
+                                      />
+                                    </Form.Item>
+                                    <Form.Item
+                                      label="Show HP Debug Overlay"
+                                      style={{ marginBottom: 0 }}
+                                    >
+                                      <Switch
+                                        checked={
+                                          settings.autoPills.debugOverlayEnabled
+                                        }
+                                        onChange={(checked) => {
+                                          setSettings((prev) => ({
+                                            ...prev,
+                                            autoPills: {
+                                              ...prev.autoPills,
+                                              debugOverlayEnabled: checked,
+                                            },
+                                          }));
+                                        }}
+                                      />
+                                    </Form.Item>
+                                    <Form.Item
+                                      label="HP Reference Area"
+                                      style={{ marginBottom: 0 }}
+                                    >
+                                      <div
+                                        ref={setSettingsAnchor(
+                                          "auto-pills-region",
+                                        )}
+                                      />
+                                      <Space
+                                        direction="vertical"
+                                        size={4}
+                                        className="fm-w-full"
+                                      >
+                                        <Space wrap>
+                                          <Button
+                                            onClick={() => {
+                                              if (
+                                                automationRegionCaptureTarget ===
+                                                "autoPills"
+                                              ) {
+                                                onCancelAutomationRegionCapture();
+                                                return;
+                                              }
 
-                                            onStartAutomationRegionCapture(
-                                              "autoPills",
-                                            );
-                                          }}
-                                          disabled={
-                                            automationRegionCaptureTarget ===
-                                            "autoHoly"
-                                          }
-                                        >
+                                              onStartAutomationRegionCapture(
+                                                "autoPills",
+                                              );
+                                            }}
+                                            disabled={
+                                              automationRegionCaptureTarget ===
+                                              "autoHoly"
+                                            }
+                                          >
+                                            {automationRegionCaptureTarget ===
+                                            "autoPills"
+                                              ? "Cancel Capture"
+                                              : settings.autoPills.scanRegion
+                                                ? "Recapture Region"
+                                                : "Capture Region"}
+                                          </Button>
+                                          <Button
+                                            onClick={() => {
+                                              onClearAutomationRegionCapture(
+                                                "autoPills",
+                                              );
+                                            }}
+                                            disabled={
+                                              !settings.autoPills.scanRegion
+                                            }
+                                          >
+                                            Clear Region
+                                          </Button>
+                                        </Space>
+                                        <Typography.Text type="secondary">
                                           {automationRegionCaptureTarget ===
                                           "autoPills"
-                                            ? "Cancel Capture"
-                                            : settings.autoPills.scanRegion
-                                              ? "Recapture Region"
-                                              : "Capture Region"}
-                                        </Button>
-                                        <Button
-                                          onClick={() => {
-                                            onClearAutomationRegionCapture(
-                                              "autoPills",
-                                            );
-                                          }}
-                                          disabled={
-                                            !settings.autoPills.scanRegion
-                                          }
-                                        >
-                                          Clear Region
-                                        </Button>
+                                            ? "Drag over the character window HP bar area on the game canvas to capture the HP detection zone."
+                                            : formatScanRegionSummary(
+                                                settings.autoPills.scanRegion,
+                                              )}
+                                        </Typography.Text>
                                       </Space>
-                                      <Typography.Text type="secondary">
-                                        {automationRegionCaptureTarget ===
-                                        "autoPills"
-                                          ? "Drag over the character window HP bar area on the game canvas to capture the HP detection zone."
-                                          : formatScanRegionSummary(
-                                              settings.autoPills.scanRegion,
-                                            )}
-                                      </Typography.Text>
-                                    </Space>
-                                  </Form.Item>
-                                  <Form.Item
-                                    label="Pill Key"
-                                    style={{ marginBottom: 0 }}
-                                  >
-                                    <div
-                                      className={`fm-shortcut-input-shell${settings.autoPills.pillKey ? " fm-shortcut-input-has-value" : ""}`}
+                                    </Form.Item>
+                                    <Form.Item
+                                      label="Pill Key"
+                                      style={{ marginBottom: 0 }}
                                     >
-                                      <Input
-                                        className="fm-global-shortcut-input"
-                                        value={settings.autoPills.pillKey}
-                                        placeholder="Click or press keys"
-                                        onKeyDown={(event) => {
-                                          const captured =
-                                            buildAutoFeatureShortcut(event);
-                                          if (captured === "") {
-                                            if (event.key === "Escape") {
-                                              setSettings((prev) => ({
-                                                ...prev,
-                                                autoPills: {
-                                                  ...prev.autoPills,
-                                                  pillKey: "",
-                                                },
-                                              }));
+                                      <div
+                                        ref={setSettingsAnchor(
+                                          "auto-pills-key",
+                                        )}
+                                      />
+                                      <div
+                                        className={`fm-shortcut-input-shell${settings.autoPills.pillKey ? " fm-shortcut-input-has-value" : ""}`}
+                                      >
+                                        <Input
+                                          className="fm-global-shortcut-input"
+                                          value={settings.autoPills.pillKey}
+                                          placeholder="Click or press keys"
+                                          onKeyDown={(event) => {
+                                            const captured =
+                                              buildAutoFeatureShortcut(event);
+                                            if (captured === "") {
+                                              if (event.key === "Escape") {
+                                                setSettings((prev) => ({
+                                                  ...prev,
+                                                  autoPills: {
+                                                    ...prev.autoPills,
+                                                    pillKey: "",
+                                                  },
+                                                }));
+                                              }
+                                              return;
                                             }
-                                            return;
-                                          }
-                                          setSettings((prev) => ({
-                                            ...prev,
-                                            autoPills: {
-                                              ...prev.autoPills,
-                                              pillKey: captured,
-                                            },
-                                          }));
-                                        }}
-                                        onMouseDown={(event) => {
-                                          if (
-                                            event.button !== 0 &&
-                                            event.button !== 2
-                                          )
-                                            return;
-                                          const input =
-                                            event.currentTarget as HTMLInputElement;
-                                          const wasFocused =
-                                            document.activeElement === input;
-                                          event.preventDefault();
-                                          event.stopPropagation();
-                                          input.focus({ preventScroll: true });
-
-                                          if (!wasFocused) {
-                                            return;
-                                          }
-
-                                          const now = Date.now();
-                                          const prev =
-                                            pillKeyLastClickRef.current;
-                                          const isDouble =
-                                            prev.button === event.button &&
-                                            now - prev.time < 360;
-                                          pillKeyLastClickRef.current = {
-                                            button: event.button,
-                                            time: now,
-                                          };
-                                          const baseLabel =
-                                            event.button === 0
-                                              ? isDouble
-                                                ? "Double Left Click"
-                                                : "Left Click"
-                                              : isDouble
-                                                ? "Double Right Click"
-                                                : "Right Click";
-                                          const captured = [
-                                            ...buildMouseModifiers(event),
-                                            baseLabel,
-                                          ].join("+");
-                                          setSettings((prev) => ({
-                                            ...prev,
-                                            autoPills: {
-                                              ...prev.autoPills,
-                                              pillKey: captured,
-                                            },
-                                          }));
-                                        }}
-                                        onWheel={(event) => {
-                                          const input =
-                                            event.currentTarget as HTMLInputElement;
-                                          const wasFocused =
-                                            document.activeElement === input;
-                                          event.stopPropagation();
-                                          if (!wasFocused) {
+                                            setSettings((prev) => ({
+                                              ...prev,
+                                              autoPills: {
+                                                ...prev.autoPills,
+                                                pillKey: captured,
+                                              },
+                                            }));
+                                          }}
+                                          onMouseDown={(event) => {
+                                            if (
+                                              event.button !== 0 &&
+                                              event.button !== 2
+                                            )
+                                              return;
+                                            const input =
+                                              event.currentTarget as HTMLInputElement;
+                                            const wasFocused =
+                                              document.activeElement === input;
+                                            event.preventDefault();
+                                            event.stopPropagation();
                                             input.focus({
                                               preventScroll: true,
                                             });
-                                            return;
-                                          }
 
-                                          const captured =
-                                            buildWheelShortcut(event);
-                                          if (!captured) return;
-                                          setSettings((prev) => ({
-                                            ...prev,
-                                            autoPills: {
-                                              ...prev.autoPills,
-                                              pillKey: captured,
-                                            },
-                                          }));
-                                        }}
-                                        onContextMenu={(event) =>
-                                          event.preventDefault()
-                                        }
-                                      />
-                                      {settings.autoPills.pillKey && (
-                                        <span
-                                          className="fm-shortcut-input-overlay"
-                                          aria-hidden="true"
-                                        >
-                                          <ShortcutKeys
-                                            combo={settings.autoPills.pillKey}
-                                          />
-                                        </span>
-                                      )}
-                                    </div>
-                                  </Form.Item>
-                                </>
-                              )}
-                              <Typography.Text type="secondary">
-                                Automatically uses pills when HP drops to or
-                                below the set threshold percentage. Enable HP
-                                Debug Overlay while calibrating to see live
-                                detected HP values.
-                              </Typography.Text>
-                            </Space>
-                          </Form.Item>
+                                            if (!wasFocused) {
+                                              return;
+                                            }
+
+                                            const now = Date.now();
+                                            const prev =
+                                              pillKeyLastClickRef.current;
+                                            const isDouble =
+                                              prev.button === event.button &&
+                                              now - prev.time < 360;
+                                            pillKeyLastClickRef.current = {
+                                              button: event.button,
+                                              time: now,
+                                            };
+                                            const baseLabel =
+                                              event.button === 0
+                                                ? isDouble
+                                                  ? "Double Left Click"
+                                                  : "Left Click"
+                                                : isDouble
+                                                  ? "Double Right Click"
+                                                  : "Right Click";
+                                            const captured = [
+                                              ...buildMouseModifiers(event),
+                                              baseLabel,
+                                            ].join("+");
+                                            setSettings((prev) => ({
+                                              ...prev,
+                                              autoPills: {
+                                                ...prev.autoPills,
+                                                pillKey: captured,
+                                              },
+                                            }));
+                                          }}
+                                          onWheel={(event) => {
+                                            const input =
+                                              event.currentTarget as HTMLInputElement;
+                                            const wasFocused =
+                                              document.activeElement === input;
+                                            event.stopPropagation();
+                                            if (!wasFocused) {
+                                              input.focus({
+                                                preventScroll: true,
+                                              });
+                                              return;
+                                            }
+
+                                            const captured =
+                                              buildWheelShortcut(event);
+                                            if (!captured) return;
+                                            setSettings((prev) => ({
+                                              ...prev,
+                                              autoPills: {
+                                                ...prev.autoPills,
+                                                pillKey: captured,
+                                              },
+                                            }));
+                                          }}
+                                          onContextMenu={(event) =>
+                                            event.preventDefault()
+                                          }
+                                        />
+                                        {settings.autoPills.pillKey && (
+                                          <span
+                                            className="fm-shortcut-input-overlay"
+                                            aria-hidden="true"
+                                          >
+                                            <ShortcutKeys
+                                              combo={settings.autoPills.pillKey}
+                                            />
+                                          </span>
+                                        )}
+                                      </div>
+                                    </Form.Item>
+                                  </>
+                                )}
+                                <Typography.Text type="secondary">
+                                  Automatically uses pills when HP drops to or
+                                  below the set threshold percentage. Enable HP
+                                  Debug Overlay while calibrating to see live
+                                  detected HP values.
+                                </Typography.Text>
+                              </Space>
+                            </Form.Item>
+                          </>
                         )}
                       </>
                     )}

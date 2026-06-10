@@ -7,9 +7,11 @@ import {
   getDoc,
   getDocs,
   getFirestore,
+  initializeFirestore,
   query,
   runTransaction,
   setDoc,
+  type Firestore,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -189,6 +191,29 @@ const getFirebaseApp = () => {
   }
 
   return initializeApp(FIREBASE_CONFIG);
+};
+
+let firestoreInstance: Firestore | null = null;
+
+const getConfiguredFirestore = (app: ReturnType<typeof getFirebaseApp>) => {
+  if (!app) {
+    return null;
+  }
+
+  if (firestoreInstance) {
+    return firestoreInstance;
+  }
+
+  try {
+    // Content-script environments can have flaky WebChannel transports.
+    firestoreInstance = initializeFirestore(app, {
+      experimentalAutoDetectLongPolling: true,
+    });
+    return firestoreInstance;
+  } catch {
+    firestoreInstance = getFirestore(app);
+    return firestoreInstance;
+  }
 };
 
 const buildFeatureFlags = (
@@ -399,7 +424,16 @@ const validateSubscriptionTokenDirect = async (
     };
   }
 
-  const db = getFirestore(app);
+  const db = getConfiguredFirestore(app);
+  if (!db) {
+    return {
+      valid: false,
+      plan: "free",
+      role: "user",
+      expiresAtIso: null,
+      reason: "Firebase is not configured.",
+    };
+  }
   const tokenHash = await hashToken(trimmedToken);
   const tokenRef = doc(db, TOKEN_COLLECTION, tokenHash);
   const snapshot = await getDoc(tokenRef);
@@ -784,7 +818,10 @@ export const generateSubscriptionToken = async (
   const tokenHash = await hashToken(token);
   const expiresAtIso =
     plan === "unlimited" ? null : addDaysIso(PLAN_DURATION_DAYS[plan]);
-  const db = getFirestore(app);
+  const db = getConfiguredFirestore(app);
+  if (!db) {
+    throw new Error("Firebase is not configured.");
+  }
 
   await setDoc(
     doc(db, TOKEN_COLLECTION, tokenHash),
@@ -926,7 +963,10 @@ export const listSubscriptionTokens = async (
     return response.data.tokens;
   }
 
-  const db = getFirestore(app);
+  const db = getConfiguredFirestore(app);
+  if (!db) {
+    throw new Error("Firebase is not configured.");
+  }
   const snapshot =
     actor.role === "superadmin"
       ? await getDocs(collection(db, TOKEN_COLLECTION))
@@ -998,7 +1038,10 @@ export const revokeSubscriptionToken = async (
     return;
   }
 
-  const db = getFirestore(app);
+  const db = getConfiguredFirestore(app);
+  if (!db) {
+    throw new Error("Firebase is not configured.");
+  }
   await updateDoc(doc(db, TOKEN_COLLECTION, tokenHash), {
     status: "inactive",
     revokedAt: new Date().toISOString(),
@@ -1021,7 +1064,10 @@ export const deleteSubscriptionToken = async (
     throw new Error("Firebase is not configured.");
   }
 
-  const db = getFirestore(app);
+  const db = getConfiguredFirestore(app);
+  if (!db) {
+    throw new Error("Firebase is not configured.");
+  }
   const tokenRef = doc(db, TOKEN_COLLECTION, tokenHash);
   const tokenSnapshot = await getDoc(tokenRef);
   if (!tokenSnapshot.exists()) {

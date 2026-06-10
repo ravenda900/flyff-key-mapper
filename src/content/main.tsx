@@ -158,8 +158,47 @@ const KEY_TRIGGER_SESSION_SELECTED_TAB_IDS_KEY =
   "flyff-mapper-key-trigger-selected-tabs-session-v1";
 const KEY_TRIGGER_SESSION_SELECTED_TAB_NAMES_KEY =
   "flyff-mapper-key-trigger-selected-tab-names-session-v1";
+const EASY_ACCESS_RIBBON_EXPANDED_SESSION_KEY =
+  "flyff-mapper-easy-access-ribbon-expanded-session-v1";
 const isValidTabId = (value: unknown): value is number =>
   Number.isInteger(value) && Number(value) > 0;
+
+const loadSessionEasyAccessRibbonExpanded = (fallback: boolean): boolean => {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  try {
+    const raw = window.sessionStorage.getItem(
+      EASY_ACCESS_RIBBON_EXPANDED_SESSION_KEY,
+    );
+    if (raw === "1") {
+      return true;
+    }
+    if (raw === "0") {
+      return false;
+    }
+  } catch {
+    return fallback;
+  }
+
+  return fallback;
+};
+
+const saveSessionEasyAccessRibbonExpanded = (expanded: boolean): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.sessionStorage.setItem(
+      EASY_ACCESS_RIBBON_EXPANDED_SESSION_KEY,
+      expanded ? "1" : "0",
+    );
+  } catch {
+    return;
+  }
+};
 
 const loadSessionSelectedKeyTriggerTabIds = (): number[] => {
   if (typeof window === "undefined") {
@@ -1889,7 +1928,11 @@ function MapperApp() {
     initialUiState.selectedPaletteShape,
   );
   const [easyAccessRibbonExpanded, setEasyAccessRibbonExpanded] =
-    useState<boolean>(initialUiState.easyAccessRibbonExpanded === true);
+    useState<boolean>(() =>
+      loadSessionEasyAccessRibbonExpanded(
+        initialUiState.easyAccessRibbonExpanded === true,
+      ),
+    );
   const [activeUtilityTab, setActiveUtilityTab] = useState<UtilityTab>(
     initialUiState.selectedUtilityTab,
   );
@@ -1941,6 +1984,24 @@ function MapperApp() {
   const [currentCharacterName, setCurrentCharacterName] = useState<
     string | null
   >(() => getCharacterNameFromTitle(document.title));
+  const resolvedCurrentTabId = useMemo(() => {
+    if (currentTabId !== null) {
+      return currentTabId;
+    }
+
+    const normalizedCurrentCharacterName =
+      typeof currentCharacterName === "string"
+        ? currentCharacterName.trim().toLowerCase()
+        : "";
+    if (!normalizedCurrentCharacterName) {
+      return null;
+    }
+
+    const matchedTab = keyTriggerCharacters.find(
+      (tab) => tab.name.trim().toLowerCase() === normalizedCurrentCharacterName,
+    );
+    return matchedTab && Number.isFinite(matchedTab.id) ? matchedTab.id : null;
+  }, [currentCharacterName, currentTabId, keyTriggerCharacters]);
   const [mapperCharacterProfileMapping, setMapperCharacterProfileMapping] =
     useState<Record<string, string>>(() =>
       storage.loadMapperCharacterProfileMapping(),
@@ -1957,6 +2018,10 @@ function MapperApp() {
     useState<ViewportRect | null>(null);
   const [systemThemeRefreshVersion, setSystemThemeRefreshVersion] = useState(0);
 
+  useEffect(() => {
+    currentTabIdRef.current = resolvedCurrentTabId;
+  }, [resolvedCurrentTabId]);
+
   const rotateIdRef = useRef<string | null>(null);
   const previousBodyCursorRef = useRef<string | null>(null);
   const previousCanvasPointerEventsRef = useRef<string | null>(null);
@@ -1970,6 +2035,7 @@ function MapperApp() {
   const suppressNextSharedRunStateSaveRef = useRef(false);
   const suppressNextKeyTriggerStateSaveRef = useRef(false);
   const suppressNextKeyTriggerTargetTabsSaveRef = useRef(false);
+  const skipInitialKeyTriggerTargetTabsSyncRef = useRef(true);
   const suppressNextKeyTriggerCharacterProfileMappingSaveRef = useRef(false);
   const suppressNextMapperCharacterProfileMappingSaveRef = useRef(false);
   const isSwitchingProfileRef = useRef(false);
@@ -3010,7 +3076,11 @@ function MapperApp() {
       return;
     }
 
-    if (!isPrimarySyncSourceRef.current) {
+    const canWriteSharedTargetTabs =
+      isPrimarySyncSourceRef.current ||
+      (dialogVisible && activeUtilityTab === "key-trigger");
+
+    if (!canWriteSharedTargetTabs) {
       return;
     }
 
@@ -3118,14 +3188,12 @@ function MapperApp() {
       selectedPaletteShape,
       dialogRect,
       selectedUtilityTab: activeUtilityTab,
-      easyAccessRibbonExpanded,
     });
-  }, [
-    activeUtilityTab,
-    dialogRect,
-    easyAccessRibbonExpanded,
-    selectedPaletteShape,
-  ]);
+  }, [activeUtilityTab, dialogRect, selectedPaletteShape]);
+
+  useEffect(() => {
+    saveSessionEasyAccessRibbonExpanded(easyAccessRibbonExpanded);
+  }, [easyAccessRibbonExpanded]);
 
   useEffect(() => {
     if (suppressNextSharedRunStateSaveRef.current) {
@@ -3169,6 +3237,11 @@ function MapperApp() {
   useEffect(() => {
     saveSessionSelectedKeyTriggerTabIds(selectedKeyTriggerTabIds);
 
+    if (skipInitialKeyTriggerTargetTabsSyncRef.current) {
+      skipInitialKeyTriggerTargetTabsSyncRef.current = false;
+      return;
+    }
+
     const selectedNames = keyTriggerCharacters
       .filter((tab) => selectedKeyTriggerTabIds.includes(tab.id))
       .map((tab) => tab.name);
@@ -3209,7 +3282,12 @@ function MapperApp() {
       // This represents an explicit user uncheck with no preserved names.
       storage.saveKeyTriggerTargetTabNames([]);
     }
-  }, [selectedKeyTriggerTabIds, keyTriggerCharacters]);
+  }, [
+    activeUtilityTab,
+    dialogVisible,
+    keyTriggerCharacters,
+    selectedKeyTriggerTabIds,
+  ]);
 
   useEffect(() => {
     if (typeof chrome === "undefined" || !chrome.runtime?.sendMessage) {
@@ -3455,11 +3533,6 @@ function MapperApp() {
             ? prev
             : nextUiState.selectedUtilityTab,
         );
-        setEasyAccessRibbonExpanded((prev) =>
-          prev === (nextUiState.easyAccessRibbonExpanded === true)
-            ? prev
-            : nextUiState.easyAccessRibbonExpanded === true,
-        );
         return;
       }
 
@@ -3575,11 +3648,19 @@ function MapperApp() {
           const rematched = Array.from(
             new Set([...preselected, ...nameMatched]),
           );
+
+          const isSameSelection = (next: number[]): boolean => {
+            return (
+              next.length === prev.length &&
+              next.every((id, index) => id === prev[index])
+            );
+          };
+
           if (rematched.length > 0) {
-            return rematched;
+            return isSameSelection(rematched) ? prev : rematched;
           }
 
-          return preselected;
+          return isSameSelection(preselected) ? prev : preselected;
         });
       },
     );
@@ -3594,6 +3675,32 @@ function MapperApp() {
 
     void safeSendRuntimeMessage({ type: "KEY_TRIGGER_REQUEST_TABS_RELOAD" });
   }, [reloadKeyTriggerCharacters]);
+
+  const syncSelectedKeyTriggerTabIds = useCallback(
+    (nextIds: number[] | ((prev: number[]) => number[])) => {
+      setSelectedKeyTriggerTabIds((prev) => {
+        const resolvedIds =
+          typeof nextIds === "function" ? nextIds(prev) : nextIds;
+        const normalizedIds = Array.from(
+          new Set(resolvedIds.filter((id) => isValidTabId(id))),
+        );
+
+        if (!areNumberArraysEqual(prev, normalizedIds)) {
+          if (typeof chrome !== "undefined") {
+            void safeSendRuntimeMessage({
+              type: "KEY_TRIGGER_SYNC_TOGGLE_TABS",
+              tabIds: normalizedIds,
+              userInitiated: true,
+            });
+          }
+          return normalizedIds;
+        }
+
+        return prev;
+      });
+    },
+    [],
+  );
 
   const clearAllKeyTriggerTimers = useCallback(() => {
     activeKeyTriggerTimersRef.current.forEach((timerIds) => {
@@ -3719,25 +3826,29 @@ function MapperApp() {
   }
 
   useEffect(() => {
-    if (currentTabId === null) {
+    if (resolvedCurrentTabId === null) {
       return;
     }
 
     const isCurrentTabSelected =
-      selectedKeyTriggerTabIds.includes(currentTabId);
+      selectedKeyTriggerTabIds.includes(resolvedCurrentTabId);
     if (isCurrentTabSelected) {
       return;
     }
 
     clearAllKeyTriggerTimers();
-  }, [currentTabId, selectedKeyTriggerTabIds, clearAllKeyTriggerTimers]);
+  }, [
+    resolvedCurrentTabId,
+    selectedKeyTriggerTabIds,
+    clearAllKeyTriggerTimers,
+  ]);
 
   useEffect(() => {
-    if (currentTabId === null) {
+    if (resolvedCurrentTabId === null) {
       return;
     }
 
-    if (!selectedKeyTriggerTabIds.includes(currentTabId)) {
+    if (!selectedKeyTriggerTabIds.includes(resolvedCurrentTabId)) {
       return;
     }
 
@@ -3757,7 +3868,11 @@ function MapperApp() {
         config.delayMode,
       );
     });
-  }, [currentTabId, selectedKeyTriggerTabIds, startKeyTriggerToggleTimers]);
+  }, [
+    resolvedCurrentTabId,
+    selectedKeyTriggerTabIds,
+    startKeyTriggerToggleTimers,
+  ]);
 
   useEffect(() => {
     reloadKeyTriggerCharacters();
@@ -4331,7 +4446,13 @@ function MapperApp() {
   }, []);
 
   const getKeyTriggerTargetTabIds = useCallback((): number[] => {
-    return Array.from(new Set(selectedKeyTriggerTabIds));
+    return Array.from(
+      new Set(
+        selectedKeyTriggerTabIds.filter((id): id is number =>
+          Number.isFinite(id),
+        ),
+      ),
+    );
   }, [selectedKeyTriggerTabIds]);
 
   const getTabIdsForAction = useCallback(
@@ -4343,8 +4464,20 @@ function MapperApp() {
       profileSpecificTargetTabIds?: number[],
       profileSpecificTargetTabNames?: string[],
       profileSpecificTargetTabId?: number | null,
+      options?: { includeAllWhenNoSelection?: boolean },
     ): number[] => {
-      const allTargetTabIds = getKeyTriggerTargetTabIds();
+      const explicitTargetTabIds = getKeyTriggerTargetTabIds();
+      const allTargetTabIds =
+        explicitTargetTabIds.length === 0 &&
+        options?.includeAllWhenNoSelection === true
+          ? Array.from(
+              new Set(
+                keyTriggerCharacters
+                  .map((tab) => tab.id)
+                  .filter((id) => Number.isFinite(id)),
+              ),
+            )
+          : explicitTargetTabIds;
       const selectedTabSet = new Set(allTargetTabIds);
       const selectedTabsByName = new Map<string, number[]>();
 
@@ -4373,6 +4506,27 @@ function MapperApp() {
               ? "current"
               : "all";
 
+      const resolveSpecificScopeTargetIds = (
+        resolvedIds: number[],
+      ): number[] => {
+        if (resolvedIds.length === 0) {
+          return [];
+        }
+
+        if (
+          resolvedCurrentTabId !== null &&
+          resolvedIds.includes(resolvedCurrentTabId)
+        ) {
+          // Specific scope acts like current-only when trigger tab is included.
+          return [resolvedCurrentTabId];
+        }
+
+        // Otherwise keep only other targeted tabs.
+        return resolvedCurrentTabId === null
+          ? resolvedIds
+          : resolvedIds.filter((id) => id !== resolvedCurrentTabId);
+      };
+
       if (actionScope === "specific") {
         const scopedIds = Array.from(
           new Set(
@@ -4382,7 +4536,10 @@ function MapperApp() {
           ),
         );
         if (scopedIds.length > 0) {
-          return scopedIds.filter((id) => selectedTabSet.has(id));
+          const resolvedIds = scopedIds.filter((id) => selectedTabSet.has(id));
+          if (resolvedIds.length > 0) {
+            return resolveSpecificScopeTargetIds(resolvedIds);
+          }
         }
 
         const scopedNames = Array.from(
@@ -4400,12 +4557,12 @@ function MapperApp() {
             (name) => selectedTabsByName.get(name) ?? [],
           );
           if (resolved.length > 0) {
-            return Array.from(new Set(resolved));
+            return resolveSpecificScopeTargetIds(Array.from(new Set(resolved)));
           }
         }
       }
 
-      if (profileExecutionScope === "specific") {
+      if (actionScope === "all" && profileExecutionScope === "specific") {
         const scopedIds = Array.from(
           new Set(
             (profileSpecificTargetTabIds ?? []).filter((id) =>
@@ -4414,7 +4571,10 @@ function MapperApp() {
           ),
         );
         if (scopedIds.length > 0) {
-          return scopedIds.filter((id) => selectedTabSet.has(id));
+          const resolvedIds = scopedIds.filter((id) => selectedTabSet.has(id));
+          if (resolvedIds.length > 0) {
+            return resolveSpecificScopeTargetIds(resolvedIds);
+          }
         }
 
         const scopedNames = Array.from(
@@ -4432,54 +4592,65 @@ function MapperApp() {
             (name) => selectedTabsByName.get(name) ?? [],
           );
           if (resolved.length > 0) {
-            return Array.from(new Set(resolved));
+            return resolveSpecificScopeTargetIds(Array.from(new Set(resolved)));
           }
         }
 
         if (Number.isFinite(profileSpecificTargetTabId)) {
-          return selectedTabSet.has(profileSpecificTargetTabId as number)
+          const resolvedIds = selectedTabSet.has(
+            profileSpecificTargetTabId as number,
+          )
             ? [profileSpecificTargetTabId as number]
             : [];
+          return resolveSpecificScopeTargetIds(resolvedIds);
         }
         return [];
       }
 
       if (actionScope === "other") {
         // Return all selected tabs except the current one
-        if (currentTabId === null) {
+        if (resolvedCurrentTabId === null) {
           return allTargetTabIds;
         }
-        return allTargetTabIds.filter((tabId) => tabId !== currentTabId);
+        return allTargetTabIds.filter(
+          (tabId) => tabId !== resolvedCurrentTabId,
+        );
       }
 
       if (actionScope === "current") {
         // Return only the current tab if it's in the selected tabs
-        if (currentTabId === null) {
+        if (resolvedCurrentTabId === null) {
           return [];
         }
-        return allTargetTabIds.includes(currentTabId) ? [currentTabId] : [];
+        return allTargetTabIds.includes(resolvedCurrentTabId)
+          ? [resolvedCurrentTabId]
+          : [];
       }
 
       // If action doesn't specify scope, fall back to profile scope
       if (profileOtherTabsOnly === true) {
-        if (currentTabId === null) {
+        if (resolvedCurrentTabId === null) {
           return allTargetTabIds;
         }
-        return allTargetTabIds.filter((tabId) => tabId !== currentTabId);
+        return allTargetTabIds.filter(
+          (tabId) => tabId !== resolvedCurrentTabId,
+        );
       }
 
       // If action doesn't specify scope, fall back to profile scope
       if (profileCurrentTabOnly === true) {
-        if (currentTabId === null) {
+        if (resolvedCurrentTabId === null) {
           return [];
         }
-        return allTargetTabIds.includes(currentTabId) ? [currentTabId] : [];
+        return allTargetTabIds.includes(resolvedCurrentTabId)
+          ? [resolvedCurrentTabId]
+          : [];
       }
 
       // Default: return all selected tabs
       return allTargetTabIds;
     },
-    [currentTabId, getKeyTriggerTargetTabIds, keyTriggerCharacters],
+    [resolvedCurrentTabId, getKeyTriggerTargetTabIds, keyTriggerCharacters],
   );
 
   const isActionEnabled = useCallback(
@@ -4512,14 +4683,21 @@ function MapperApp() {
       );
 
       toggleProfiles.forEach((profile) => {
-        const actionsByTabIds = new Map<string, KeyTriggerAction[]>();
+        const actionsByScope = new Map<
+          string,
+          {
+            runningTabIds: number[];
+            assignedTabIds: number[];
+            actions: KeyTriggerAction[];
+          }
+        >();
 
         profile.actions.forEach((action) => {
           if (!isActionEnabled(action)) {
             return;
           }
 
-          const tabIds = getTabIdsForAction(
+          const runningTabIds = getTabIdsForAction(
             action,
             profile.currentTabOnly,
             profile.otherTabsOnly,
@@ -4528,24 +4706,53 @@ function MapperApp() {
             profile.specificTargetTabNames,
             profile.specificTargetTabId,
           );
-          const key = JSON.stringify(tabIds);
-          const existing = actionsByTabIds.get(key) ?? [];
-          actionsByTabIds.set(key, [...existing, action]);
-        });
+          const assignedTabIds = getTabIdsForAction(
+            action,
+            profile.currentTabOnly,
+            profile.otherTabsOnly,
+            profile.executionScope,
+            profile.specificTargetTabIds,
+            profile.specificTargetTabNames,
+            profile.specificTargetTabId,
+            { includeAllWhenNoSelection: true },
+          );
 
-        actionsByTabIds.forEach((actions, tabIdsJson) => {
-          const tabIds = JSON.parse(tabIdsJson) as number[];
-          if (tabIds.length === 0 || actions.length === 0) {
+          if (runningTabIds.length === 0 && assignedTabIds.length === 0) {
             return;
           }
 
-          const normalizedTabIds = [...tabIds].sort((a, b) => a - b);
-          const scopedToggleProfileId = `${profile.id}::${normalizedTabIds.join(",")}`;
+          const scopeKey = JSON.stringify(assignedTabIds);
+          const existing = actionsByScope.get(scopeKey);
+          if (!existing) {
+            actionsByScope.set(scopeKey, {
+              runningTabIds,
+              assignedTabIds,
+              actions: [action],
+            });
+            return;
+          }
+
+          actionsByScope.set(scopeKey, {
+            ...existing,
+            actions: [...existing.actions, action],
+          });
+        });
+
+        actionsByScope.forEach(({ runningTabIds, assignedTabIds, actions }) => {
+          if (assignedTabIds.length === 0 || actions.length === 0) {
+            return;
+          }
+
+          const normalizedAssignedTabIds = [...assignedTabIds].sort(
+            (a, b) => a - b,
+          );
+          const scopedToggleProfileId = `${profile.id}::${normalizedAssignedTabIds.join(",")}`;
 
           void safeSendRuntimeMessage({
             type: "KEY_TRIGGER_TOGGLE",
             profileId: scopedToggleProfileId,
-            tabIds,
+            tabIds: runningTabIds,
+            assignedTabIds,
             actions,
             chainDepth,
             delayMode: inheritedDelayMode ?? profile.delayMode,
@@ -8165,6 +8372,7 @@ function MapperApp() {
           delayMode?: "sequential" | "synchronous";
           event?: MouseSyncEventPayload;
           keyEvent?: KeyboardSyncEventPayload;
+          preserveToggleConfigs?: boolean;
         };
         if (msg.type === "TOGGLE_OVERLAY") {
           toggleOverlay();
@@ -8350,7 +8558,9 @@ function MapperApp() {
 
         if (msg.type === "KEY_TRIGGER_STOP_ALL") {
           clearAllKeyTriggerTimers();
-          activeKeyTriggerToggleConfigsRef.current.clear();
+          if (msg.preserveToggleConfigs !== true) {
+            activeKeyTriggerToggleConfigsRef.current.clear();
+          }
           return;
         }
 
@@ -10387,6 +10597,7 @@ function MapperApp() {
         setDialogRect({ ...DEFAULT_DIALOG_RECT });
         setActiveUtilityTab("key-mapper");
         setSelectedPaletteShape("rectangle");
+        setEasyAccessRibbonExpanded(false);
       },
     });
   }, [modal]);
@@ -10466,7 +10677,6 @@ function MapperApp() {
           selectedPaletteShape: "rectangle",
           dialogRect: { ...DEFAULT_DIALOG_RECT },
           selectedUtilityTab: "key-mapper",
-          easyAccessRibbonExpanded: false,
         });
         storage.saveKeyTriggerState({
           selectedPresetId: defaultPresetId,
@@ -12307,7 +12517,7 @@ function MapperApp() {
             settings={settings}
             keyTriggerCharacters={keyTriggerCharacters}
             selectedKeyTriggerTabIds={selectedKeyTriggerTabIds}
-            onSelectedKeyTriggerTabIdsChange={setSelectedKeyTriggerTabIds}
+            onSelectedKeyTriggerTabIdsChange={syncSelectedKeyTriggerTabIds}
             toggleMode={toggleMode}
             addKeyMap={addKeyMap}
             selectedPaletteShape={selectedPaletteShape}
@@ -12383,7 +12593,7 @@ function MapperApp() {
             setSelectedKeyTriggerPresetId={setSelectedKeyTriggerPresetId}
             keyTriggerCharacters={keyTriggerCharacters}
             selectedKeyTriggerTabIds={selectedKeyTriggerTabIds}
-            onSelectedKeyTriggerTabIdsChange={setSelectedKeyTriggerTabIds}
+            onSelectedKeyTriggerTabIdsChange={syncSelectedKeyTriggerTabIds}
             keyTriggerCharacterPresetMapping={keyTriggerCharacterPresetMapping}
             setKeyTriggerCharacterPresetMapping={
               setKeyTriggerCharacterPresetMapping

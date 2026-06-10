@@ -3,8 +3,85 @@ const FLYFF_HOST = "universe.flyff.com";
 const CHARACTER_TITLE_PATTERN = /^(.+?)\s*-\s*Flyff Universe$/i;
 const NOTIFICATION_DEDUPE_MAX_AGE_MS = 10 * 60 * 1000;
 const notificationSeenByKey = new Map();
+const KEY_TRIGGER_SELECTION_SYNC_OWNER_WINDOW_MS = 3000;
+const keyTriggerSelectionSyncState = {
+  ownerTabId: null,
+  expiresAt: 0,
+};
 
 const activeToggleTargets = new Map();
+const lockToggleOwnersByBaseProfile = new Map();
+
+const getBaseProfileId = (profileId) =>
+  typeof profileId === "string" ? profileId.split("::")[0] : "";
+
+const hasActiveToggleForBaseProfile = (baseProfileId) => {
+  if (!baseProfileId) {
+    return false;
+  }
+
+  for (const target of activeToggleTargets.values()) {
+    if ((target?.baseProfileId ?? "") === baseProfileId) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const getActiveToggleEntriesForBaseProfile = (baseProfileId) => {
+  if (!baseProfileId) {
+    return [];
+  }
+
+  const entries = [];
+  activeToggleTargets.forEach((target, profileId) => {
+    if ((target?.baseProfileId ?? "") === baseProfileId) {
+      entries.push([profileId, target]);
+    }
+  });
+
+  return entries;
+};
+
+const stopAllTogglesForBaseProfile = (baseProfileId) => {
+  if (!baseProfileId) {
+    return false;
+  }
+
+  let stopped = false;
+  getActiveToggleEntriesForBaseProfile(baseProfileId).forEach(
+    ([profileId, target]) => {
+      const runningTabIds = normalizeTabIds(target?.tabIds);
+      runningTabIds.forEach((tabId) => {
+        chrome.tabs
+          .sendMessage(tabId, {
+            type: "KEY_TRIGGER_STOP_TOGGLE",
+            profileId,
+          })
+          .catch(() => undefined);
+      });
+
+      activeToggleTargets.delete(profileId);
+      if (runningTabIds.length > 0) {
+        stopped = true;
+      }
+    },
+  );
+
+  syncLockOwnerForBaseProfile(baseProfileId);
+  return stopped;
+};
+
+const syncLockOwnerForBaseProfile = (baseProfileId) => {
+  if (!baseProfileId) {
+    return;
+  }
+
+  if (!hasActiveToggleForBaseProfile(baseProfileId)) {
+    lockToggleOwnersByBaseProfile.delete(baseProfileId);
+  }
+};
 
 const normalizeTabIds = (ids) =>
   Array.from(
@@ -17,12 +94,21 @@ const normalizeTabIds = (ids) =>
 
 const stopProfileToggle = (profileId) => {
   const currentTargets = activeToggleTargets.get(profileId);
-  if (!currentTargets || currentTargets.tabIds.length === 0) {
+  const baseProfileId = getBaseProfileId(profileId);
+  if (!currentTargets) {
     activeToggleTargets.delete(profileId);
+    syncLockOwnerForBaseProfile(baseProfileId);
     return false;
   }
 
-  currentTargets.tabIds.forEach((tabId) => {
+  const runningTabIds = normalizeTabIds(currentTargets.tabIds);
+  if (runningTabIds.length === 0) {
+    activeToggleTargets.delete(profileId);
+    syncLockOwnerForBaseProfile(baseProfileId);
+    return false;
+  }
+
+  runningTabIds.forEach((tabId) => {
     chrome.tabs
       .sendMessage(tabId, {
         type: "KEY_TRIGGER_STOP_TOGGLE",
@@ -32,22 +118,35 @@ const stopProfileToggle = (profileId) => {
   });
 
   activeToggleTargets.delete(profileId);
+  syncLockOwnerForBaseProfile(baseProfileId);
   return true;
 };
 
 const startProfileToggle = (profileId, tabIds, actions, options) => {
+  const runningTabIds = normalizeTabIds(tabIds);
+  const assignedTabIds = normalizeTabIds(options?.assignedTabIds ?? tabIds);
+  const baseProfileId = getBaseProfileId(profileId);
+  const lockToTab = options?.lockToTab === true;
+
   activeToggleTargets.set(profileId, {
-    tabIds,
+    tabIds: runningTabIds,
+    assignedTabIds,
+    baseProfileId,
+    lockToTab,
     ownerTabId: options?.ownerTabId ?? null,
     actions,
   });
 
-  tabIds.forEach((tabId) => {
+  if (lockToTab && typeof options?.ownerTabId === "number") {
+    lockToggleOwnersByBaseProfile.set(baseProfileId, options.ownerTabId);
+  }
+
+  runningTabIds.forEach((tabId) => {
     chrome.tabs
       .sendMessage(tabId, {
         type: "KEY_TRIGGER_START_TOGGLE",
         profileId,
-        tabIds,
+        tabIds: runningTabIds,
         actions,
       })
       .catch(() => undefined);
@@ -382,9 +481,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     const senderTabId =
       typeof sender?.tab?.id === "number" ? sender.tab.id : null;
+    const baseProfileId = getBaseProfileId(message.profileId);
+
+    const baseActiveEntries =
+      getActiveToggleEntriesForBaseProfile(baseProfileId);
+    const hasAnyBaseActiveToggle = baseActiveEntries.length > 0;
+    const lockedBaseEntry = baseActiveEntries.find(
+      ([, target]) => target?.lockToTab === true,
+    );
+    const lockedOwnerTabId =
+      typeof lockedBaseEntry?.[1]?.ownerTabId === "number"
+        ? lockedBaseEntry[1].ownerTabId
+        : null;
+
+    if (lockedBaseEntry) {
+      if (lockedOwnerTabId !== null && lockedOwnerTabId !== senderTabId) {
+        sendResponse({ ok: true, active: true, blockedByLock: true });
+        return;
+      }
+    }
 
     const currentTargets = activeToggleTargets.get(message.profileId);
-    if (currentTargets && currentTargets.tabIds.length > 0) {
+    if (currentTargets) {
       if (
         currentTargets.ownerTabId !== null &&
         currentTargets.ownerTabId !== senderTabId
@@ -393,7 +511,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      currentTargets.tabIds.forEach((tabId) => {
+      normalizeTabIds(currentTargets.tabIds).forEach((tabId) => {
         chrome.tabs
           .sendMessage(tabId, {
             type: "KEY_TRIGGER_STOP_TOGGLE",
@@ -402,11 +520,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           .catch(() => undefined);
       });
       activeToggleTargets.delete(message.profileId);
+      syncLockOwnerForBaseProfile(baseProfileId);
       sendResponse({ ok: true, active: false });
       return;
     }
 
+    if (
+      message.lockToTab === true &&
+      typeof senderTabId === "number" &&
+      baseProfileId
+    ) {
+      const currentOwner =
+        typeof lockToggleOwnersByBaseProfile.get(baseProfileId) === "number"
+          ? lockToggleOwnersByBaseProfile.get(baseProfileId)
+          : null;
+      if (
+        currentOwner !== null &&
+        currentOwner !== senderTabId &&
+        hasAnyBaseActiveToggle
+      ) {
+        sendResponse({ ok: true, active: true, blockedByLock: true });
+        return;
+      }
+
+      if (!hasAnyBaseActiveToggle) {
+        lockToggleOwnersByBaseProfile.delete(baseProfileId);
+      }
+    }
+
     const tabIds = normalizeTabIds(message.tabIds);
+    const assignedTabIds = normalizeTabIds(message.assignedTabIds);
     const actions = Array.isArray(message.actions)
       ? message.actions.filter(
           (action) => typeof action === "object" && action !== null,
@@ -415,9 +558,112 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     startProfileToggle(message.profileId, tabIds, actions, {
       ownerTabId: message.lockToTab === true ? senderTabId : null,
+      assignedTabIds: assignedTabIds.length > 0 ? assignedTabIds : tabIds,
+      lockToTab: message.lockToTab === true,
     });
 
     sendResponse({ ok: true, active: true });
+    return;
+  }
+
+  if (msg.type === "KEY_TRIGGER_SYNC_TOGGLE_TABS") {
+    const senderTabId =
+      typeof sender?.tab?.id === "number" ? sender.tab.id : null;
+    const now = Date.now();
+    const isUserInitiated = message.userInitiated === true;
+
+    if (
+      keyTriggerSelectionSyncState.ownerTabId !== null &&
+      now >= keyTriggerSelectionSyncState.expiresAt
+    ) {
+      keyTriggerSelectionSyncState.ownerTabId = null;
+      keyTriggerSelectionSyncState.expiresAt = 0;
+    }
+
+    if (isUserInitiated && typeof senderTabId === "number") {
+      keyTriggerSelectionSyncState.ownerTabId = senderTabId;
+      keyTriggerSelectionSyncState.expiresAt =
+        now + KEY_TRIGGER_SELECTION_SYNC_OWNER_WINDOW_MS;
+    }
+
+    if (
+      keyTriggerSelectionSyncState.ownerTabId !== null &&
+      now < keyTriggerSelectionSyncState.expiresAt &&
+      typeof senderTabId === "number" &&
+      senderTabId !== keyTriggerSelectionSyncState.ownerTabId &&
+      !isUserInitiated
+    ) {
+      sendResponse({ ok: true, ignored: true });
+      return;
+    }
+
+    const tabIds = normalizeTabIds(message.tabIds);
+    const newTabSet = new Set(tabIds);
+
+    // Stop any lingering toggle timers on tabs that are no longer selected,
+    // even if active toggle state was reset by a service-worker restart.
+    chrome.tabs
+      .query({})
+      .then((allTabs) => {
+        allTabs
+          .filter((tab) => isFlyffPlayTab(tab))
+          .filter((tab) => typeof tab.id === "number" && !newTabSet.has(tab.id))
+          .forEach((tab) => {
+            chrome.tabs
+              .sendMessage(tab.id, {
+                type: "KEY_TRIGGER_STOP_ALL",
+                preserveToggleConfigs: true,
+              })
+              .catch(() => undefined);
+          });
+      })
+      .catch(() => undefined);
+
+    // Reconcile active toggle profiles with selected tabs while preserving
+    // each profile's originally assigned tab group from trigger time.
+    activeToggleTargets.forEach((target, profileId) => {
+      const assignedTabIds = normalizeTabIds(
+        target.assignedTabIds ?? target.tabIds,
+      );
+      const previousRunningTabIds = normalizeTabIds(target.tabIds);
+      const nextRunningTabIds = assignedTabIds.filter((id) =>
+        newTabSet.has(id),
+      );
+      const previousRunningSet = new Set(previousRunningTabIds);
+      const nextRunningSet = new Set(nextRunningTabIds);
+
+      previousRunningTabIds
+        .filter((tabId) => !nextRunningSet.has(tabId))
+        .forEach((tabId) => {
+          chrome.tabs
+            .sendMessage(tabId, {
+              type: "KEY_TRIGGER_STOP_TOGGLE",
+              profileId,
+            })
+            .catch(() => undefined);
+        });
+
+      nextRunningTabIds
+        .filter((tabId) => !previousRunningSet.has(tabId))
+        .forEach((tabId) => {
+          chrome.tabs
+            .sendMessage(tabId, {
+              type: "KEY_TRIGGER_START_TOGGLE",
+              profileId,
+              tabIds: nextRunningTabIds,
+              actions: target.actions,
+            })
+            .catch(() => undefined);
+        });
+
+      activeToggleTargets.set(profileId, {
+        ...target,
+        assignedTabIds,
+        tabIds: nextRunningTabIds,
+      });
+    });
+
+    sendResponse({ ok: true });
     return;
   }
 
@@ -450,7 +696,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         : [];
 
       const targets = activeToggleTargets.get(profile.profileId);
-      const isActive = !!targets && targets.tabIds.length > 0;
+      const isActive = !!targets;
 
       if (isActive) {
         hasActiveProfile =
@@ -458,7 +704,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
-      startProfileToggle(profile.profileId, tabIds, actions);
+      startProfileToggle(profile.profileId, tabIds, actions, {
+        assignedTabIds: tabIds,
+      });
       hasStartedProfile = true;
     });
 

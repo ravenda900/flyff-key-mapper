@@ -551,6 +551,93 @@ export const KeyTriggerTab = ({
     return "all";
   };
 
+  const formatSpecificTabTargets = (
+    specificTargetTabIds?: number[],
+    specificTargetTabNames?: string[],
+    specificTargetTabId?: number | null,
+    specificTargetTabName?: string | null,
+  ): string => {
+    const labelsById = new Map<number, string>();
+    availableTargetTabs.forEach((tab) => {
+      labelsById.set(tab.id, tab.name);
+    });
+
+    const names: string[] = [];
+
+    (specificTargetTabIds ?? []).forEach((id, index) => {
+      if (!isValidTabId(id)) {
+        return;
+      }
+
+      const mapped =
+        labelsById.get(id) ??
+        (specificTargetTabNames?.[index]?.trim() ||
+          specificTargetTabNames?.[0]?.trim()) ??
+        `Tab ${id}`;
+      names.push(mapped);
+    });
+
+    if (names.length === 0 && isValidTabId(specificTargetTabId)) {
+      names.push(
+        labelsById.get(specificTargetTabId) ??
+          (specificTargetTabName?.trim() || `Tab ${specificTargetTabId}`),
+      );
+    }
+
+    if (names.length === 0 && typeof specificTargetTabName === "string") {
+      const trimmed = specificTargetTabName.trim();
+      if (trimmed.length > 0) {
+        names.push(trimmed);
+      }
+    }
+
+    return Array.from(new Set(names)).join(", ");
+  };
+
+  const getScopeLabel = (input: {
+    executionScope?: "all" | "current" | "other" | "specific";
+    currentTabOnly?: boolean;
+    otherTabsOnly?: boolean;
+    specificTargetTabIds?: number[];
+    specificTargetTabNames?: string[];
+    specificTargetTabId?: number | null;
+    specificTargetTabName?: string | null;
+  }): string => {
+    const scope =
+      input.executionScope === "current" ||
+      input.executionScope === "other" ||
+      input.executionScope === "specific"
+        ? input.executionScope
+        : input.otherTabsOnly === true
+          ? "other"
+          : input.currentTabOnly === true
+            ? "current"
+            : "all";
+
+    if (scope === "current") {
+      return "Current only";
+    }
+
+    if (scope === "other") {
+      return "Other only";
+    }
+
+    if (scope === "specific") {
+      const specificTargets = formatSpecificTabTargets(
+        input.specificTargetTabIds,
+        input.specificTargetTabNames,
+        input.specificTargetTabId,
+        input.specificTargetTabName,
+      );
+
+      return specificTargets.length > 0
+        ? `Specific: ${specificTargets}`
+        : "Specific tabs";
+    }
+
+    return "All tabs";
+  };
+
   // Preset management state
   const [presetCreateName, setPresetCreateName] = useState("");
   const [presetCreateOpen, setPresetCreateOpen] = useState(false);
@@ -2074,6 +2161,36 @@ export const KeyTriggerTab = ({
                                 )}
                               </Typography.Text>
                             </div>
+                            <div className="fm-kt-profile-meta-row">
+                              <span className="fm-kt-profile-meta-label">
+                                Delay Mode:
+                              </span>
+                              <Typography.Text type="secondary">
+                                {profile.delayMode === "synchronous"
+                                  ? "Synchronous"
+                                  : "Sequential"}
+                              </Typography.Text>
+                            </div>
+                            <div className="fm-kt-profile-meta-row">
+                              <span className="fm-kt-profile-meta-label">
+                                Scope:
+                              </span>
+                              <Typography.Text type="secondary">
+                                {getScopeLabel({
+                                  executionScope: profile.executionScope,
+                                  currentTabOnly: profile.currentTabOnly,
+                                  otherTabsOnly: profile.otherTabsOnly,
+                                  specificTargetTabIds:
+                                    profile.specificTargetTabIds,
+                                  specificTargetTabNames:
+                                    profile.specificTargetTabNames,
+                                  specificTargetTabId:
+                                    profile.specificTargetTabId,
+                                  specificTargetTabName:
+                                    profile.specificTargetTabName,
+                                })}
+                              </Typography.Text>
+                            </div>
 
                             {profile.triggerType === "toggle" && (
                               <div className="fm-kt-profile-meta-row">
@@ -2144,6 +2261,32 @@ export const KeyTriggerTab = ({
                                               )}{" "}
                                               ms
                                             </Typography.Text>
+                                            <div>
+                                              <Typography.Text type="secondary">
+                                                Mode:{" "}
+                                                {action.actionTriggerType ===
+                                                "repeat"
+                                                  ? `Repeat (${normalizeActionRepeatCount(action.actionRepeatCount, 2)}x)`
+                                                  : "Once"}
+                                              </Typography.Text>
+                                            </div>
+                                            <div>
+                                              <Typography.Text type="secondary">
+                                                Scope:{" "}
+                                                {getScopeLabel({
+                                                  executionScope:
+                                                    action.executionScope,
+                                                  currentTabOnly:
+                                                    action.currentTabOnly,
+                                                  otherTabsOnly:
+                                                    action.otherTabsOnly,
+                                                  specificTargetTabIds:
+                                                    action.specificTargetTabIds,
+                                                  specificTargetTabNames:
+                                                    action.specificTargetTabNames,
+                                                })}
+                                              </Typography.Text>
+                                            </div>
                                           </div>
                                         ))
                                       ) : (
@@ -2481,14 +2624,14 @@ export const KeyTriggerTab = ({
                                   ? nextSpecificTargetTabId !== null
                                     ? [nextSpecificTargetTabId]
                                     : []
-                                  : (editorDraft.specificTargetTabIds ?? []);
+                                  : [];
 
                               const nextSpecificTargetTabNames =
                                 nextScope === "specific"
                                   ? nextSpecificTargetTabName
                                     ? [nextSpecificTargetTabName]
                                     : []
-                                  : (editorDraft.specificTargetTabNames ?? []);
+                                  : [];
 
                               setEditorDraft({
                                 ...editorDraft,
@@ -2498,9 +2641,14 @@ export const KeyTriggerTab = ({
                                 specificTargetTabIds: nextSpecificTargetTabIds,
                                 specificTargetTabNames:
                                   nextSpecificTargetTabNames,
-                                specificTargetTabId: nextSpecificTargetTabId,
+                                specificTargetTabId:
+                                  nextScope === "specific"
+                                    ? nextSpecificTargetTabId
+                                    : null,
                                 specificTargetTabName:
-                                  nextSpecificTargetTabName,
+                                  nextScope === "specific"
+                                    ? nextSpecificTargetTabName
+                                    : null,
                               });
                             }}
                             options={[
@@ -3142,8 +3290,7 @@ export const KeyTriggerTab = ({
                                                   undefined
                                                 ? [availableTargetTabs[0].id]
                                                 : []
-                                            : (action.specificTargetTabIds ??
-                                              []);
+                                            : [];
                                         const nextSpecificTargetTabNames =
                                           nextScope === "specific"
                                             ? nextSpecificTargetTabIds.map(
@@ -3152,8 +3299,7 @@ export const KeyTriggerTab = ({
                                                     (tab) => tab.id === id,
                                                   )?.name ?? `Tab ${id}`,
                                               )
-                                            : (action.specificTargetTabNames ??
-                                              []);
+                                            : [];
                                         setEditorDraft({
                                           ...editorDraft,
                                           actions: editorDraft.actions.map(

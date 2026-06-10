@@ -37,6 +37,16 @@ This helps map keyboard keys to mouse-click actions without leaving the game vie
   - Rename, create, and delete profiles.
 - Persistent local storage for settings and shapes.
 
+## What's new in v4.1.1
+
+### Key Trigger lock ownership and first-start sync stability
+
+- Lock to this tab toggle profiles now enforce single-owner behavior per profile instance while active.
+- Non-owner tabs can no longer take over a currently locked active toggle instance.
+- Locked toggles can now be turned off only by the owning trigger tab.
+- Improved startup tab-selection sync handling for toggle retargeting to reduce first-start stale selection races.
+- Improved first-start uncheck handling so unchecked tabs are removed from active toggle execution immediately.
+
 ## What's new in v4.1.0
 
 ### Auto-Awaken Start detection and runtime tuning

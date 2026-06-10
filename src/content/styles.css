@@ -2821,7 +2821,7 @@ body {
 .fm-dark-theme .ant-btn:focus,
 .fm-dark .ant-btn:hover,
 .fm-dark .ant-btn:focus {
-  background: var(--fm-theme-pri) !important;
+  background: var(--fm-theme-primary) !important;
   color: var(--fm-theme-text) !important;
 }
 
